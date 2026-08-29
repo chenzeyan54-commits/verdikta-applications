@@ -8,6 +8,9 @@
  *    (ArbiterOperator.withdraw) appears only when LINK lingers from the old aggregator.
  *  - Close out an arbiter and reclaim the 100 wVDKA stake (per oracle+jobId →
  *    ReputationKeeper.deregisterOracle)
+ *  - Authorize a reporting key so nodes running under a separate ops wallet can
+ *    post watchdog health events (signature only, no transaction — see
+ *    components/ReportingKeysSection)
  *
  * Reads come from the backend (/api/arbiters/owned); writes go through the
  * user's wallet signer (services/arbiterContracts). The header network selector
@@ -38,6 +41,7 @@ import { withdrawEth, claimLink, deregisterArbiter, sendEth } from '../services/
 import { getPendingResets, clearPendingReset } from '../services/resetRegistry';
 import ResetArbiterModal from '../components/ResetArbiterModal';
 import RegisterArbiterSection from '../components/RegisterArbiterSection';
+import ReportingKeysSection from '../components/ReportingKeysSection';
 import { buildDescriptor, downloadJson } from '../utils/arbiterRegistration';
 import { estQueriesFor, fmtQueries } from '../utils/funding';
 import '../styles/funding.css';
@@ -468,6 +472,19 @@ function MyArbiters() {
     />
   ) : null;
 
+  // Reporting-key delegations. Only meaningful once the wallet owns something
+  // (the server requires a registered operator before accepting a delegation),
+  // so it renders alongside the operator cards, not in the empty state.
+  const reportingKeysSection = (
+    <ReportingKeysSection
+      network={selectedNetwork}
+      owner={address}
+      chain={chain}
+      getSigner={getSigner}
+      toast={toast}
+    />
+  );
+
   if (loading && !data) {
     return (
       <div className="analytics my-arbiters">
@@ -762,6 +779,7 @@ function MyArbiters() {
         );
       })}
 
+      {reportingKeysSection}
       {registerSection}
 
       {confirmTarget && (() => {

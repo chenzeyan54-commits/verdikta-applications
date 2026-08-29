@@ -32,6 +32,8 @@
  *         "lastSeen": 1779848150000,
  *         "lastStatus": "OK",
  *         "registered": true,           // operator found in keeper registry (null = unverified)
+ *         "reportedBy": "0x…",          // key that signed the events
+ *         "viaDelegate": false,         // true when reportedBy is a delegate, not the owner
  *         "activeAlert": null | {
  *           "subject": "…", "severity": "critical", "problems": ["…"],
  *           "selfHeal": "…" | null, "since": ms, "lastEventAt": ms
@@ -98,7 +100,8 @@ class AlertStore {
    *
    * @param {{ operator: string, hostname?: string, status: 'OK'|'ALERT'|'RECOVERED',
    *   severity?: string, subject?: string, problems?: string[], selfHeal?: string|null,
-   *   registered?: boolean|null, hostUptimeSec?: number|null,
+   *   registered?: boolean|null, reportedBy?: string|null, viaDelegate?: boolean,
+   *   hostUptimeSec?: number|null,
    *   chainlinkUptimeSec?: number|null, chainlinkImage?: string|null }} event
    * @returns {object} the updated operator record
    */
@@ -115,6 +118,10 @@ class AlertStore {
         lastSeen: now,
         lastStatus: null,
         registered: null,
+        // Which key signed the events, and whether it is the operator owner or
+        // an address the owner delegated reporting to (see reporterStore).
+        reportedBy: null,
+        viaDelegate: false,
         activeAlert: null,
         history: [],
       };
@@ -123,6 +130,8 @@ class AlertStore {
     rec.lastSeen = now;
     if (event.hostname) rec.hostname = event.hostname;
     if (event.registered != null) rec.registered = event.registered;
+    if (event.reportedBy) rec.reportedBy = event.reportedBy;
+    rec.viaDelegate = !!event.viaDelegate;
     // Node telemetry (informational; sent with every event, kept current)
     if (event.hostUptimeSec != null) rec.hostUptimeSec = event.hostUptimeSec;
     if (event.chainlinkUptimeSec != null) rec.chainlinkUptimeSec = event.chainlinkUptimeSec;

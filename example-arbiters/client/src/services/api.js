@@ -100,6 +100,41 @@ export const apiService = {
     return response.data;
   },
 
+  // Reporting keys an arbiter owner has authorized to post watchdog events on
+  // its behalf (see components/ReportingKeysSection). Nodes run under an ops
+  // wallet rather than the owner key, so without a delegation their heartbeats
+  // are rejected and the arbiter shows as "not reporting".
+  async getReportingDelegations(owner, network) {
+    const response = await api.get('/api/alerts/delegations', { params: { owner, network } });
+    return response.data;
+  },
+
+  // Register an owner-signed delegation. `payload` carries the signed message's
+  // fields verbatim ({ owner, delegate, expiresAt, issuedAt, sig, label }) —
+  // the server reconstructs the message and recovers the signer, so these must
+  // match what was signed exactly.
+  async addReportingDelegation(payload) {
+    const response = await api.post('/api/alerts/delegations', payload);
+    return response.data;
+  },
+
+  // Withdraw a reporting authorization (owner-signed, same scheme).
+  async revokeReportingDelegation(payload) {
+    const response = await api.post('/api/alerts/delegations/revoke', payload);
+    return response.data;
+  },
+
+  // Addresses that tried to report for one of this owner's operators and were
+  // turned away — candidates to authorize. Each is backed by a valid signature
+  // from that key, so it proves possession of the key, not permission.
+  async getPendingReporters(owner, network) {
+    const response = await api.get('/api/alerts/pending-reporters', {
+      params: { owner, network },
+      timeout: 60000,
+    });
+    return response.data;
+  },
+
   // Full blow-by-blow of a single oracle aggregation (the drill-down behind a
   // blameworthy aggId): requirements, per-slot commit/reveal outcome, failures,
   // and final fulfillment. Bounded on-chain log scan — allow generous time.

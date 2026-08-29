@@ -561,3 +561,107 @@
 
 /* Node funding panel styles now live in ../styles/funding.css (shared with
  * Owner Details). My Arbiters' interactive key rows use `fund-key-rw`. */
+
+/* ── Reporting keys ───────────────────────────────────────────────────────
+   Owner-signed delegations letting a node's own wallet post watchdog health
+   events. Reuses the collapsible .register-toggle / .register-body shell from
+   the register section; only the pending-candidate and table bits are new. */
+
+.my-arbiters .reporting-badge {
+  margin-left: 0.6rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--warning, #f59e0b);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.my-arbiters .reporting-keys-section h3 {
+  margin: 1.5rem 0 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* Discovery prompts: keys that tried to report and were turned away. */
+.my-arbiters .pending-reporters {
+  background: var(--warning-light, #fef3c7);
+  border: 1px solid var(--warning, #f59e0b);
+  border-radius: 8px;
+  padding: 0.25rem 1rem 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.my-arbiters .pending-reporters h3 {
+  margin-top: 1rem;
+  color: var(--warning-dark, #d97706);
+}
+
+.my-arbiters .pending-reporter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.7rem 0;
+  border-top: 1px solid var(--warning, #f59e0b);
+}
+
+.my-arbiters .pending-reporter-info {
+  min-width: 16rem;
+  flex: 1;
+}
+
+.my-arbiters .pending-reporter-main {
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.my-arbiters .pending-reporter-meta {
+  font-size: 0.8rem;
+  margin-top: 0.2rem;
+}
+
+.my-arbiters .pending-reporter-note {
+  font-size: 0.8rem;
+  line-height: 1.5;
+  margin: 0.75rem 0 0;
+}
+
+/* Authorized-key listing. */
+.my-arbiters .reporting-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.my-arbiters .reporting-table th,
+.my-arbiters .reporting-table td {
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.my-arbiters .reporting-table th {
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.my-arbiters .reporting-actions-cell {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.my-arbiters .reporting-add .register-fields {
+  margin-bottom: 0.5rem;
+}

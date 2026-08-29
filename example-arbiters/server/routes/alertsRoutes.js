@@ -21,6 +21,19 @@
  * leaked fleet-wide token would allow spoofing any operator's status,
  * including fake "healthy" heartbeats masking a real outage.)
  *
+ * Delegated reporters — operators whose nodes run under a separate ops wallet
+ * would otherwise have every heartbeat dropped, since the node key is not
+ * `owner()`. Rather than ask them to put the owner key (which controls stake
+ * and earnings) on an internet-facing box, the owner authorizes a reporting
+ * address by signing a delegation in the browser on /my-arbiters; the site
+ * registers it here and ingest accepts owner *or* live delegate. The trust
+ * root is unchanged — only `owner()` can authorize — and nothing on the
+ * arbiter node changes. See utils/reporterStore for the model.
+ *
+ * A validly-signed event from an unrecognized key is recorded as a "pending
+ * reporter" before the 403, which is what lets /my-arbiters offer the owner a
+ * one-click Authorize instead of making them dig the address out of a log.
+ *
  * As defense in depth, the reported operator address is also checked against
  * the on-chain keeper registry (cached enumeration); events for unknown
  * operators are rejected. Registry lookup failures don't block ingest (the
@@ -33,6 +46,7 @@ const router = express.Router();
 
 const logger = require('../utils/logger');
 const AlertStore = require('../utils/alertStore');
+const ReporterStore = require('../utils/reporterStore');
 const { getVerdiktaService } = require('../utils/verdiktaService');
 const { normalizeNetwork } = require('../config');
 
@@ -94,6 +108,90 @@ function verifyEventSignature(body) {
 }
 
 /**
+ * Canonical delegation message. Must match exactly what the /my-arbiters UI
+ * signs (client/src/components/ReportingKeysSection.jsx). Timestamps are unix
+ * *seconds* so the signed text has no millisecond/rounding ambiguity.
+ */
+function delegationMessage({ action, owner, network, delegate, expiresAtSec, issuedAtSec }) {
+  const base = `verdikta-arbiter-reporter:v1:${action}:${String(owner).toLowerCase()}`
+    + `:${network}:${String(delegate).toLowerCase()}`;
+  return action === 'add'
+    ? `${base}:${expiresAtSec}:${issuedAtSec}`
+    : `${base}:${issuedAtSec}`;
+}
+
+/**
+ * Verify an owner-signed delegation add/revoke request. Mirrors the event
+ * path: recover the EIP-191 signer, require it to equal the claimed owner,
+ * and require a fresh `issuedAt` (same replay bound as watchdog events).
+ * @returns {{ ok: true, owner, delegate, issuedAt, expiresAt }
+ *   | { ok: false, error: string }}
+ */
+function verifyDelegationRequest(body, networkKey, action) {
+  const { owner, delegate, sig } = body;
+  if (!ADDR_RE.test(owner || '')) return { ok: false, error: 'Invalid owner address' };
+  if (!ADDR_RE.test(delegate || '')) return { ok: false, error: 'Invalid delegate address' };
+  if (typeof sig !== 'string' || !sig) return { ok: false, error: 'Missing signature' };
+
+  const issuedAtSec = Number(body.issuedAt);
+  if (!Number.isInteger(issuedAtSec)
+      || Math.abs(Date.now() - issuedAtSec * 1000) > SIG_MAX_AGE_MS) {
+    return { ok: false, error: 'Signature timestamp is missing or outside the freshness window' };
+  }
+  let expiresAtSec = null;
+  if (action === 'add') {
+    expiresAtSec = Number(body.expiresAt);
+    if (!Number.isInteger(expiresAtSec)) {
+      return { ok: false, error: 'Invalid expiry' };
+    }
+  }
+
+  const message = delegationMessage({
+    action, owner, network: networkKey, delegate, expiresAtSec, issuedAtSec,
+  });
+  let recovered;
+  try {
+    recovered = ethers.verifyMessage(message, sig);
+  } catch (_) {
+    return { ok: false, error: 'Malformed signature' };
+  }
+  if (recovered.toLowerCase() !== String(owner).toLowerCase()) {
+    return { ok: false, error: 'Signature does not match the claimed owner' };
+  }
+  return {
+    ok: true,
+    owner,
+    delegate,
+    issuedAt: issuedAtSec * 1000,
+    expiresAt: expiresAtSec != null ? expiresAtSec * 1000 : null,
+  };
+}
+
+/**
+ * Registered operator contracts owned by `owner` on this network. Used both to
+ * prove standing before accepting a delegation (a wallet that owns nothing has
+ * nothing to delegate) and to scope the pending-reporter listing.
+ * Uses the same cached enumeration as the rest of the alerts path.
+ * @returns {Promise<string[]|null>} null when the registry could not be read.
+ */
+async function operatorsOwnedBy(networkKey, owner) {
+  try {
+    const service = getVerdiktaService(networkKey);
+    const oracles = await service.getAllOracles({ maxAgeMs: 10 * 60 * 1000 });
+    const ops = [...new Set(oracles.filter((o) => !o.error && o.oracle).map((o) => o.oracle))];
+    if (!ops.length) return null;
+    const ownerMap = await service.getOwnerMap(ops);
+    const target = String(owner).toLowerCase();
+    return ops.filter((op) => String(ownerMap[op.toLowerCase()] || '').toLowerCase() === target);
+  } catch (err) {
+    logger.warn('[alerts] owner-operator lookup failed', {
+      network: networkKey, owner, msg: err.message,
+    });
+    return null;
+  }
+}
+
+/**
  * POST /api/alerts
  * Ingest one watchdog event. Body: the watchdog's JSON payload (see
  * chainlink-health-watchdog.sh post_status_webhook).
@@ -133,11 +231,31 @@ router.post('/', async (req, res) => {
   if (!owner) {
     return res.status(503).json({ success: false, error: 'Could not verify operator owner on-chain; retry later' });
   }
+  // The signer is either the owner itself or an address the owner has
+  // authorized to report on its behalf (see utils/reporterStore).
+  let viaDelegate = false;
   if (owner.toLowerCase() !== check.signer.toLowerCase()) {
-    logger.warn('[alerts] signer is not the operator owner', {
-      network: networkKey, operator, signer: check.signer, owner,
-    });
-    return res.status(403).json({ success: false, error: 'Signer is not the operator owner' });
+    const reporters = ReporterStore.forNetwork(networkKey).load();
+    viaDelegate = reporters.isDelegate(owner, check.signer);
+    if (!viaDelegate) {
+      // Remember the candidate so the owner can authorize it from /my-arbiters
+      // with one click. The event signature is already verified, so this
+      // proves possession of the key — it is an offer, never an authorization.
+      // Gate on keeper registration first: `owner()` exists on plenty of
+      // contracts, so without this anyone could seed an unbounded number of
+      // operator keys into the store by pointing events at arbitrary addresses.
+      if ((await isRegisteredOperator(networkKey, operator)) !== false) {
+        reporters.recordPending({ operator, signer: check.signer, hostname: body.hostname });
+      }
+      logger.warn('[alerts] signer is not the operator owner or a delegate', {
+        network: networkKey, operator, signer: check.signer, owner,
+      });
+      return res.status(403).json({
+        success: false,
+        error: 'Signer is not the operator owner or an authorized reporter. '
+          + 'The owner can authorize this address on the My Arbiters page.',
+      });
+    }
   }
 
   const registered = await isRegisteredOperator(networkKey, operator);
@@ -159,6 +277,8 @@ router.post('/', async (req, res) => {
         : [],
       selfHeal: typeof body.selfHeal === 'string' ? body.selfHeal.slice(0, 300) : null,
       registered,
+      reportedBy: check.signer,
+      viaDelegate,
       // Node telemetry (informational). Bounded to sane ranges.
       hostUptimeSec: Number.isFinite(body.hostUptimeSec) && body.hostUptimeSec >= 0
         ? Math.min(Math.floor(body.hostUptimeSec), 10 * 365 * 86400) : null,
@@ -235,6 +355,150 @@ router.get('/', async (req, res) => {
   } catch (err) {
     logger.error('[alerts] read failed', { network: networkKey, msg: err.message });
     return res.status(500).json({ success: false, error: 'Failed to read alerts' });
+  }
+});
+
+/**
+ * GET /api/alerts/delegations?network=&owner=
+ * Reporting addresses this owner has authorized (unexpired only). Public read:
+ * the contents are addresses and labels, already public on-chain or supplied
+ * by the owner. Backs the Reporting keys section on /my-arbiters.
+ */
+router.get('/delegations', (req, res) => {
+  const networkKey = normalizeNetwork(req.query.network);
+  const owner = req.query.owner;
+  if (!ADDR_RE.test(owner || '')) {
+    return res.status(400).json({ success: false, error: 'Invalid owner address' });
+  }
+  try {
+    const delegations = ReporterStore.forNetwork(networkKey).load().listDelegates(owner);
+    return res.json({
+      success: true,
+      data: {
+        network: networkKey,
+        owner,
+        delegations,
+        maxTtlDays: Math.floor(ReporterStore.DELEGATION_MAX_TTL_MS / 86400000),
+      },
+    });
+  } catch (err) {
+    logger.error('[alerts] delegation read failed', { network: networkKey, owner, msg: err.message });
+    return res.status(500).json({ success: false, error: 'Failed to read delegations' });
+  }
+});
+
+/**
+ * POST /api/alerts/delegations
+ * Authorize an address to post watchdog events for every operator this owner
+ * controls on this network. Body: { network, owner, delegate, expiresAt,
+ * issuedAt, sig, label? } — timestamps in unix seconds, `sig` an EIP-191
+ * signature by `owner` over delegationMessage({action:'add', …}).
+ *
+ * No gas and no transaction: the owner signs in the browser and the
+ * attestation is stored here. The signing wallet must own at least one
+ * registered operator on this network (a wallet with nothing registered has
+ * nothing to delegate).
+ */
+router.post('/delegations', async (req, res) => {
+  const body = req.body || {};
+  const networkKey = normalizeNetwork(body.network);
+  const check = verifyDelegationRequest(body, networkKey, 'add');
+  if (!check.ok) {
+    return res.status(401).json({ success: false, error: check.error });
+  }
+
+  const owned = await operatorsOwnedBy(networkKey, check.owner);
+  if (owned === null) {
+    return res.status(503).json({
+      success: false, error: 'Could not verify operator ownership on-chain; retry later',
+    });
+  }
+  if (owned.length === 0) {
+    return res.status(403).json({
+      success: false,
+      error: 'The signing wallet does not own a registered operator on this network',
+    });
+  }
+
+  const store = ReporterStore.forNetwork(networkKey).load();
+  const result = store.addDelegate({
+    owner: check.owner,
+    delegate: check.delegate,
+    label: typeof body.label === 'string' ? body.label.slice(0, 80) : null,
+    expiresAt: check.expiresAt,
+    issuedAt: check.issuedAt,
+  });
+  if (!result.ok) {
+    return res.status(400).json({ success: false, error: result.error });
+  }
+  // The candidate (if it was one) is authorized now — stop offering it.
+  store.clearPendingForDelegate(check.delegate, owned);
+
+  logger.info('[alerts] reporting delegation added', {
+    network: networkKey, owner: check.owner, delegate: check.delegate,
+    operators: owned.length, expiresAt: new Date(check.expiresAt).toISOString(),
+  });
+  return res.json({ success: true, data: { delegation: result.delegation, operators: owned.length } });
+});
+
+/**
+ * POST /api/alerts/delegations/revoke
+ * Withdraw a reporting authorization. Body: { network, owner, delegate,
+ * issuedAt, sig } signed over delegationMessage({action:'revoke', …}).
+ * Leaves a tombstone so an older captured `add` cannot be replayed to
+ * resurrect the delegate.
+ */
+router.post('/delegations/revoke', (req, res) => {
+  const body = req.body || {};
+  const networkKey = normalizeNetwork(body.network);
+  const check = verifyDelegationRequest(body, networkKey, 'revoke');
+  if (!check.ok) {
+    return res.status(401).json({ success: false, error: check.error });
+  }
+  const store = ReporterStore.forNetwork(networkKey).load();
+  const { existed } = store.revokeDelegate({
+    owner: check.owner, delegate: check.delegate, issuedAt: check.issuedAt,
+  });
+  logger.info('[alerts] reporting delegation revoked', {
+    network: networkKey, owner: check.owner, delegate: check.delegate, existed,
+  });
+  return res.json({ success: true, data: { existed } });
+});
+
+/**
+ * GET /api/alerts/pending-reporters?network=&owner=
+ * Addresses that tried to report for one of this owner's operators and were
+ * turned away — i.e. candidates to authorize. Each entry is backed by a valid
+ * signature from that key, so it proves possession, not permission. Scoped to
+ * the operators the queried owner actually owns.
+ */
+router.get('/pending-reporters', async (req, res) => {
+  const networkKey = normalizeNetwork(req.query.network);
+  const owner = req.query.owner;
+  if (!ADDR_RE.test(owner || '')) {
+    return res.status(400).json({ success: false, error: 'Invalid owner address' });
+  }
+  try {
+    const owned = await operatorsOwnedBy(networkKey, owner);
+    if (!owned || owned.length === 0) {
+      return res.json({ success: true, data: { network: networkKey, owner, pending: [] } });
+    }
+    const store = ReporterStore.forNetwork(networkKey).load();
+    const byOperator = store.listPending(owned);
+    // Flatten to one row per (operator, signer) for the UI, newest first.
+    const pending = [];
+    for (const op of owned) {
+      for (const entry of byOperator[op.toLowerCase()] || []) {
+        pending.push({ operator: op, ...entry });
+      }
+    }
+    pending.sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+    return res.json({ success: true, data: { network: networkKey, owner, pending } });
+  } catch (err) {
+    logger.error('[alerts] pending-reporter read failed', {
+      network: networkKey, owner, msg: err.message,
+    });
+    return res.status(500).json({ success: false, error: 'Failed to read pending reporters' });
   }
 });
 

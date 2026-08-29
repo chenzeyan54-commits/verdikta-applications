@@ -72,9 +72,47 @@ the keeper) and persisted per network to `server/data/{network}/alerts.json`
 (same pattern as the gas-receipt store). The Operator Reliability tables show
 a colored dot for operators that report. Read path: `GET /api/alerts?network=`.
 
+### Reporting keys (nodes running under a different wallet)
+
+Many operators run their nodes with an ops wallet that is *not* the operator
+contract's `owner()`. Those nodes sign with a key the server doesn't recognize,
+so every heartbeat is rejected with 403 and the arbiter shows as "not
+reporting". Putting the owner key on the node is the wrong fix — it controls
+the wVDKA stake, `deregisterOracle`, and ETH earnings.
+
+Instead the owner authorizes a **reporting key** from the **Reporting keys**
+section on `/my-arbiters`: an EIP-191 message signed in the browser (no
+transaction, no gas) naming an address allowed to report on its behalf until a
+chosen expiry. Ingest then accepts owner *or* live delegate. The trust root is
+unchanged — only `owner()` can authorize — and **nothing on the arbiter node
+changes**; the watchdog keeps sending exactly the payload it sends today.
+
+Delegations are scoped to (owner, network), so one signature covers every
+operator that wallet owns, including ones registered later. They carry a hard
+expiry (90 days by default, 1 year max) and can be revoked with a second
+signature, which leaves a tombstone so a captured older authorization can't be
+replayed. Stored per network in `server/data/{network}/reporters.json`.
+
+Discovery: a validly-signed event from an unrecognized key is recorded as a
+*pending reporter* before the 403 — so `/my-arbiters` shows "a node at
+`<hostname>` is trying to report for operator `0x…` with key `0x…`" and a
+one-click **Authorize**, rather than making the owner dig the address out of a
+server log. A pending entry proves someone holds that key, not that it should
+be trusted; authorizing still requires the owner's signature. The list is
+bounded per operator and expires after a week of silence.
+
+Delegation endpoints (all owner-signature gated, no shared secret):
+
+```
+GET  /api/alerts/delegations?network=&owner=        # authorized keys
+POST /api/alerts/delegations                        # authorize (owner-signed)
+POST /api/alerts/delegations/revoke                 # revoke (owner-signed)
+GET  /api/alerts/pending-reporters?network=&owner=  # candidates to authorize
+```
+
 ## Notes
 
 - No wallet / IPFS code yet. Keep it that way until the feature set demands it.
 - Read-only blockchain access is intentional: the `/analytics` page reads arbiter/oracle data from the Verdikta aggregator + ReputationKeeper contracts via ethers (no wallet, no writes, no IPFS). A network toggle (Base mainnet / Base Sepolia) is exposed in the UI; the server reads each network over a public RPC (PublicNode), so no API keys are required. Override with `RPC_URL` / `INFURA_API_KEY` for a private endpoint.
-- The one write-ish surface is `POST /api/alerts` (arbiter watchdog webhooks, see above) — token-gated, off by default.
+- The write surfaces are all under `/api/alerts`: `POST /api/alerts` (arbiter watchdog webhooks) and the reporting-key delegation endpoints (see above). Every one of them is gated on an EIP-191 signature checked against on-chain state — there is no shared secret and no server-side allow-list to maintain.
 - Visual theme mirrors `example-bounty-program` (shared CSS variables and components). Keep in sync when the design system evolves.

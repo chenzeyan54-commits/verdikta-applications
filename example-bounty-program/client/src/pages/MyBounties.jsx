@@ -90,7 +90,7 @@ function StatusIconComponent({ iconName, size = 12, className = '' }) {
  * Get submission status display info, accounting for timed-out evaluations.
  * If the bounty is no longer open and the submission is still pending, it timed out.
  */
-function getEffectiveSubmissionStatus(submissionStatus, bountyStatus) {
+function getEffectiveSubmissionStatus(submissionStatus, bountyStatus, onChainStatus) {
   const isPending = isSubmissionPending(submissionStatus);
   const bountyOpen = bountyStatus === BountyStatus.OPEN;
 
@@ -105,9 +105,9 @@ function getEffectiveSubmissionStatus(submissionStatus, bountyStatus) {
 
   // Normal status
   return {
-    label: getSubmissionStatusLabel(submissionStatus),
-    iconName: getSubmissionStatusIcon(submissionStatus),
-    badgeClass: getSubmissionStatusBadgeClass(submissionStatus),
+    label: getSubmissionStatusLabel(submissionStatus, onChainStatus),
+    iconName: getSubmissionStatusIcon(submissionStatus, onChainStatus),
+    badgeClass: getSubmissionStatusBadgeClass(submissionStatus, onChainStatus),
   };
 }
 
@@ -649,7 +649,7 @@ function MyBounties({ walletState }) {
                             {truncateAddress(sub.hunter) || '—'}
                           </span>
                           {(() => {
-                            const effectiveStatus = getEffectiveSubmissionStatus(sub.status, bounty.status);
+                            const effectiveStatus = getEffectiveSubmissionStatus(sub.status, bounty.status, sub.onChainStatus);
                             return (
                               <span className={`sub-status ${effectiveStatus.badgeClass}`} data-label="Status">
                                 {effectiveStatus.icon

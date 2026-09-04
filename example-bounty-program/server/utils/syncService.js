@@ -31,6 +31,22 @@ const BOOTSTRAP_CHUNK_SIZE = 10_000;
 // Sync state schema version — bump when the shape changes
 const SYNC_STATE_VERSION = 2;
 
+// Max Phase D.8 chain reads per sync cycle (see that block for why it is capped)
+const PAID_HEAL_MAX_PER_CYCLE = 25;
+
+// Contract SubmissionStatus enum → local fields, indexed by the raw uint8.
+// ON_CHAIN_STATUS keeps the low-level enum name (analytics needs PassedPaid vs
+// PassedUnpaid); LOCAL_STATUS is the collapsed form the API/UI render. Note that
+// LOCAL_STATUS deliberately maps BOTH 3 and 4 to 'APPROVED' — so never use it to
+// decide whether a record needs correcting, or PassedPaid/PassedUnpaid drift
+// compares equal and is silently kept.
+const ON_CHAIN_STATUS_BY_INDEX = [
+  'Prepared', 'PendingVerdikta', 'Failed', 'PassedPaid', 'PassedUnpaid', 'PendingCreatorApproval'
+];
+const LOCAL_STATUS_BY_INDEX = [
+  'Prepared', 'PENDING_EVALUATION', 'REJECTED', 'APPROVED', 'APPROVED', 'PendingCreatorApproval'
+];
+
 /**
  * Fetch and parse metadata from an evaluation CID (ZIP archive)
  * Extracts title and description from manifest.json and primary_query.json
@@ -716,25 +732,9 @@ class SyncService {
           try {
             const contract = contractService.contract;
             const chainSub = await contract.getSubmission(job.jobId, sub.submissionId);
-            const statusMap = {
-              0: 'Prepared',
-              1: 'PENDING_EVALUATION',
-              2: 'REJECTED',
-              3: 'APPROVED',
-              4: 'APPROVED',
-              5: 'PendingCreatorApproval',
-            };
-            const onChainStatusMap = {
-              0: 'Prepared',
-              1: 'PendingVerdikta',
-              2: 'Failed',
-              3: 'PassedPaid',
-              4: 'PassedUnpaid',
-              5: 'PendingCreatorApproval',
-            };
             const statusIndex = Number(chainSub.status);
-            const chainStatus = statusMap[statusIndex] || 'UNKNOWN';
-            const chainOnChainStatus = onChainStatusMap[statusIndex] || null;
+            const chainStatus = LOCAL_STATUS_BY_INDEX[statusIndex] || 'UNKNOWN';
+            const chainOnChainStatus = ON_CHAIN_STATUS_BY_INDEX[statusIndex] || null;
 
             if (chainStatus !== sub.status) {
               sub.status = chainStatus;
@@ -774,6 +774,86 @@ class SyncService {
         logger.info('[sync/sub-heal] submission heal sweep complete', {
           candidates: subHealCandidates.length,
           healed: subHealed,
+        });
+      }
+    }
+
+    // Phase D.8: Reconcile finalized submissions that claim to have been PAID but
+    // were never observed receiving a payout.
+    //
+    // Recovery backstop for the long-standing optimistic write in the
+    // SubmissionFinalized handler, which labelled every passing submission
+    // 'PassedPaid' without asking the chain. Losers in a two-passing race were
+    // therefore shown to their hunters as paid winners. The handler now reads chain
+    // truth, but records written before that fix — and any record whose chain read
+    // failed — still need correcting, and no other pass can do it (D.7 above is
+    // windowed-only and compares collapsed statuses).
+    //
+    // Candidate detection is a pure in-memory filter, so this costs zero RPC in the
+    // steady state. Each corrected record either gains paidWinner or drops to
+    // PassedUnpaid, so it leaves the candidate set permanently — the set drains and
+    // stays drained rather than re-reading the same submissions every cycle.
+    {
+      const paidHealCandidates = [];
+      for (const job of storage.jobs) {
+        if ((job.contractAddress || '').toLowerCase() !== currentContract) continue;
+        if (!job.syncedFromBlockchain) continue;
+        if (job.status === 'ORPHANED') continue;
+        for (const sub of job.submissions || []) {
+          const claimsPaidUnwitnessed = sub.onChainStatus === 'PassedPaid' && !sub.paidWinner;
+          const readFailedEarlier = !sub.onChainStatus && sub.status === 'APPROVED';
+          if (claimsPaidUnwitnessed || readFailedEarlier) {
+            paidHealCandidates.push({ job, sub });
+          }
+        }
+      }
+
+      if (paidHealCandidates.length > 0) {
+        let paidHealed = 0;
+        // Cap the reads per cycle so a large first-run backlog can't hammer the RPC
+        // (Base's public endpoint throttles hard). Corrected records leave the
+        // candidate set, so a backlog drains over consecutive cycles either way.
+        const batch = paidHealCandidates.slice(0, PAID_HEAL_MAX_PER_CYCLE);
+        for (const { job, sub } of batch) {
+          try {
+            const chainSub = await contractService.contract.getSubmission(job.jobId, sub.submissionId);
+            const statusIndex = Number(chainSub.status);
+            const chainOnChainStatus = ON_CHAIN_STATUS_BY_INDEX[statusIndex];
+            if (!chainOnChainStatus) continue;
+
+            const before = sub.onChainStatus;
+            sub.onChainStatus = chainOnChainStatus;
+            sub.status = LOCAL_STATUS_BY_INDEX[statusIndex];
+            // Status 3 IS the payment record — trust it over the PayoutSent handler's
+            // hunter-address match, which mis-attributes when one hunter has several
+            // submissions on the same bounty.
+            sub.paidWinner = statusIndex === 3;
+            if (chainSub.acceptance != null) sub.acceptance = Number(chainSub.acceptance);
+            if (chainSub.rejection != null) sub.rejection = Number(chainSub.rejection);
+
+            if (before !== chainOnChainStatus) {
+              paidHealed++;
+              logger.info('[sync/paid-heal] corrected finalized status from chain', {
+                bountyId: job.jobId,
+                submissionId: sub.submissionId,
+                was: before,
+                now: chainOnChainStatus,
+              });
+            }
+          } catch (err) {
+            logger.warn('[sync/paid-heal] failed to read submission from chain', {
+              bountyId: job.jobId,
+              submissionId: sub.submissionId,
+              error: err.message
+            });
+          }
+        }
+
+        logger.info('[sync/paid-heal] payout status sweep complete', {
+          candidates: paidHealCandidates.length,
+          examined: batch.length,
+          healed: paidHealed,
+          deferred: paidHealCandidates.length - batch.length,
         });
       }
     }
@@ -1106,16 +1186,46 @@ class SyncService {
 
         const sub = (job.submissions || []).find(s => s.submissionId === submissionId);
         if (sub) {
-          // For passed=true, the contract sets status to PassedPaid (3) if this is the winner,
-          // or PassedUnpaid (4) otherwise. The PayoutSent event (handled separately) flags the
-          // actual winner via paidWinner. Default to PassedPaid here; PassedUnpaid will be
-          // corrected by re-sync if needed.
+          // The event's `passed` flag does NOT distinguish PassedPaid (3, this
+          // submission won and was paid) from PassedUnpaid (4, it met the threshold
+          // but someone else won) — so read the authoritative status from chain.
+          //
+          // This used to default to PassedPaid and rely on "re-sync will correct it".
+          // Nothing did: the only reconciling pass (Phase D.7) skips non-windowed
+          // bounties, targets only locally-'Prepared' records, and compares collapsed
+          // statuses where 3 and 4 are both 'APPROVED'. The result was that every
+          // genuinely-unpaid submission was reported to its hunter as paid.
+          //
+          // Ordering rules out deriving this from PayoutSent instead: finalizeSubmission
+          // emits SubmissionFinalized BEFORE PayoutSent (BountyEscrow.sol:520 vs :542),
+          // so within one batch the payout is not yet known here.
+          let statusIndex = null;
           if (passed) {
-            sub.status = 'APPROVED';
-            sub.onChainStatus = 'PassedPaid';
-          } else {
+            try {
+              const chainSub = await contractService.contract.getSubmission(bountyId, submissionId);
+              statusIndex = Number(chainSub.status);
+            } catch (err) {
+              logger.warn('[event] SubmissionFinalized — chain status read failed, leaving for Phase D.8 heal', {
+                bountyId, submissionId, error: err.message
+              });
+            }
+          }
+
+          if (!passed) {
             sub.status = 'REJECTED';
             sub.onChainStatus = 'Failed';
+          } else if (statusIndex !== null && ON_CHAIN_STATUS_BY_INDEX[statusIndex]) {
+            sub.status = LOCAL_STATUS_BY_INDEX[statusIndex];
+            sub.onChainStatus = ON_CHAIN_STATUS_BY_INDEX[statusIndex];
+            // Chain status 3 is itself the authoritative record of payment, and is
+            // more reliable than the PayoutSent handler's hunter-address match.
+            if (statusIndex === 3) sub.paidWinner = true;
+          } else {
+            // RPC read failed. Record the half we do know from the event and leave
+            // onChainStatus unset rather than asserting a payment that may not exist;
+            // the Phase D.8 heal picks it up on a later cycle.
+            sub.status = 'APPROVED';
+            sub.onChainStatus = null;
           }
           sub.acceptance = acceptance;
           sub.rejection = rejection;

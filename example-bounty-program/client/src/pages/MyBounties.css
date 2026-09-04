@@ -332,6 +332,12 @@
   color: #059669;
 }
 
+/* Passed evaluation but another submission won — amber, not the green used for
+   an actual paid win. */
+.sub-status.status-passed-unpaid {
+  color: #b45309;
+}
+
 .sub-status.status-rejected {
   color: #dc2626;
 }

@@ -3396,13 +3396,13 @@ function SubmissionCard({
           </span>
         ) : (
           <span
-            {...getSubmissionBadgeProps(submission.status)}
+            {...getSubmissionBadgeProps(submission.status, submission.onChainStatus)}
             style={{ cursor: 'default', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}
           >
-            {getSubmissionStatusIcon(submission.status) === IconName.HOURGLASS && <Hourglass size={14} />}
-            {getSubmissionStatusIcon(submission.status) === IconName.CHECK && <Check size={14} />}
-            {getSubmissionStatusIcon(submission.status) === IconName.X && <X size={14} />}
-            {getSubmissionStatusLabel(submission.status)}
+            {getSubmissionStatusIcon(submission.status, submission.onChainStatus) === IconName.HOURGLASS && <Hourglass size={14} />}
+            {getSubmissionStatusIcon(submission.status, submission.onChainStatus) === IconName.CHECK && <Check size={14} />}
+            {getSubmissionStatusIcon(submission.status, submission.onChainStatus) === IconName.X && <X size={14} />}
+            {getSubmissionStatusLabel(submission.status, submission.onChainStatus)}
           </span>
         )}
       </div>

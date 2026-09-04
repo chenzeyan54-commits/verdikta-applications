@@ -100,6 +100,13 @@
   color: white;
 }
 
+/* Passed the threshold but another submission won — deliberately NOT the green
+   "approved" pill, which reads as "you won". Amber = passed, but no payout. */
+.status-badge.status-passed-unpaid {
+  background-color: #f59e0b;
+  color: #1f2937;
+}
+
 .status-badge.status-rejected,
 .status-badge.status-failed {
   background-color: #ef4444;

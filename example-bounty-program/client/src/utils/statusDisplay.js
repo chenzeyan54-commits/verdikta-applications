@@ -82,6 +82,7 @@ export const SubmissionStatus = {
   // Final states
   PASSED: 'Passed',
   PASSED_PAID: 'PassedPaid',
+  PASSED_UNPAID: 'PassedUnpaid',
   APPROVED: 'APPROVED',
   ACCEPTED: 'ACCEPTED',
   FAILED: 'Failed',
@@ -97,7 +98,10 @@ export const PENDING_STATUSES = [
   'PREPARED', // uppercase variant
 ];
 
-// All statuses that indicate success
+// All statuses that indicate the submission PASSED evaluation. Note this says
+// nothing about payment: the collapsed status is 'APPROVED' for both the winner
+// (PassedPaid) and a submission that passed but lost the bounty (PassedUnpaid).
+// The two are told apart by onChainStatus — see getSubmissionStatusCategory.
 const SUCCESS_STATUSES = [
   SubmissionStatus.PASSED,
   SubmissionStatus.PASSED_PAID,
@@ -147,6 +151,15 @@ const SUBMISSION_STATUS_CONFIG = {
     label: 'Approved',
     description: 'Your submission was approved and selected as the winner.',
     badgeClass: 'status-approved',
+    icon: IconName.CHECK,
+  },
+  // Passed the threshold, but another submission won the bounty (on-chain
+  // PassedUnpaid). Distinct from `success` because no payout was made — showing
+  // these as plain "Approved" told hunters they had won when they had not.
+  success_unpaid: {
+    label: 'Passed \u2014 Not Selected',
+    description: 'Your submission met the evaluation threshold, but another submission won this bounty. No payout was made for this submission.',
+    badgeClass: 'status-passed-unpaid',
     icon: IconName.CHECK,
   },
   // Failure states
@@ -213,12 +226,23 @@ export function isBountyOpen(status) {
 // =============================================================================
 
 /**
- * Normalize submission status to category (pending, success, failure, unknown)
+ * Normalize submission status to category (pending, success, success_unpaid,
+ * failure, unknown).
+ *
+ * `onChainStatus` is the low-level contract enum name and is optional. It is the
+ * ONLY way to tell a paid winner from a submission that passed but lost — the
+ * collapsed `status` is 'APPROVED' for both. Callers that have the submission
+ * record should always pass it; omitting it falls back to the old behaviour of
+ * showing every passing submission as a plain "Approved".
  */
-function getSubmissionStatusCategory(status) {
+function getSubmissionStatusCategory(status, onChainStatus) {
   if (!status) return 'unknown';
 
   const normalizedStatus = status.toString();
+
+  if (onChainStatus === SubmissionStatus.PASSED_UNPAID) {
+    return 'success_unpaid';
+  }
 
   if (normalizedStatus === 'PendingCreatorApproval') {
     return 'pending_creator_approval';
@@ -245,41 +269,41 @@ function getSubmissionStatusCategory(status) {
 /**
  * Get user-friendly label for submission status
  */
-export function getSubmissionStatusLabel(status) {
-  const category = getSubmissionStatusCategory(status);
+export function getSubmissionStatusLabel(status, onChainStatus) {
+  const category = getSubmissionStatusCategory(status, onChainStatus);
   return SUBMISSION_STATUS_CONFIG[category].label;
 }
 
 /**
  * Get description/tooltip text for submission status
  */
-export function getSubmissionStatusDescription(status) {
-  const category = getSubmissionStatusCategory(status);
+export function getSubmissionStatusDescription(status, onChainStatus) {
+  const category = getSubmissionStatusCategory(status, onChainStatus);
   return SUBMISSION_STATUS_CONFIG[category].description;
 }
 
 /**
  * Get CSS class for submission status badge
  */
-export function getSubmissionStatusBadgeClass(status) {
-  const category = getSubmissionStatusCategory(status);
+export function getSubmissionStatusBadgeClass(status, onChainStatus) {
+  const category = getSubmissionStatusCategory(status, onChainStatus);
   return SUBMISSION_STATUS_CONFIG[category].badgeClass;
 }
 
 /**
  * Get icon for submission status
  */
-export function getSubmissionStatusIcon(status) {
-  const category = getSubmissionStatusCategory(status);
+export function getSubmissionStatusIcon(status, onChainStatus) {
+  const category = getSubmissionStatusCategory(status, onChainStatus);
   return SUBMISSION_STATUS_CONFIG[category].icon;
 }
 
 /**
  * Get full display text with icon for submission status
  */
-export function getSubmissionStatusDisplay(status) {
-  const icon = getSubmissionStatusIcon(status);
-  const label = getSubmissionStatusLabel(status);
+export function getSubmissionStatusDisplay(status, onChainStatus) {
+  const icon = getSubmissionStatusIcon(status, onChainStatus);
+  const label = getSubmissionStatusLabel(status, onChainStatus);
   return icon ? `${icon} ${label}` : label;
 }
 
@@ -309,8 +333,18 @@ export function isSubmissionOnChain(status) {
 /**
  * Check if submission status is successful
  */
-export function isSubmissionSuccess(status) {
-  return getSubmissionStatusCategory(status) === 'success';
+export function isSubmissionSuccess(status, onChainStatus) {
+  const category = getSubmissionStatusCategory(status, onChainStatus);
+  // Both categories passed evaluation; they differ only in whether this
+  // submission was the one paid. Use isSubmissionPaidWinner for that.
+  return category === 'success' || category === 'success_unpaid';
+}
+
+/**
+ * Check if the submission passed evaluation AND was the one paid.
+ */
+export function isSubmissionPaidWinner(status, onChainStatus) {
+  return getSubmissionStatusCategory(status, onChainStatus) === 'success';
 }
 
 /**
@@ -406,10 +440,10 @@ export function getBountyBadgeProps(status) {
 /**
  * Get props for a submission status badge with tooltip
  */
-export function getSubmissionBadgeProps(status) {
+export function getSubmissionBadgeProps(status, onChainStatus) {
   return {
-    className: `status-badge ${getSubmissionStatusBadgeClass(status)}`,
-    title: getSubmissionStatusDescription(status),
-    'aria-label': `Submission status: ${getSubmissionStatusLabel(status)}`,
+    className: `status-badge ${getSubmissionStatusBadgeClass(status, onChainStatus)}`,
+    title: getSubmissionStatusDescription(status, onChainStatus),
+    'aria-label': `Submission status: ${getSubmissionStatusLabel(status, onChainStatus)}`,
   };
 }

@@ -144,7 +144,7 @@ function Agents({ walletState }) {
     {
       method: 'POST',
       path: '/api/jobs/:jobId/submit',
-      description: 'Upload raw work files to IPFS — do NOT zip them yourself. The API packages files into the required ZIP format automatically. Returns hunterCid. NOTE: After upload, you must complete 2 on-chain transactions (prepareSubmission → startPreparedSubmission funded with ETH). See /blockchain for details.',
+      description: 'Upload raw work files to IPFS — do NOT zip them yourself. The API packages files into the required ZIP format automatically. Returns the CID nested as submission.hunterCid (also aliased top-level as hunterCid). NOTE: After upload, you must complete 2 on-chain transactions (prepareSubmission → startPreparedSubmission funded with ETH). See /blockchain for details.',
       params: 'hunter, files (multipart), submissionNarrative, fileDescriptions'
     },
     // On-chain submission calldata (2-step flow)
@@ -384,6 +384,12 @@ curl -X POST "https://bounties.verdikta.org/api/jobs/123/submit/prepare" \\
   -H "Content-Type: application/json" \\
   -d '{"hunter": "0xYourWallet", "hunterCid": "QmFromSubmitResponse..."}'
 # Sign & send tx. Parse SubmissionPrepared event for submissionId, evalWallet, ethMaxBudget
+# The response's "event" object gives you topic0 + the full ABI — filter the receipt logs
+# on event.topic0 rather than deriving the hash yourself:
+#   topic0 = 0xdf7bc54a6444d008cf527c6a4bcdfa31d05db5a08445b8dd2eb3a05f24b67437
+#   = keccak256("SubmissionPrepared(uint256,uint256,address,address,string,uint256)")
+# (Drop the trailing uint256 ethMaxBudget from that signature and you get a hash
+#  that matches no logs.)
 
 # 13. Start evaluation (get startPreparedSubmission calldata)
 #     startPreparedSubmission is payable — attach msg.value = ethMaxBudget (the ETH prepay,
@@ -742,9 +748,9 @@ def finalize_submission(w3, account, job_id, sub_id):
             <div className="step-number">4</div>
             <div className="step-content">
               <h3>Submit Work</h3>
-              <p>Upload your raw work files via <code>POST /submit</code> to get a <code>hunterCid</code> — do <strong>not</strong> zip them; the API handles packaging. Then complete 2 on-chain transactions using the calldata API:</p>
+              <p>Upload your raw work files via <code>POST /submit</code> to get a <code>hunterCid</code> — do <strong>not</strong> zip them; the API handles packaging. The CID comes back nested as <code>submission.hunterCid</code> (also aliased at the top level). Then complete 2 on-chain transactions using the calldata API:</p>
               <ol style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.5rem', fontSize: '0.95rem' }}>
-                <li><code>POST /submit/prepare</code> — sign &amp; send to deploy an EvaluationWallet. Parse the <code>SubmissionPrepared</code> event for <code>submissionId</code>, <code>evalWallet</code>, and <code>ethMaxBudget</code>.</li>
+                <li><code>POST /submit/prepare</code> — sign &amp; send to deploy an EvaluationWallet. Parse the <code>SubmissionPrepared</code> event for <code>submissionId</code>, <code>evalWallet</code>, and <code>ethMaxBudget</code>. The response's <code>event</code> object carries the event's <code>topic0</code> and full <code>abi</code> — match the receipt log on those rather than deriving the hash yourself.</li>
                 <li><code>POST /submissions/:id/start</code> — sign &amp; send to trigger oracle evaluation. This transaction is <strong>payable</strong>: attach <code>msg.value = ethMaxBudget</code> (the ETH prepay from the event, typically ~0.00024 ETH) to fund the AI jury. Unspent ETH is auto-refunded to your wallet when the submission finalizes. No LINK, no approve. Call <code>POST /submissions/confirm</code> to register in the API.</li>
               </ol>
             </div>

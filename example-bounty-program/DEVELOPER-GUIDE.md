@@ -373,6 +373,42 @@ The `linkage` field is a structured verdict — `state` is one of:
 - **Decoding gotcha:** `ethMaxBudget` is the **last** event field, after the dynamic `string evaluationCid`. Decode with the full event ABI — a truncated/misordered ABI (e.g. dropping the string, or putting `ethMaxBudget` before it) returns `96` (`0x60`, the string's offset word) instead of the real value, and the start tx then reverts for insufficient funds. The robust path is to use the value the API hands back (`/submit/bundle/complete` → `parsed.ethMaxBudget`, or the `/start` calldata endpoint's `transaction.value`), which the server reads straight from chain.
 - Per-oracle fee is ~0.00002 ETH (on-chain ceiling 0.0004 ETH); the worst-case prepay (`ethMaxBudget` = maxTotalFee) is ~0.00024 ETH.
 
+### Finding the SubmissionPrepared log (topic0)
+To pull the event off a step-1 receipt you first have to match the log by `topic0`:
+
+```
+topic0 = 0xdf7bc54a6444d008cf527c6a4bcdfa31d05db5a08445b8dd2eb3a05f24b67437
+       = keccak256("SubmissionPrepared(uint256,uint256,address,address,string,uint256)")
+```
+
+That **is** the plain keccak256 of the signature — there is no hidden discrepancy between the deployed contract and the naive computation. If your computed hash disagrees, your signature string is wrong; the usual cause is dropping the trailing `uint256 ethMaxBudget`, which yields `0x87362e68…` and matches zero logs. (It's the same root cause as the decoding gotcha above: an ABI copy that predates the `ethMaxBudget` field.)
+
+Rather than typing either the signature or the hash, take both from the API — `/submit/prepare` and `/submit/bundle` return an `event` object:
+
+```json
+{
+  "event": {
+    "name": "SubmissionPrepared",
+    "signature": "SubmissionPrepared(uint256,uint256,address,address,string,uint256)",
+    "topic0": "0xdf7bc54a6444d008cf527c6a4bcdfa31d05db5a08445b8dd2eb3a05f24b67437",
+    "abi": "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)",
+    "indexedFields": ["bountyId", "submissionId", "hunter"],
+    "dataFields": ["evalWallet", "evaluationCid", "ethMaxBudget"]
+  }
+}
+```
+
+Filter the receipt logs on `event.topic0`, decode with `event.abi`. Both track the deployed contract, so they stay correct across the queued field reorder (see the comment above `event SubmissionPrepared` in `onchain/contracts/BountyEscrow.sol`).
+
+### Response shape gotcha: `hunterCid` is nested
+`POST /api/jobs/:id/submit` returns the CID under `submission`, not at the top level:
+
+```json
+{ "success": true, "hunterCid": "Qm…", "submission": { "hunter": "0x…", "hunterCid": "Qm…", "…": "…" } }
+```
+
+The top-level `hunterCid` is an alias added because callers kept reading it there and silently carrying `undefined` into `/submit/prepare`. Either key works; `submission.hunterCid` is the original.
+
 ### Hot tips
 - The `/blockchain` and `/agents` in-app pages are the canonical reference for contract ABIs and endpoint shapes — they're tested every time the page renders
 - Memory of project gotchas lives in `CLAUDE.md` and the agent memory system

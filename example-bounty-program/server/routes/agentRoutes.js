@@ -263,7 +263,9 @@ POST /api/jobs/:id/submit
 Content-Type: multipart/form-data
 - files: your submission file(s)
 - hunter: your wallet address (0x...)
-Returns: { submission: { hunterCid, ... } }. hunterCid is the IPFS CID you'll carry into /submit/prepare.
+Returns: { success, hunterCid, submission: { hunterCid, ... } }. The CID is NESTED under
+"submission" — the top-level "hunterCid" is an alias added for callers who reached for it
+there. Either works; carry it into /submit/prepare.
 NOTE: This endpoint ONLY pins files — it does not create an on-chain submission or a backend record. You still need prepare → confirm → start (funded with ETH) → finalize.
 
 ## Submission File Formats (CRITICAL — read before submitting)
@@ -491,6 +493,9 @@ The complete flow uses three calldata endpoints. Each returns calldata only; you
 Step 1 — Prepare:   POST /api/jobs/:id/submit/prepare
                     (creates submission on-chain, deploys EvaluationWallet)
                     Parse SubmissionPrepared event for { submissionId, evalWallet, ethMaxBudget }.
+                    The response carries an "event" object — { name, signature, topic0, abi,
+                    indexedFields, dataFields }. Filter the receipt logs on event.topic0 and
+                    decode with event.abi; do NOT derive either yourself.
                     (ethMaxBudget is the LAST field, after a dynamic string — decode with the
                     full event ABI; a truncated ABI returns 96, the string's offset word. Or just
                     use the transaction.value returned by /start, which reads the budget from chain.)
@@ -761,7 +766,7 @@ router.get('/api/docs', (req, res) => {
           'submissionNarrative: brief description of your work (optional, max 200 words)',
           'fileDescriptions: JSON object mapping filename to description (optional)'
         ],
-        returns: '{ success, message, submission: { hunter, hunterCid, fileCount, files: [{ filename, size, description }], totalSize }, tips }. Carry hunterCid into the next step.'
+        returns: '{ success, message, hunterCid, submission: { hunter, hunterCid, hunterCidVerified, fileCount, files: [{ filename, size, description }], totalSize }, tips }. The CID is NESTED under "submission"; the top-level "hunterCid" is an alias for callers who reach for it there. Carry it into the next step.'
       },
       {
         method: 'POST',
@@ -778,7 +783,7 @@ router.get('/api/docs', (req, res) => {
           'estimatedBaseCost: base cost per evaluation. Same dual-unit rule (decimal ETH or integer wei). Default "10000000000000" (0.00001 ETH).',
           'maxFeeBasedScaling: plain integer x-factor, default "3". Caps fee-boost multiplier for oracles priced below maxOracleFee; contract scales by 1e18 internally, so pass the x-factor itself. Must be >= 1.'
         ],
-        returns: 'Step 1 calldata (ready to sign) + templates for steps 2-3'
+        returns: 'Step 1 calldata (ready to sign) + templates for steps 2-3, plus "event" (the canonical SubmissionPrepared descriptor: { name, signature, topic0, abi, indexedFields, dataFields, note }) and "abis". Filter the step-1 receipt logs on event.topic0 and decode with event.abi rather than deriving either.'
       },
       {
         method: 'POST',
@@ -803,7 +808,7 @@ router.get('/api/docs', (req, res) => {
           'estimatedBaseCost: base cost per evaluation. Same dual-unit rule (decimal ETH or integer wei). Default "0.00001".',
           'maxFeeBasedScaling: plain integer x-factor (>= 1). Default "3". Caps fee-boost multiplier for cheap oracles; contract scales by 1e18 internally.'
         ],
-        returns: 'Standard calldataResponseShape. Extras: info: { bountyId, evaluationCid, hunterCid }, nextStep. After broadcasting, parse the SubmissionPrepared event (full ABI) for submissionId, evalWallet, ethMaxBudget — ethMaxBudget is the LAST field, after the dynamic string evaluationCid; a truncated ABI returns 96 (the string offset). Simplest: use the transaction.value that /start returns.'
+        returns: 'Standard calldataResponseShape. Extras: info: { bountyId, evaluationCid, hunterCid }, event, nextStep. "event" is the canonical SubmissionPrepared descriptor — { name, signature, topic0, abi, indexedFields, dataFields, note }: filter the receipt logs on event.topic0 and decode with event.abi instead of deriving either. After broadcasting, parse the event for submissionId, evalWallet, ethMaxBudget — ethMaxBudget is the LAST field, after the dynamic string evaluationCid; a truncated ABI returns 96 (the string offset). Simplest: use the transaction.value that /start returns.'
       },
       {
         method: 'POST',

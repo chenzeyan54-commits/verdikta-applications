@@ -23,6 +23,7 @@ const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/ver
 const { validateBounty, IssueSeverity, IssueType, chainStatusIssue } = require('../utils/bountyValidator');
 const { getContractService } = require('../utils/contractService');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
+const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/submissionEvents');
 
 /* ======================
    Helpers / configuration
@@ -1420,7 +1421,10 @@ router.post('/:jobId/submit/prepare', async (req, res) => {
         evaluationCid,
         hunterCid
       },
-      nextStep: 'After tx confirms, parse SubmissionPrepared (full ABI) for submissionId, evalWallet, ethMaxBudget. ethMaxBudget is the LAST field, after the dynamic `string evaluationCid` — a truncated ABI returns 96 (the string offset), not the budget. Simplest: call /submissions/:submissionId/start and use the `transaction.value` it returns as msg.value (the server reads the real budget from chain). No LINK approval is needed.'
+      // Canonical topic0 + ABI for the event this tx emits — filter the receipt logs
+      // on `event.topic0` and decode with `event.abi` rather than deriving either.
+      event: submissionPreparedEvent,
+      nextStep: 'After tx confirms, parse SubmissionPrepared (full ABI) for submissionId, evalWallet, ethMaxBudget. ethMaxBudget is the LAST field, after the dynamic `string evaluationCid` — a truncated ABI returns 96 (the string offset), not the budget. Match the receipt log by `event.topic0` above and decode with `event.abi` — do not derive either yourself. Simplest: call /submissions/:submissionId/start and use the `transaction.value` it returns as msg.value (the server reads the real budget from chain). No LINK approval is needed.'
     });
 
   } catch (error) {
@@ -4102,6 +4106,10 @@ router.post('/:jobId/submit', async (req, res) => {
     return res.json({
       success: true,
       message: 'Files uploaded to IPFS successfully! Call /submissions/confirm after on-chain prepareSubmission succeeds.',
+      // Top-level alias of submission.hunterCid. The nested copy is the historical
+      // shape and stays; callers kept reading a top-level `hunterCid` off this
+      // response, getting undefined, and carrying that into /submit/prepare.
+      hunterCid,
       submission: {
         hunter,
         hunterCid,
@@ -4355,7 +4363,7 @@ const BUNDLE_ESCROW_ABI = [
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
   "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
-  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)"
+  SUBMISSION_PREPARED_ABI
 ];
 const bundleEscrowIface = new ethers.Interface(BUNDLE_ESCROW_ABI);
 
@@ -4606,8 +4614,11 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         ethForGas: '~0.005 ETH (estimate for both transactions)',
         ethForOracle: `attach ethMaxBudget (from step 1 event) as msg.value on step 2 — worst case ~${ethers.formatEther(maxOracleFeeWei * 12n)} ETH; unspent ETH is refunded to the hunter when finalized`
       },
+      // Canonical topic0 + ABI for the event step 1 emits — filter the receipt logs
+      // on `event.topic0` and decode with `event.abi` rather than deriving either.
+      event: submissionPreparedEvent,
       abis: {
-        SubmissionPrepared: 'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)',
+        SubmissionPrepared: SUBMISSION_PREPARED_ABI,
         prepareSubmission: 'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)',
         startPreparedSubmission: 'function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable',
         finalizeSubmission: 'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',

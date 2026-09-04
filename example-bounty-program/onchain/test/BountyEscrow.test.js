@@ -567,21 +567,65 @@ describe("BountyEscrow", function () {
       expect(sub.status).to.equal(2); // Failed
     });
 
-    it("Should mark second passing submission as PassedUnpaid", async function () {
+    it("Should reject new submissions once the bounty is awarded", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
 
-      // First hunter submits and passes
+      // First hunter submits and passes — bounty becomes Awarded
       const sub1 = await submitFull(
         bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
       await verdiktaAggregator.setEvaluation(sub1.aggId, PASSING_SCORES, JUST_CIDS, true);
       await bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId);
+      expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(1); // Awarded
 
-      // Second hunter submits (must prepare before bounty awarded)
-      // Since bounty is now Awarded, prepare will fail — this tests post-award rejection
-      // Instead, let's test the race condition: both submit before either finalizes
+      // A second hunter can no longer prepare against an awarded bounty
+      await expect(
+        prepareDefaultSubmission(bountyEscrow, hunter2, bountyId)
+      ).to.be.revertedWith("bounty not open");
+    });
+
+    // Regression: bounty 222 on Base deadlocked with two passing submissions and
+    // winner == address(0). B finalized first and deferred to A (still PendingVerdikta
+    // with a passing score); A then finalized and deferred to B's PassedUnpaid, so the
+    // escrow was never paid. PassedUnpaid must not block — it means that submission
+    // did NOT win. Exactly one of the two must end up paid.
+    it("Should still pay a winner when an earlier finalizer was marked PassedUnpaid", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+
+      // Both hunters prepare and start before either finalizes
+      const subA = await submitFull(
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
+      );
+      const subB = await submitFull(
+        bountyEscrow, verdiktaAggregator, hunter2, bountyId
+      );
+
+      // Both evaluations complete on Verdikta with passing scores, neither finalized yet
+      await verdiktaAggregator.setEvaluation(subA.aggId, PASSING_SCORES, JUST_CIDS, true);
+      await verdiktaAggregator.setEvaluation(subB.aggId, PASSING_SCORES, JUST_CIDS, true);
+
+      // B finalizes first: A is still PendingVerdikta with a passing score, so B defers
+      await bountyEscrow.finalizeSubmission(bountyId, subB.submissionId);
+      expect((await bountyEscrow.getSubmission(bountyId, subB.submissionId)).status)
+        .to.equal(4); // PassedUnpaid
+      expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(0); // still Open
+
+      // A finalizes second. B's PassedUnpaid must NOT block it — A wins and is paid.
+      await expect(bountyEscrow.finalizeSubmission(bountyId, subA.submissionId))
+        .to.emit(bountyEscrow, "PayoutSent")
+        .withArgs(bountyId, hunter.address, BOUNTY_WEI);
+
+      expect((await bountyEscrow.getSubmission(bountyId, subA.submissionId)).status)
+        .to.equal(3); // PassedPaid
+
+      const b = await bountyEscrow.getBounty(bountyId);
+      expect(b.status).to.equal(1); // Awarded
+      expect(b.winner).to.equal(hunter.address);
+      expect(b.payoutWei).to.equal(0n);
     });
 
     it("Should mark late finalizer as PassedUnpaid when another already won", async function () {

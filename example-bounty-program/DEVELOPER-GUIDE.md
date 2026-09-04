@@ -180,6 +180,41 @@ After deployment:
 4. **Update `README.md`** — the "Contract Addresses" section has the two canonical addresses hardcoded as a snapshot. Edit the relevant network's `BountyEscrow` line. **Do not leave this stale** — the running website's `/analytics` page is the live source of truth, and the README should agree with it.
 5. Verify the new address is live via Basescan, and cross-check against the `/analytics` page on the running website (System Health → Contract Addresses → Bounty Escrow).
 
+#### Is the contract source in this tree safe to deploy as-is?
+
+**Yes. Deploy it and follow the checklist above — nothing else is required.**
+
+Whatever is committed here compiles to an ABI that the current server and client already speak, so a redeploy needs no coordinated code change beyond the address swap in steps 2-3. If you are ever unsure, prove it in 30 seconds rather than trusting this paragraph:
+
+```bash
+cd onchain
+git stash                                        # or: git show <last-deployed-tag>:...
+npx hardhat compile --force
+node -e "console.log(JSON.stringify(require('./artifacts/contracts/BountyEscrow.sol/BountyEscrow.json').abi))" > /tmp/abi_old.json
+git stash pop
+npx hardhat compile --force
+node -e "console.log(JSON.stringify(require('./artifacts/contracts/BountyEscrow.sol/BountyEscrow.json').abi))" > /tmp/abi_new.json
+cmp /tmp/abi_old.json /tmp/abi_new.json && echo "identical ABI — drop-in"
+```
+
+Identical ABI means internal-logic-only changes: safe to deploy against the existing off-chain code. (The `PassedUnpaid` payout-deadlock fix in `_hasOtherPassingSubmission` is one of these — behavior changes, interface does not.)
+
+#### The one change that would NOT be drop-in
+
+There is a **queued, deliberately-unshipped** reorder of the `SubmissionPrepared` event — see the long comment at its definition in `onchain/contracts/BountyEscrow.sol`. It is *optional*. You are never obliged to do it as part of a redeploy, and leaving it alone is always safe.
+
+If you do decide to take it, it changes the event signature, so the `.sol` edit and every off-chain decoder must ship in the same deploy:
+
+- `server/utils/submissionEvents.js` (the canonical signature/topic0 — one string, the hash recomputes)
+- `server/utils/contractService.js`
+- `server/routes/jobRoutes.js` (`BUNDLE_ESCROW_ABI`)
+- `server/scripts/submitToBounties.js`
+- `client/src/services/contractService.js`, `client/src/pages/Blockchain.jsx`
+- `config.deploymentBlock` bump + a re-sync
+- the literal topic0 hashes written out in `README.md` and in "Finding the SubmissionPrepared log" below
+
+Skipping any one of them makes the running system mis-decode live logs. If that list looks like more than you want to take on during a redeploy, don't — the reorder is a nice-to-have, and the docs already steer agents away from the decoding trap it addresses.
+
 > **Single source of truth:** the running website's `/analytics` page always shows the live BountyEscrow address from the backend's runtime config. If any doc disagrees with it, the doc is stale. Only `README.md`'s "Contract Addresses" section has a hardcoded snapshot — all other docs and examples point at `.env.example` files or `/analytics`, so they self-update.
 
 ### Backend (production)

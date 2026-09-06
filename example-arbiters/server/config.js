@@ -42,6 +42,9 @@ const networks = {
     // prunes log history ("pruned history unavailable"), so the bonus scan uses
     // a full-archive endpoint. Override with ARCHIVE_RPC_URL if preferred.
     archiveRpcUrl: 'https://base-sepolia.gateway.tenderly.co',
+    // Largest eth_getLogs range this gateway serves without an access key.
+    // Sepolia still allows the old ~100k; mainnet has been cut to 1k (see below).
+    publicLogMaxRange: 90_000,
   },
   'base': {
     key: 'base',
@@ -56,6 +59,12 @@ const networks = {
     // New ETH aggregator deployment block (verified exact). See base-sepolia note above.
     aggregatorFromBlock: 47087827,
     archiveRpcUrl: 'https://base.gateway.tenderly.co',
+    // Measured 2026-09-06: the keyless mainnet gateway now rejects anything over
+    // 1,000 blocks ("Block range too large for public access ... or use an access
+    // key for larger ranges") — it used to serve ~100k. At this size a 14-day
+    // scan is 600+ calls, so getLogScanRpc() prefers a keyed endpoint when one is
+    // configured and only falls back here (slowly) if none is.
+    publicLogMaxRange: 1_000,
   },
 };
 
@@ -98,6 +107,46 @@ function getArchiveRpcUrl(networkKey) {
 }
 
 /**
+ * Resolve the endpoint used for historical `eth_getLogs` event scans, together
+ * with the largest block range it will serve in one query.
+ *
+ * Providers cap `eth_getLogs` ranges, and the caps differ by an order of
+ * magnitude, so the URL and the chunk size have to be chosen together — a chunk
+ * larger than the cap makes EVERY query fail, which reads downstream as "no
+ * activity" rather than as an error. Preference order:
+ *
+ *   1. LOG_RPC_URL              — explicit override for the scans specifically.
+ *   2. ARCHIVE_RPC_URL          — a keyed archive endpoint; keyed access lifts
+ *                                 the public range cap, so allow large chunks.
+ *   3. A configured private read RPC (Infura by default here) — verified to
+ *      serve these scans to exactly 10k blocks, with the history the analytics
+ *      windows need. This is the normal path.
+ *   4. The keyless public archive gateway, at that network's measured cap.
+ *
+ * LOG_CHUNK_SIZE overrides the range for any of them.
+ */
+const KEYED_LOG_MAX_RANGE = 90_000;   // keyed archive gateways
+const SAFE_LOG_MAX_RANGE = 10_000;    // Infura's cap; honoured by most providers
+
+function getLogScanRpc(networkKey) {
+  const net = networks[normalizeNetwork(networkKey)];
+  const envChunk = Number(process.env.LOG_CHUNK_SIZE) > 0 ? Number(process.env.LOG_CHUNK_SIZE) : 0;
+  if (process.env.LOG_RPC_URL) {
+    return { url: process.env.LOG_RPC_URL, maxChunk: envChunk || SAFE_LOG_MAX_RANGE };
+  }
+  if (process.env.ARCHIVE_RPC_URL) {
+    return { url: process.env.ARCHIVE_RPC_URL, maxChunk: envChunk || KEYED_LOG_MAX_RANGE };
+  }
+  if (process.env.RPC_URL || process.env.RPC_PROVIDER_URL || process.env.INFURA_API_KEY) {
+    return { url: getRpcUrl(networkKey), maxChunk: envChunk || SAFE_LOG_MAX_RANGE };
+  }
+  return {
+    url: net.archiveRpcUrl || net.rpcUrl,
+    maxChunk: envChunk || net.publicLogMaxRange || SAFE_LOG_MAX_RANGE,
+  };
+}
+
+/**
  * Resolve the RPC URL for per-transaction receipt fetches (the gas-tracking
  * scan reads `gasUsed` / `effectiveGasPrice` off receipts). Defaults to the
  * ARCHIVE endpoint (Tenderly): empirically, Base's Infura and PublicNode
@@ -125,4 +174,4 @@ const funding = {
   lowEthThreshold: process.env.LOW_ETH_THRESHOLD || '0.01', // ETH (string)
 };
 
-module.exports = { networks, DEFAULT_NETWORK, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, getReceiptRpcUrl, funding };
+module.exports = { networks, DEFAULT_NETWORK, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, getLogScanRpc, getReceiptRpcUrl, funding };

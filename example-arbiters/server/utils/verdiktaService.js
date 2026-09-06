@@ -10,7 +10,7 @@
 
 const { ethers } = require('ethers');
 const logger = require('./logger');
-const { networks, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, getReceiptRpcUrl, funding } = require('../config');
+const { networks, normalizeNetwork, getRpcUrl, getArchiveRpcUrl, getLogScanRpc, getReceiptRpcUrl, funding } = require('../config');
 const GasReceiptStore = require('./gasReceiptStore');
 
 /**
@@ -206,6 +206,13 @@ const AGG_HISTORY_ABI = [
   "event EvaluationFailed(bytes32 indexed aggRequestId, string phase)",
   "event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] likelihoods, string justificationCID)"
 ];
+// One log query may stall this long before it's treated as failed. ethers'
+// default is 300s: a gateway that accepts the connection and then never answers
+// (how some throttle, rather than rejecting) would otherwise pin an analytics
+// request for five minutes. Better to fail the chunk and say so.
+const LOG_REQUEST_TIMEOUT_MS = 15_000;
+const LOG_CHUNK_RETRIES = 2;   // a stalled chunk costs timeout × attempts
+
 // Agg-history scan tuning (blocks). Windows are bounded so a drill-down never
 // runs an unbounded full-history scan.
 const AGGH_REQ_SEARCH_MARGIN = 7500;     // ± window around the estimated request block
@@ -226,10 +233,13 @@ class VerdiktaService {
     // Aggregator deployment block — lower bound for event scans.
     this.aggregatorFromBlock = options.aggregatorFromBlock || 0;
 
-    // Archive RPC for historical eth_getLogs (per-jobId sender derivation).
-    // Lazy-init: only opened when an archive scan is requested.
-    this.archiveRpcUrl = options.archiveRpcUrl || null;
-    this._archiveProvider = null;
+    // Endpoint for historical eth_getLogs, plus the largest block range it will
+    // serve in one query — see config.getLogScanRpc(). The two travel together:
+    // scanning in chunks bigger than the provider's cap makes every query fail.
+    // Lazy-init: only opened when a log scan is requested.
+    this.logRpcUrl = (options.logScan && options.logScan.url) || options.archiveRpcUrl || null;
+    this.logMaxChunk = (options.logScan && options.logScan.maxChunk) || 10_000;
+    this._logProvider = null;
 
     // RPC for per-tx receipt fetches (gas tracking). Defaults to the read RPC
     // (Infura), overridable via RECEIPT_RPC_URL. Receipts are point lookups, so
@@ -246,13 +256,19 @@ class VerdiktaService {
     this._jobSenderCache = {};          // { operatorLower: { map, ts } }
   }
 
-  /** Archive provider for log scans (Tenderly). Falls back to the read RPC. */
-  _getArchiveProvider() {
-    if (!this._archiveProvider) {
-      const url = this.archiveRpcUrl;
-      this._archiveProvider = url ? new ethers.JsonRpcProvider(url) : this.provider;
+  /** Provider for historical log scans. Falls back to the read RPC. */
+  _getLogProvider() {
+    if (!this._logProvider) {
+      const url = this.logRpcUrl;
+      if (url) {
+        const req = new ethers.FetchRequest(url);
+        req.timeout = LOG_REQUEST_TIMEOUT_MS;
+        this._logProvider = new ethers.JsonRpcProvider(req);
+      } else {
+        this._logProvider = this.provider;
+      }
     }
-    return this._archiveProvider;
+    return this._logProvider;
   }
 
   /** Provider for receipt fetches (gas tracking). Falls back to the read RPC. */
@@ -1026,7 +1042,7 @@ class VerdiktaService {
       return cached.map;
     }
 
-    const provider = this._getArchiveProvider();
+    const provider = this._getLogProvider();
     const iface = new ethers.Interface(ORACLE_EVENTS_ABI);
     const reqTopic = iface.getEvent('OracleRequest').topicHash;
     const respTopic = iface.getEvent('OracleResponse').topicHash;
@@ -1045,28 +1061,40 @@ class VerdiktaService {
       return senderByJob;
     }
 
-    // Chunk size sits just under Tenderly's 100k-block per-query cap. The
-    // total look-back covers infrequent arbiters (testnet activity can lag by
-    // weeks); cached for 30 min after, so this is paid at most rarely.
-    const CHUNK = 90_000;     // ≤ 100k per-query (Tenderly free-tier cap)
-    const MAX_CHUNKS = 25;    // ≈ 2.25M blocks (~52 days on Base) of look-back
+    // Look-back is expressed in BLOCKS, not chunks: the chunk size is the
+    // provider's per-query cap and varies by endpoint (10k on Infura, 90k on a
+    // keyed archive gateway), so a chunk count would silently change how far
+    // back we look. The walk stops early as soon as every requested jobId is
+    // resolved, and a wall-clock budget bounds the worst case — a never-used
+    // arbiter, which resolves nothing and would otherwise walk the whole range
+    // while /my-arbiters waits on it. Cached 30 min, so this is paid rarely.
+    const CHUNK = this.logMaxChunk;
+    const LOOKBACK_BLOCKS = 2_250_000;  // ~52 days on Base
+    const DEADLINE = Date.now() + 25_000;
+    const scanFloor = Math.max(0, latest - LOOKBACK_BLOCKS);
 
     let toBlock = latest;
-    for (let i = 0; i < MAX_CHUNKS && needed.size > 0; i++) {
-      const fromBlock = Math.max(0, toBlock - CHUNK + 1);
-      let reqLogs = [];
-      let respLogs = [];
+    while (toBlock >= scanFloor && needed.size > 0) {
+      if (Date.now() > DEADLINE) {
+        logger.warn('sender scan hit time budget', { operator: operatorAddress, unresolved: needed.size, reachedBlock: toBlock });
+        break;
+      }
+      const fromBlock = Math.max(scanFloor, toBlock - CHUNK + 1);
+      let logs = [];
       try {
-        [reqLogs, respLogs] = await Promise.all([
-          withRetry(() => provider.getLogs({ address: operatorAddress, topics: [reqTopic], fromBlock, toBlock })),
-          withRetry(() => provider.getLogs({ address: operatorAddress, topics: [respTopic], fromBlock, toBlock })),
-        ]);
+        // Both event types in ONE query via an OR'd topic0 filter — at 10k
+        // blocks a chunk there are many more chunks than before, so halving the
+        // calls per chunk matters.
+        logs = await withRetry(() => provider.getLogs({
+          address: operatorAddress, topics: [[reqTopic, respTopic]], fromBlock, toBlock
+        }));
       } catch (err) {
-        logger.warn('archive getLogs failed', { operator: operatorAddress, fromBlock, toBlock, msg: err.message });
+        logger.warn('sender scan getLogs failed', { operator: operatorAddress, fromBlock, toBlock, msg: err.message });
         break;
       }
 
-      for (const log of reqLogs) {
+      for (const log of logs) {
+        if (log.topics[0] !== reqTopic) continue;
         try {
           const parsed = iface.parseLog({ topics: log.topics, data: log.data });
           reqIdToSpec[String(parsed.args.requestId).toLowerCase()] = String(parsed.args.specId).toLowerCase();
@@ -1074,7 +1102,8 @@ class VerdiktaService {
       }
 
       // Add new responses to the pending pool (newer first).
-      for (const log of respLogs) {
+      for (const log of logs) {
+        if (log.topics[0] !== respTopic) continue;
         pendingResp.push({
           requestId: log.topics[1].toLowerCase(),
           txHash: log.transactionHash,
@@ -1106,7 +1135,7 @@ class VerdiktaService {
       }
       pendingResp = stillPending;
 
-      if (fromBlock === 0) break;
+      if (fromBlock === scanFloor) break;
       toBlock = fromBlock - 1;
     }
 
@@ -1134,7 +1163,7 @@ class VerdiktaService {
    *   `partial` flag if a chunk error cut the scan short.
    */
   async getOracleHealth({ days = 14 } = {}) {
-    const provider = this._getArchiveProvider();
+    const provider = this._getLogProvider();
     const iface = new ethers.Interface(AGG_EVENT_ABI);
     const topic = (name) => iface.getEvent(name).topicHash;
     const T = {
@@ -1150,7 +1179,7 @@ class VerdiktaService {
     const windowBlocks = Math.max(1, Math.round(days * 43200)); // ~2s/block on Base
     const floor = Math.max(this.aggregatorFromBlock || 0, latest - windowBlocks);
 
-    const CHUNK = 90_000; // ≤ Tenderly's 100k per-query cap
+    const CHUNK = this.logMaxChunk; // provider's per-query range cap (config.getLogScanRpc)
     const parse = (log) => iface.parseLog({ topics: log.topics, data: log.data });
     const ops = {}; // operatorLower → { operator, selected, commits, reveals }
     const bump = (addr, field) => {
@@ -1196,34 +1225,64 @@ class VerdiktaService {
     const BLOCKS_PER_DAY = 43200;
     const daily = Array.from({ length: days }, () => ({ requests: 0, fulfilled: 0 }));
     const dayOff = (blk) => Math.floor((latest - blk) / BLOCKS_PER_DAY);
-    let toBlock = latest;
-    while (toBlock >= floor) {
-      const fromBlock = Math.max(floor, toBlock - CHUNK + 1);
-      let logs;
+    // Build the chunk list up-front, then fetch a few at a time. The chunk size
+    // is capped by the provider (10k on Infura), so a 14-day window is ~60
+    // queries — serial that is a minute of wall clock, and /refresh warms four
+    // windows. Ordering doesn't matter: every tally below is a sum or an OR.
+    const ranges = [];
+    for (let to = latest; to >= floor; ) {
+      const from = Math.max(floor, to - CHUNK + 1);
+      ranges.push({ from, to });
+      if (from === floor) break;
+      to = from - 1;
+    }
+
+    // A failed chunk is skipped, not fatal — one bad range shouldn't blank the
+    // whole window. `chunkErrors` and `scanError` are reported so the client can
+    // distinguish "the chain was quiet" from "we couldn't read the chain".
+    //
+    // Fail fast when nothing at all is getting through: a misconfigured range
+    // cap or a dead endpoint fails every chunk identically, and each failure
+    // burns the full withRetry backoff, so pushing on would hang the request for
+    // minutes to learn what the first few chunks already proved.
+    const CONCURRENCY = 5;
+    const FAIL_FAST_AFTER = 5;
+    let chunkErrors = 0, scanError = null, aborted = false;
+    const allLogs = [];
+    await mapWithConcurrency(ranges, CONCURRENCY, async ({ from, to }) => {
+      if (aborted) return;
       try {
-        logs = await withRetry(() => provider.getLogs({
-          address: this.aggregatorAddress, topics: topic0Or, fromBlock, toBlock
-        }));
+        const logs = await withRetry(() => provider.getLogs({
+          address: this.aggregatorAddress, topics: topic0Or, fromBlock: from, toBlock: to
+        }), { retries: LOG_CHUNK_RETRIES });
+        allLogs.push(...logs);
+        scannedChunks++;
       } catch (err) {
-        logger.warn('oracle-health getLogs failed', { network: this.networkKey, fromBlock, toBlock, msg: err.message });
-        partial = true;
-        break;
-      }
-      for (const log of logs) {
-        let p;
-        try { p = parse(log); } catch { continue; }
-        switch (p.name) {
-          case 'RequestAIEvaluation': { requests++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].requests++; evalFor(p.args.aggRequestId); break; }
-          case 'FulfillAIEvaluation': { fulfilled++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].fulfilled++; fulfillTxHashes.add(log.transactionHash.toLowerCase()); evalFor(p.args.aggRequestId).fulfilled = true; break; }
-          case 'OracleSelected': bump(p.args.oracle, 'selected'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.oracle); break;
-          case 'CommitReceived': bump(p.args.operator, 'commits'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.operator).committed = true; commitRevealLogs.push({ kind: 'commit', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
-          case 'RevealRequestDispatched': slotFor(p.args.aggRequestId, p.args.pollIndex, null).revealRequested = true; break;
-          case 'NewOracleResponseRecorded': bump(p.args.operator, 'reveals'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.operator).revealed = true; commitRevealLogs.push({ kind: 'reveal', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
+        chunkErrors++;
+        if (!scanError) scanError = err.message;
+        logger.warn('oracle-health getLogs failed', { network: this.networkKey, fromBlock: from, toBlock: to, msg: err.message });
+        if (scannedChunks === 0 && chunkErrors >= FAIL_FAST_AFTER) {
+          aborted = true;
+          logger.error('oracle-health scan aborted — no chunk succeeded', {
+            network: this.networkKey, attempted: chunkErrors, totalChunks: ranges.length, msg: err.message,
+          });
         }
       }
-      scannedChunks++;
-      if (fromBlock === floor) break;
-      toBlock = fromBlock - 1;
+    });
+    partial = chunkErrors > 0;
+    allLogs.sort((a, b) => (a.blockNumber - b.blockNumber) || (a.index - b.index));
+
+    for (const log of allLogs) {
+      let p;
+      try { p = parse(log); } catch { continue; }
+      switch (p.name) {
+        case 'RequestAIEvaluation': { requests++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].requests++; evalFor(p.args.aggRequestId); break; }
+        case 'FulfillAIEvaluation': { fulfilled++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].fulfilled++; fulfillTxHashes.add(log.transactionHash.toLowerCase()); evalFor(p.args.aggRequestId).fulfilled = true; break; }
+        case 'OracleSelected': bump(p.args.oracle, 'selected'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.oracle); break;
+        case 'CommitReceived': bump(p.args.operator, 'commits'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.operator).committed = true; commitRevealLogs.push({ kind: 'commit', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
+        case 'RevealRequestDispatched': slotFor(p.args.aggRequestId, p.args.pollIndex, null).revealRequested = true; break;
+        case 'NewOracleResponseRecorded': bump(p.args.operator, 'reveals'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.operator).revealed = true; commitRevealLogs.push({ kind: 'reveal', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
+      }
     }
 
     // ---- Blame attribution. An evaluation needs 4 commits then 3 reveals to be
@@ -1443,6 +1502,14 @@ class VerdiktaService {
       fromBlock: Math.max(floor, 0),
       toBlock: latest,
       scannedChunks,
+      totalChunks: ranges.length,
+      chunkErrors,
+      aborted,
+      // Not one chunk came back: the numbers below are all zero because nothing
+      // could be read, NOT because the network was idle. The client renders this
+      // as an error rather than as an empty window.
+      scanFailed: scannedChunks === 0 && chunkErrors > 0,
+      scanError,
       partial,
       success: {
         requests,
@@ -1472,13 +1539,13 @@ class VerdiktaService {
    */
   async getAggHistory(aggId) {
     const provider = this.provider;
-    const logProvider = this._getArchiveProvider();
+    const logProvider = this._getLogProvider();
     const aggr = new ethers.Contract(this.aggregatorAddress, AGG_HISTORY_ABI, provider);
     const iface = aggr.interface;
     const deployBlock = this.aggregatorFromBlock || 0;
 
-    // Chunked log scan over the archive provider (bounded ranges → single chunk).
-    const CHUNK = 90_000;
+    // Chunked log scan over the log provider, at its per-query range cap.
+    const CHUNK = this.logMaxChunk;
     const getLogsChunked = async (topics, fromBlock, toBlock) => {
       const out = [];
       if (toBlock < fromBlock) return out;
@@ -1889,6 +1956,7 @@ function getVerdiktaService(networkKey) {
       networkKey: key,
       aggregatorFromBlock: net.aggregatorFromBlock || 0,
       archiveRpcUrl: getArchiveRpcUrl(key),
+      logScan: getLogScanRpc(key),
       receiptRpcUrl: getReceiptRpcUrl(key)
     });
     instances.set(key, service);

@@ -202,6 +202,22 @@ function OperatorRow({ o, windowLabel, alert }) {
 // and 24-hour tables share identical columns — only the data differs).
 // `alertsByOp` (operatorLower → watchdog record) decorates rows with a live
 // node-health dot for operators that report to /api/alerts.
+// A scan that completed zero chunks reports zeros for everything — but that's the
+// RPC refusing every log query, not a quiet network. Rendering the zeros would
+// claim, confidently and wrongly, that nothing happened; say what actually broke.
+const ScanFailedBanner = ({ hData }) => (
+  <div className="info-banner">
+    <AlertTriangle size={16} />
+    <span>
+      Couldn't read chain history: {hData.chunkErrors} of {hData.totalChunks} log queries to the RPC
+      failed and none succeeded{hData.aborted ? ' (scan stopped early)' : ''}, so no activity can be
+      shown for this window. This is a data-source problem — it does <strong>not</strong> mean the
+      network was idle.
+      {hData.scanError ? ` Last RPC error: ${String(hData.scanError).slice(0, 140)}` : ''}
+    </span>
+  </div>
+);
+
 const renderReliabilitySection = (windowLabel, hData, hLoading, hError, alertsByOp = {}) => (
   <section className="analytics-section">
     <h2 title="Per-operator commit and reveal reliability across recent evaluations. Commit rate = commits ÷ times polled; reveal rate = reveals ÷ commits. A healthy commit rate but a low reveal rate means the node commits then fails to reveal — starving evaluations of the reveals they need to finalize."><Server size={20} className="inline-icon" /> Operator Reliability · {windowLabel}</h2>
@@ -210,6 +226,8 @@ const renderReliabilitySection = (windowLabel, hData, hLoading, hError, alertsBy
         <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
       ) : hError ? (
         <div className="info-banner"><AlertTriangle size={16} /><span>{hError}</span></div>
+      ) : hData?.scanFailed ? (
+        <ScanFailedBanner hData={hData} />
       ) : hData && hData.operators.length > 0 ? (
         <div className="stats-table">
           <table>
@@ -808,6 +826,8 @@ function Analytics() {
             <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
           ) : healthError ? (
             <div className="info-banner"><AlertTriangle size={16} /><span>{healthError}</span></div>
+          ) : healthData?.scanFailed ? (
+            <ScanFailedBanner hData={healthData} />
           ) : healthData ? (
             <>
               <div className="health-stats">
@@ -838,7 +858,7 @@ function Analytics() {
               </div>
               <p className="health-footnote">
                 Last {healthData.windowDays} days (blocks {healthData.fromBlock.toLocaleString()}–{healthData.toBlock.toLocaleString()}).
-                {healthData.partial ? ' Partial scan — some history could not be read.' : ''} Very recent requests may still be in progress.
+                {healthData.partial ? ` Partial scan — ${healthData.chunkErrors} of ${healthData.totalChunks} log queries failed, so some activity is missing.` : ''} Very recent requests may still be in progress.
               </p>
             </>
           ) : (
@@ -859,6 +879,8 @@ function Analytics() {
             <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
           ) : healthError ? (
             <div className="info-banner"><AlertTriangle size={16} /><span>{healthError}</span></div>
+          ) : healthData?.scanFailed ? (
+            <ScanFailedBanner hData={healthData} />
           ) : healthData && operatorsWithGas.length > 0 ? (
             <>
               {gasChartData && (

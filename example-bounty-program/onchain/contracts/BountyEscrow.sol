@@ -558,29 +558,44 @@ contract BountyEscrow {
         _refundLeftoverEth(bountyId, submissionId);
     }
 
-    /// @notice Force-fail a submission that's been stuck in PendingVerdikta too long
-    /// @dev Can be called by anyone after 10 minutes timeout
-    /// @dev Useful for submissions where Verdikta evaluation never started or oracle failed
+    /// @notice Force-fail a submission whose Verdikta round is settled with no valid result
+    /// @dev Can be called by anyone. The gate is the AGGREGATOR's state, not a local timer:
+    ///      - If the round has a valid result (already, or as a consequence of the settle
+    ///        attempt below), this reverts — the result must go through finalizeSubmission,
+    ///        so a passing score can never be discarded by a third party.
+    ///      - If the round is still open on the aggregator (not yet timed out), this reverts —
+    ///        failing now would make the submission terminal before the prepay is refundable,
+    ///        stranding it in ethOwed[evalWallet] forever.
+    ///      Only a round the aggregator itself reports as complete-and-failed can be force-failed.
     function failTimedOutSubmission(uint256 bountyId, uint256 submissionId) external nonReentrant {
         _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
 
         require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
-        require(block.timestamp >= s.submittedAt + 10 minutes, "timeout not reached");
-
-        // Leaving PendingVerdikta (status set to Failed below).
-        activeEvaluations[bountyId] -= 1;
+        bytes32 aggId = s.verdiktaAggId;
 
         // Best-effort: settle the evaluation on the aggregator first. A dead/failed
         // round keeps the unspent prepay escrowed (reserved) until it is settled;
         // settlement moves it into the requester's pull credit (ethOwed[evalWallet]),
         // which _refundLeftoverEth then recovers and returns to the hunter below.
-        // Without this, force-failing before settlement would strand the prepay on the
-        // aggregator with no way to recover it (this submission becomes terminal).
-        // Mirrors finalizeSubmission; ignore if already settled or not yet settleable.
-        if (s.verdiktaAggId != bytes32(0)) {
-            try verdikta.finalizeEvaluationTimeout(s.verdiktaAggId) {} catch { /* ignore */ }
-        }
+        // Reverts (NotTimedOut, AggregationComplete) are ignored; the checks that
+        // follow decide whether force-failing is actually allowed.
+        try verdikta.finalizeEvaluationTimeout(aggId) {} catch { /* ignore */ }
+
+        // A valid result exists (possibly produced just now, if enough late responses
+        // arrived before the timeout was finalized): this submission must be finalized,
+        // never failed.
+        (, , bool ok) = verdikta.getEvaluation(aggId);
+        require(!ok, "result available - use finalizeSubmission");
+
+        // No result AND the aggregator has settled the round => it genuinely failed.
+        // If it is not settled yet, the prepay is still reserved there; failing now would
+        // strand it. Wait for the aggregator's response timeout.
+        (bool settled, , , , , , , , , ) = verdikta.getAggregationStatus(aggId);
+        require(settled, "evaluation not settled");
+
+        // Leaving PendingVerdikta (status set to Failed below).
+        activeEvaluations[bountyId] -= 1;
 
         // Mark as failed
         s.status = SubmissionStatus.Failed;

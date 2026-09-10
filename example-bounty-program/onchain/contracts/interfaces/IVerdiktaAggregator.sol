@@ -71,6 +71,30 @@ interface IVerdiktaAggregator {
     function withdrawEth() external;
 
     /**
+     * @notice Lifecycle status of an aggregation round
+     * @dev `isComplete` is true once the round is settled (fulfilled, or timed out and
+     *      finalized via finalizeEvaluationTimeout). `failed` is true for a round that
+     *      timed out without enough responses; such a round has no valid result and
+     *      getEvaluation() reports exists == false for it.
+     * @param aggId The aggregation ID
+     */
+    function getAggregationStatus(bytes32 aggId)
+        external
+        view
+        returns (
+            bool isComplete,
+            bool failed,
+            bool commitPhaseComplete,
+            uint256 commitExpected,
+            uint256 commitReceived,
+            uint256 responseCount,
+            uint256 requiredN,
+            uint256 clusterP,
+            address requester,
+            uint256 startTimestamp
+        );
+
+    /**
      * @notice Get the response timeout in seconds
      * @return Timeout duration in seconds
      */

@@ -657,7 +657,7 @@ describe("BountyEscrow", function () {
 
   // =========================================================================
   describe("Timeout Handling", function () {
-    it("Should allow timeout marking after 10 minutes", async function () {
+    it("Should allow force-fail once the aggregator round has timed out and settled", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
@@ -683,7 +683,7 @@ describe("BountyEscrow", function () {
       expect(bounty.status).to.equal(0); // Open
     });
 
-    it("Should reject timeout marking before timeout period", async function () {
+    it("Should reject force-fail while the aggregator round is still open (not timed out)", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);
       const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
@@ -691,12 +691,135 @@ describe("BountyEscrow", function () {
         bountyEscrow, verdiktaAggregator, hunter, bountyId
       );
 
-      // Only 5 minutes — too early
-      await time.increase(300);
+      // 4 minutes: aggregator's 300s response timeout has not elapsed, so the round is
+      // neither settled nor refundable — force-fail must refuse.
+      await time.increase(240);
 
       await expect(
         bountyEscrow.failTimedOutSubmission(bountyId, submissionId)
-      ).to.be.revertedWith("timeout not reached");
+      ).to.be.revertedWith("evaluation not settled");
+      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(1); // still PendingVerdikta
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(1);
+    });
+
+    it("Should gate force-fail on aggregator state, not on time since prepare", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, ethMaxBudget } =
+        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+      // Hunter starts 20 minutes after preparing. The old 10-minute-from-submittedAt timer
+      // would have allowed a force-fail 1 second after start, before the aggregator could
+      // possibly have timed out — stranding the prepay.
+      await time.increase(20 * 60);
+      await startSubmission(bountyEscrow, hunter, bountyId, submissionId, ethMaxBudget);
+      await time.increase(1);
+
+      await expect(
+        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, submissionId)
+      ).to.be.revertedWith("evaluation not settled");
+
+      // Once the aggregator's own timeout has elapsed, the round settles and force-fail works.
+      await time.increase(300);
+      await expect(
+        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, submissionId)
+      ).to.emit(bountyEscrow, "SubmissionFinalized");
+    });
+
+    it("Should refuse to force-fail a submission that has a PASSING result on the aggregator", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, aggId } = await submitFull(
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
+      );
+
+      // Oracle completes with a passing score; nobody has finalized yet.
+      await time.increase(601);
+      await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+
+      // Creator tries to erase the result before the hunter's finalize lands.
+      await expect(
+        bountyEscrow.connect(creator).failTimedOutSubmission(bountyId, submissionId)
+      ).to.be.revertedWith("result available - use finalizeSubmission");
+
+      // The hunter's payout is intact.
+      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+        .to.emit(bountyEscrow, "PayoutSent")
+        .withArgs(bountyId, hunter.address, BOUNTY_WEI);
+      expect((await bountyEscrow.getBounty(bountyId)).winner).to.equal(hunter.address);
+    });
+
+    it("Should refuse to force-fail a submission that has a FAILING result (must finalize)", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, aggId } = await submitFull(
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
+      );
+
+      await time.increase(601);
+      await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
+
+      await expect(
+        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, submissionId)
+      ).to.be.revertedWith("result available - use finalizeSubmission");
+
+      // Real scores are recorded via finalize, not zeroed by a force-fail.
+      await bountyEscrow.finalizeSubmission(bountyId, submissionId);
+      const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
+      expect(sub.status).to.equal(2); // Failed
+      expect(sub.acceptance).to.equal(40);
+    });
+
+    it("Should refuse to force-fail when settling the timeout yields a late valid result", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, aggId } = await submitFull(
+        bountyEscrow, verdiktaAggregator, hunter, bountyId
+      );
+
+      // Enough late responses arrived: the aggregator's timeout path finalizes normally.
+      await verdiktaAggregator.setTimeoutResult(aggId, PASSING_SCORES, JUST_CIDS);
+      await time.increase(601);
+
+      // The force-fail's own settle attempt produces the result — it must then back off.
+      await expect(
+        bountyEscrow.connect(other).failTimedOutSubmission(bountyId, submissionId)
+      ).to.be.revertedWith("result available - use finalizeSubmission");
+
+      // (The revert rolled the settle back; finalize settles it again and pays.)
+      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+        .to.emit(bountyEscrow, "PayoutSent")
+        .withArgs(bountyId, hunter.address, BOUNTY_WEI);
+    });
+
+    it("Should not let force-fail defeat the two-passing-submissions payout (PassedUnpaid fix)", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const a = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      const b = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
+
+      await time.increase(601);
+      await verdiktaAggregator.setEvaluation(a.aggId, PASSING_SCORES, "A", true);
+      await verdiktaAggregator.setEvaluation(b.aggId, PASSING_SCORES, "B", true);
+
+      // B finalizes first and defers to A (PassedUnpaid).
+      await bountyEscrow.connect(creator).finalizeSubmission(bountyId, b.submissionId);
+      expect((await bountyEscrow.getSubmission(bountyId, b.submissionId)).status).to.equal(4);
+
+      // Creator cannot now force-fail A to leave nobody paid.
+      await expect(
+        bountyEscrow.connect(creator).failTimedOutSubmission(bountyId, a.submissionId)
+      ).to.be.revertedWith("result available - use finalizeSubmission");
+
+      await expect(bountyEscrow.finalizeSubmission(bountyId, a.submissionId))
+        .to.emit(bountyEscrow, "PayoutSent")
+        .withArgs(bountyId, hunter.address, BOUNTY_WEI);
+      expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(1); // Awarded
     });
 
     it("Should reject timeout on non-pending submission", async function () {

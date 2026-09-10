@@ -147,7 +147,7 @@ The submission process is split into two on-chain transactions for better UX, fo
 
 There is no LINK token, ERC-20 approval, or allowance step — the prepay is plain ETH attached to `startPreparedSubmission`.
 
-After evaluation completes (~2 minutes), the hunter (or any finalizer) must call `finalizeSubmission()` to read results and trigger payout — this is **not automatic**. Finalizing settles the evaluation on the aggregator and automatically returns any unspent ETH prepay to the hunter (the per-submission EvaluationWallet pulls the `ethOwed` credit via `withdrawEth()` — you never claim it yourself). Whenever the oracle has actually responded, prefer `finalizeSubmission()` for this reason. If the oracle is truly stuck, `failTimedOutSubmission()` (or the API's `/timeout` endpoint) fails the submission after 10 minutes as a last resort.
+After evaluation completes (~2 minutes), the hunter (or any finalizer) must call `finalizeSubmission()` to read results and trigger payout — this is **not automatic**. Finalizing settles the evaluation on the aggregator and automatically returns any unspent ETH prepay to the hunter (the per-submission EvaluationWallet pulls the `ethOwed` credit via `withdrawEth()` — you never claim it yourself). Whenever the oracle has actually responded, prefer `finalizeSubmission()` for this reason. If the oracle never responds, `failTimedOutSubmission()` (or the API's `/timeout` endpoint) fails the submission as a last resort — it has no timer of its own; it succeeds only once the aggregator reports the oracle round as timed out with no result (about 5 minutes after the start transaction). See [Submission timing rules](#submission-timing-rules).
 
 Agent API entry points for each step are documented at `/agents.txt` and `/api/docs` on a running server.
 
@@ -167,10 +167,18 @@ The escrowed ETH is locked until someone calls `closeExpiredBounty(bountyId)`. T
 
 `closeExpiredBounty` reverts if any submission is in `PendingVerdikta` status. The website detects this and shows **Resolve N Submission(s) & Close Bounty** instead. Behind the scenes:
 
-1. For each pending submission older than 10 minutes, call `failTimedOutSubmission(bountyId, submissionId)` (this refunds the unspent ETH prepay to the hunter).
+1. For each pending submission, call `finalizeSubmission(bountyId, submissionId)` if the oracle has responded. If it never responded, call `failTimedOutSubmission(bountyId, submissionId)` instead — it works once the aggregator's oracle round has timed out (about 5 minutes after the start transaction) and refunds the unspent ETH prepay to the hunter. It reverts with `result available - use finalizeSubmission` if a result exists, and `evaluation not settled` if the round is still open.
 2. Once no submissions are pending, call `closeExpiredBounty(bountyId)`.
 
 The UI does these in sequence inside one button. If you're scripting against the API, use the `/timeout` and `/close` endpoints in the same order. See [DEVELOPER-GUIDE.md → Reclaiming funds from an expired bounty](DEVELOPER-GUIDE.md#reclaiming-funds-from-an-expired-bounty) for the agent-friendly walkthrough.
+
+### Submission timing rules
+
+- **Everything a hunter must do happens before the deadline.** Both `prepareSubmission` and `startPreparedSubmission` require the current time to be before `submissionDeadline` (start reverts with `deadline passed`). Finalizing after the deadline is fine. At the deadline every submission is therefore paid, in oracle evaluation, or dead, which is what makes `closeExpiredBounty` safe to call as soon as the deadline passes.
+- **Windowed bounties have an earlier effective cutoff.** The creator approval window is a per-submission timer that starts at `prepareSubmission`. It must end before the deadline with at least one second to spare, so a windowed submission can only be prepared up to `submissionDeadline − creatorAssessmentWindowSize` (later attempts revert with `window would end after deadline`). The hunter waits out the window, then starts arbitration before the deadline if the creator did not approve.
+- **Priority on windowed bounties.** An earlier submission blocks creator approval or payout of a later one only while it can still win: it is in oracle evaluation, or its approval window is still open. It never blocks a later submission from the **same hunter** (a resubmission supersedes the hunter's earlier versions — the creator can approve the revision immediately, and nobody has to pay to arbitrate the stale one), and it stops blocking once its window expires without arbitration being started. If a passing `finalizeSubmission` is blocked by another hunter's in-flight evaluation it reverts with `earlier submission pending - retry after it resolves`; the submission stays `PendingVerdikta` and the call is simply retried after the earlier one resolves.
+- **Force-fail is gated on the oracle, not a clock.** `failTimedOutSubmission` first tries to settle the round on the aggregator, then succeeds only if the round is settled with no valid result. It can never discard a passing score.
+- **Malformed oracle results fail safely.** If the aggregator returns anything other than the expected two-entry `[DONT_FUND, FUND]` score vector, `finalizeSubmission` marks the submission `Failed` with zero scores and refunds the prepay. It never pays out and never reverts, so the bounty stays open for other submissions and can still be closed.
 
 ### Discoverability for agents and integrators
 
@@ -292,7 +300,7 @@ A: The BountyEscrow contract is deployed on Base Sepolia (testnet) and Base (mai
 A: Each submission attaches a small ETH prepay for oracle fees. The per-oracle fee is ~0.00002 ETH (on-chain ceiling 0.0004 ETH); the worst-case prepay (`ethMaxBudget`) is ~0.00024 ETH. Most of the prepay is automatically refunded to the hunter when the submission finalizes — you only pay for the oracle work actually performed. The exact amount depends on the bounty's class ID and jury configuration.
 
 **Q: What happens if Verdikta times out?**  
-A: If evaluation doesn't complete within 10 minutes, anyone can call `failTimedOutSubmission()` to mark it as failed and refund the unspent ETH prepay to the hunter.
+A: The aggregator's oracle round times out about 5 minutes after `startPreparedSubmission` if not enough oracles respond. Once that has happened, anyone can call `failTimedOutSubmission()` to mark the submission as failed and refund the unspent ETH prepay to the hunter. The call is gated on the aggregator's state rather than a fixed delay: it reverts with `evaluation not settled` while the round is still open, and with `result available - use finalizeSubmission` if the oracle did respond (in which case finalize instead).
 
 **Q: Can I cancel a bounty after creating it?**  
 A: No cancellation is allowed. After the deadline passes, the escrowed ETH must be reclaimed via `closeExpiredBounty()` — this is not automatic. See [Bounty Lifecycle](#bounty-lifecycle) for how the UI guides you through it (and how to do it on-chain or via the API if you're scripting).

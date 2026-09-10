@@ -480,6 +480,18 @@ Some bounties have a creator approval window. When a submission is prepared on s
    (caller must attach ethMaxBudget as msg.value to fund it — does not have to be the hunter)
 5. If oracle approves: hunter receives arbiterDeterminationPayment
 
+Timing on windowed bounties: the window must END before the bounty deadline, and the
+start must also happen before the deadline. So the effective cutoff for preparing a
+windowed submission is submissionDeadline - creatorAssessmentWindowSize (prepare reverts
+"window would end after deadline" past that point). Plan to prepare early enough to wait
+out the window AND start arbitration before the deadline if the creator does not approve.
+
+Priority: submissions are ordered by index. An earlier submission blocks creator approval
+or payout of a later one ONLY while it can still win — it is in oracle evaluation, or its
+window is still open. It never blocks a later submission from the SAME hunter (resubmit
+freely; the creator can approve your revision at once and nobody has to arbitrate the old
+version), and it stops blocking once its window expires with no arbitration started.
+
 Creator approval calldata: POST /api/jobs/:id/submissions/:subId/approve-as-creator
 Body: { "creator": "0xCreatorWallet" }
 Returns encoded creatorApproveSubmission calldata for the creator to sign and broadcast.
@@ -535,15 +547,25 @@ do NOT call contract functions directly unless you know the ABI.
    - Encodes finalizeSubmission. Passed → payment. Failed → marks Failed.
    - Response may include oracleResult { acceptance, rejection, passed, threshold }.
 
-4. PENDING_EVALUATION stuck > 10 min (oracle never responded):
+4. PENDING_EVALUATION and the oracle never responded:
    POST /api/jobs/:id/submissions/:subId/timeout
    - Returns { canTimeout: bool, ... }. If false, read "error"/"details" for
-     why (usually "Timeout not reached" with remainingSeconds).
+     why. The endpoint's pre-check ("Timeout not reached", remainingSeconds) is a
+     server-side heuristic: 10 minutes since submittedAt (the PREPARE time).
    - If true, sign and broadcast the returned transaction — refunds the unspent
      ETH prepay to the hunter. Anyone may call; hunter address not required for this endpoint.
+   - On-chain, failTimedOutSubmission has NO timer. It tries to settle the oracle
+     round on the aggregator, then succeeds only if the round is settled with no
+     valid result. It reverts "evaluation not settled" while the round is still open
+     (the aggregator times out 300 s after the START tx — wait 5+ minutes after
+     /start, not after prepare) and "result available - use finalizeSubmission" if
+     the oracle did respond. Neither revert loses anything: wait and retry, or finalize.
 
 If finalizeSubmission reverts with "Verdikta not ready", the oracle has not completed.
-Use /timeout instead (available after 10 minutes from submittedAt).
+Wait, or use /timeout once the aggregator round has timed out (5+ minutes after /start).
+If finalizeSubmission reverts with "earlier submission pending - retry after it resolves"
+(windowed bounty), another hunter's earlier submission is still in evaluation; your
+submission stays PendingVerdikta — retry after that one is finalized or force-failed.
 
 ### Closing Expired Bounties
 After a bounty's deadline passes, escrowed ETH stays locked until someone calls
@@ -568,11 +590,13 @@ the discovery endpoint and drive the close flow themselves.
 2. For each entry in pendingSubmissions where timeoutEligible is true:
    POST /api/jobs/:jobId/submissions/:submissionId/timeout
    Sign + broadcast the returned transaction. This is a LAST RESORT for a stuck
-   oracle: if the oracle has actually responded, use /finalize instead — it settles
-   the evaluation on the aggregator and reliably returns the unspent ETH prepay to
-   the hunter (the timeout path does not settle the aggregator first).
-   If timeoutEligible is false, wait — the submission is younger than the
-   10-minute on-chain window.
+   oracle: if the oracle has actually responded, use /finalize instead — the
+   contract refuses to force-fail a submission that has a result. Both paths
+   settle the aggregator and return the unspent ETH prepay to the hunter.
+   timeoutEligible is a server heuristic (10 minutes since submittedAt); the
+   on-chain gate is the aggregator's state (round timed out, no result). If the tx
+   reverts "evaluation not settled", wait and retry; if it reverts "result
+   available - use finalizeSubmission", use /finalize for that submission instead.
 
 3. Once canClose is true:
    POST /api/jobs/:jobId/close
@@ -586,15 +610,17 @@ Failure modes:
 - /close reverts with no clear message → a submission re-entered PendingVerdikta
   between your check and the close call. Re-query /mine/action-required and
   timeout anything new.
-- /timeout reverts with "too early" → submission younger than 10 min. The
-  timeoutEligible flag should have caught this; recheck ageMinutes.
+- /timeout tx reverts "evaluation not settled" → the oracle round is still open
+  on the aggregator (less than ~5 min since the START tx). Wait and retry.
+- /timeout tx reverts "result available - use finalizeSubmission" → the oracle
+  responded after all. Call /finalize for that submission, then retry /close.
 - Bounty not in /mine/action-required at all → job is not linked on-chain
   (onChain=false and not synced). There is no escrow to reclaim.
 
 ### Status Mapping (API vs On-Chain)
 API Status                        | On-Chain SubmissionStatus       | Next API call
 PendingCreatorApproval            | PendingCreatorApproval (5)      | /approve-as-creator (creator, in-window) OR wait for window and /start
-PENDING_EVALUATION                | Prepared (0) or PendingVerdikta (1) | Wait for oracle; if > 10 min, /timeout
+PENDING_EVALUATION                | Prepared (0) or PendingVerdikta (1) | Wait for oracle; if it never responds (5+ min after /start), /timeout
 ACCEPTED_PENDING_CLAIM            | PendingVerdikta (1, passed)     | /finalize
 REJECTED_PENDING_FINALIZATION     | PendingVerdikta (1, failed)     | /finalize
 APPROVED                          | PassedPaid (3)                  | Done — payment sent
@@ -835,12 +861,12 @@ router.get('/api/docs', (req, res) => {
         description: 'Get encoded finalizeSubmission calldata (step 3 — claims payout or finalizes rejection). Oracle readiness is checked server-side before encoding.',
         contentType: 'application/json',
         fields: ['hunter: Ethereum address 0x... (required — must match submission.hunter)'],
-        returns: 'Standard calldataResponseShape. Extras when oracle is ready: oracleResult: { acceptance, rejection, passed, threshold }, and expectedPayout (ETH) if passed. When oracle is not ready, returns 400 with { error: "Evaluation not ready", reason, hint } — call /timeout instead if 10+ min elapsed.'
+        returns: 'Standard calldataResponseShape. Extras when oracle is ready: oracleResult: { acceptance, rejection, passed, threshold }, and expectedPayout (ETH) if passed. When oracle is not ready, returns 400 with { error: "Evaluation not ready", reason, hint } — wait, or call /timeout once the aggregator round has timed out (5+ min after /start) with no result.'
       },
       {
         method: 'POST',
         path: '/jobs/:id/submissions/:subId/timeout',
-        description: 'Get encoded failTimedOutSubmission calldata (for submissions stuck in PENDING_EVALUATION > 10 min). Gated endpoint — returns canTimeout flag.',
+        description: 'Get encoded failTimedOutSubmission calldata (for submissions stuck in PENDING_EVALUATION whose oracle never responded). Gated endpoint — returns canTimeout flag. The gate is a server heuristic (10 min since submittedAt); on-chain the call succeeds only once the aggregator round has timed out with no result, and reverts "result available - use finalizeSubmission" if the oracle did respond.',
         contentType: 'application/json',
         fields: [],
         returns: '{ success, canTimeout: bool, message, transaction: { to, data, value, chainId }, contractCall: { method, args, abi }, submission: { id, hunter, status, submittedAt, elapsedMinutes } }. If canTimeout=false, status is 400 and response contains { error, details, remainingSeconds, timeoutAt } instead of transaction. A false is NOT a server error — it means conditions are not yet met.'
@@ -890,7 +916,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'GET',
         path: '/jobs/admin/stuck',
-        description: 'List submissions stuck in PENDING_EVALUATION for 10+ minutes (timeout candidates)'
+        description: 'List submissions stuck in PENDING_EVALUATION for 10+ minutes (timeout candidates — a server heuristic; on-chain eligibility is the aggregator round having timed out with no result)'
       },
       {
         method: 'GET',
@@ -975,6 +1001,7 @@ router.get('/api/docs', (req, res) => {
           signature: 'createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)',
           notes: [
             'submissionDeadline is a unix timestamp in SECONDS (not milliseconds)',
+            'Both prepareSubmission and startPreparedSubmission must happen BEFORE submissionDeadline (start reverts "deadline passed"); finalize may happen after',
             'targetHunter: full wallet address for targeted bounties, address(0) for open bounties',
             'msg.value: bounty amount in wei (must be > 0)',
             'There is no 4-argument version — targetHunter is always required'
@@ -987,6 +1014,7 @@ router.get('/api/docs', (req, res) => {
             'creatorDeterminationPayment: ETH in wei paid if creator approves directly',
             'arbiterDeterminationPayment: ETH in wei paid if oracle approves after window',
             'creatorAssessmentWindowSize: window duration in seconds',
+            'The window is per submission (starts at prepareSubmission) and must end before submissionDeadline — effective prepare cutoff is submissionDeadline - creatorAssessmentWindowSize',
             'msg.value: max(creatorPay, arbiterPay) in wei',
             'If payments differ, window must be > 0'
           ]
@@ -998,7 +1026,7 @@ router.get('/api/docs', (req, res) => {
             'Pays hunter creatorDeterminationPayment, refunds excess to creator',
             'Marks bounty as Awarded',
             'Get calldata via POST /jobs/:id/submissions/:subId/approve-as-creator with { "creator": "0x..." }',
-            'Earlier submissions must be resolved first (FIFO ordering)'
+            'Reverts "earlier submission unresolved" while an earlier submission by ANOTHER hunter is in oracle evaluation or still in its own open window. Earlier submissions by the same hunter, and expired never-started ones, do not block'
           ]
         },
         finalizeSubmission: {
@@ -1007,16 +1035,19 @@ router.get('/api/docs', (req, res) => {
             'REQUIRED after oracle evaluation completes — payment is NOT automatic',
             'If passed threshold: triggers ETH payment to hunter',
             'If below threshold: marks submission as Failed',
-            'If reverts with "Verdikta not ready": oracle has not completed, use failTimedOutSubmission instead'
+            'If reverts with "Verdikta not ready": oracle has not completed — wait, or use failTimedOutSubmission once the aggregator round has timed out (5+ min after start)',
+            'If reverts with "earlier submission pending - retry after it resolves" (windowed bounty): another hunter\'s earlier submission is in evaluation; nothing is written — retry after it resolves',
+            'A malformed oracle result (score vector not of length 2) finalizes as Failed with zero scores and refunds the prepay; it never reverts'
           ]
         },
         failTimedOutSubmission: {
           signature: 'failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
           notes: [
-            'Use when oracle is stuck (available after 10 minutes) — last resort',
-            'Marks submission as Failed. Prefer finalizeSubmission() once the oracle has responded: it settles the aggregator and reliably returns the unspent ETH prepay to the hunter (failTimedOutSubmission does not settle the aggregator first)',
+            'Use when the oracle never responded — last resort. No timer: gated on the aggregator state',
+            'Tries finalizeEvaluationTimeout on the aggregator, then requires no valid result AND a settled round. Reverts "evaluation not settled" while the round is open (aggregator timeout is 300 s after startPreparedSubmission) and "result available - use finalizeSubmission" if the oracle responded',
+            'Marks submission as Failed and refunds the unspent ETH prepay to the hunter. Can never discard a passing score',
             'Anyone can call this',
-            '"Verdikta not ready" from finalizeSubmission means you need this function instead'
+            '"Verdikta not ready" from finalizeSubmission means the oracle has not completed — wait, then either finalize (result arrived) or force-fail (round timed out)'
           ]
         },
         closeExpiredBounty: {
@@ -1052,7 +1083,9 @@ router.get('/api/docs', (req, res) => {
         detection: 'Check creatorAssessmentWindowSize > 0 in bounty data from GET /jobs/:id',
         submissionFields: 'creatorWindowEnd (unix timestamp) on each submission indicates when the window closes',
         approvalMethod: 'POST /jobs/:id/submissions/:subId/approve-as-creator with { "creator": "0x..." } returns encoded calldata. Creator signs and broadcasts the transaction.',
-        afterWindowExpiry: 'Anyone can fund it with ETH (attach ethMaxBudget as msg.value) and call startPreparedSubmission to begin oracle evaluation'
+        afterWindowExpiry: 'Anyone can fund it with ETH (attach ethMaxBudget as msg.value) and call startPreparedSubmission to begin oracle evaluation — but only before submissionDeadline',
+        timing: 'The window must end before submissionDeadline: prepareSubmission reverts "window would end after deadline" otherwise. Effective prepare cutoff = submissionDeadline - creatorAssessmentWindowSize',
+        priority: 'Earlier submissions block creator approval / payout of later ones only while in oracle evaluation or in an open window. Same-hunter resubmissions and expired never-started submissions never block. A blocked passing finalize reverts (retryable) rather than becoming PassedUnpaid'
       }
     },
     feeds: {

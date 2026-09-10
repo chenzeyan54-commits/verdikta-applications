@@ -213,7 +213,7 @@ function Agents({ walletState }) {
       method: 'POST',
       path: '/api/jobs/:jobId/submissions/:subId/timeout',
       description: 'Generate timeout transaction for stuck submission',
-      params: 'Returns encoded calldata for failTimedOutSubmission (requires 10+ min elapsed)'
+      params: 'Returns encoded calldata for failTimedOutSubmission. The endpoint pre-checks 10+ min since submittedAt (server heuristic); on-chain the call succeeds only once the aggregator round has timed out (~5 min after /start) with no result, and reverts "result available - use finalizeSubmission" if the oracle responded.'
     },
     {
       method: 'POST',
@@ -232,7 +232,7 @@ function Agents({ walletState }) {
       method: 'GET',
       path: '/api/jobs/admin/stuck',
       description: 'List all stuck submissions across all bounties',
-      params: 'none (returns submissions pending > 10 minutes)'
+      params: 'none (returns submissions pending > 10 minutes — a server heuristic; verify on-chain eligibility via /timeout)'
     },
     {
       method: 'GET',
@@ -769,8 +769,15 @@ def finalize_submission(w3, account, job_id, sub_id):
                 <strong>Creator approval window:</strong> Some bounties let the creator approve submissions directly before oracle evaluation.
                 If a bounty has an approval window, your submission status will be <code>PendingCreatorApproval</code> until the creator approves or the window expires.
                 Creators can approve via <code>POST /submissions/:id/approve-as-creator</code>.
-                If the window expires without approval, anyone can start the AI evaluation by calling <code>POST /submissions/:id/start</code> (requires attaching the ETH prepay to the tx).
+                If the window expires without approval, anyone can start the AI evaluation by calling <code>POST /submissions/:id/start</code> (requires attaching the ETH prepay to the tx) — but only before the bounty deadline.
                 Use <code>GET /submissions/:id/diagnose</code> to check window status and get recommended actions.
+              </p>
+              <p style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
+                <strong>Windowed timing and resubmission:</strong> the window must end before the bounty deadline, so on a windowed bounty you can only prepare up to
+                <code>submissionDeadline − creatorAssessmentWindowSize</code> (later attempts revert with <code>window would end after deadline</code>).
+                Resubmitting is safe: your earlier versions never block your newer one — the creator can approve the revision immediately and nobody has to pay to arbitrate the old version.
+                Another hunter's earlier submission only takes priority while it is in oracle evaluation or still in its open window; if your passing finalize is deferred by one
+                (<code>earlier submission pending - retry after it resolves</code>), nothing is lost — retry after it resolves.
               </p>
             </div>
           </div>
@@ -1323,12 +1330,17 @@ def finalize_submission(w3, account, job_id, sub_id):
             {expandedSection === 'faq6' && (
               <div className="faq-answer">
                 <p>
-                  Submissions can be timed out when <strong>both</strong> conditions are met:
+                  Submissions can be force-failed on-chain when <strong>all</strong> of these hold:
                 </p>
                 <ul>
                   <li>Status is <code>PENDING_EVALUATION</code> (on-chain: <code>PendingVerdikta</code>)</li>
-                  <li>At least 10 minutes have elapsed since <code>submittedAt</code></li>
+                  <li>The oracle round on the aggregator has timed out — about 5 minutes after the <em>start</em> transaction (otherwise it reverts with <code>evaluation not settled</code>)</li>
+                  <li>The oracle never produced a result (otherwise it reverts with <code>result available - use finalizeSubmission</code> — finalize instead)</li>
                 </ul>
+                <p>
+                  There is no fixed timer in the contract. The API's <code>/timeout</code> endpoint applies its own
+                  10-minutes-since-<code>submittedAt</code> pre-check before returning calldata; treat the chain as authoritative.
+                </p>
                 <p>
                   <strong>Important:</strong> If the status is <code>EVALUATED_PASSED</code> or{' '}
                   <code>EVALUATED_FAILED</code>, the oracle has already returned results — do NOT
@@ -1362,7 +1374,7 @@ def finalize_submission(w3, account, job_id, sub_id):
                     call <code>finalizeSubmission(bountyId, submissionId)</code> on the BountyEscrow contract to pull
                     oracle results and release/refund funds</li>
                   <li><strong>Timeout stuck submissions:</strong> Use <code>GET /api/jobs/admin/stuck</code>
-                    to find submissions in <code>PENDING_EVALUATION</code> for 10+ minutes, then timeout them</li>
+                    to find submissions in <code>PENDING_EVALUATION</code> for 10+ minutes (a server heuristic), then timeout them once the aggregator round has timed out</li>
                   <li><strong>Close expired bounties:</strong> Use <code>GET /api/jobs/admin/expired</code>
                     to find bounties past deadline with no pending evaluations, then close to refund creators</li>
                 </ul>

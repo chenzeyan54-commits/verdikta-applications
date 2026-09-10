@@ -197,7 +197,15 @@ node -e "console.log(JSON.stringify(require('./artifacts/contracts/BountyEscrow.
 cmp /tmp/abi_old.json /tmp/abi_new.json && echo "identical ABI — drop-in"
 ```
 
-Identical ABI means internal-logic-only changes: safe to deploy against the existing off-chain code. (The `PassedUnpaid` payout-deadlock fix in `_hasOtherPassingSubmission` is one of these — behavior changes, interface does not.)
+Identical ABI means internal-logic-only changes: safe to deploy against the existing off-chain code. The September 2026 hardening batch is entirely of this kind — behavior changes, the escrow interface does not:
+
+- `PassedUnpaid` payout-deadlock fix in `_hasOtherPassingSubmission` (non-windowed bounties).
+- `failTimedOutSubmission` gated on aggregator state instead of a 10-minute timer (adds a read-only `getAggregationStatus` call to the aggregator interface; the live aggregators already expose it).
+- Malformed score vectors (not exactly 2 entries) finalize as `Failed` instead of reverting.
+- Deadline rule: `startPreparedSubmission` must happen before the deadline; windowed `prepareSubmission` requires the window to end before the deadline.
+- Windowed priority: same-hunter resubmissions and expired never-started submissions no longer block; a blocked passing finalize reverts (retryable) instead of writing terminal `PassedUnpaid`.
+
+The revert strings did change (`submitted too late` → `deadline passed`; `timeout not reached` gone, replaced by `result available - use finalizeSubmission` / `evaluation not settled`; new `window would end after deadline` and `earlier submission pending - retry after it resolves`). See [Submission timing and priority rules](#submission-timing-and-priority-rules).
 
 #### The one change that would NOT be drop-in
 
@@ -272,7 +280,7 @@ Verify against the **public** URL, not just `localhost:5005` — they exercise d
 
 ### Reclaiming funds from an expired bounty
 
-After a bounty's deadline passes, escrowed ETH stays locked until someone calls `closeExpiredBounty(bountyId)`. **This does not happen automatically.** If any submission is still in `PendingVerdikta` status, the close call reverts and those submissions must be cleared first via `failTimedOutSubmission`.
+After a bounty's deadline passes, escrowed ETH stays locked until someone calls `closeExpiredBounty(bountyId)`. **This does not happen automatically.** If any submission is still in `PendingVerdikta` status, the close call reverts and those submissions must be resolved first: `finalizeSubmission` if the oracle responded, `failTimedOutSubmission` if it never did. Submissions that were prepared but never started do not block closing — after the deadline they can no longer be started (see [Submission timing and priority rules](#submission-timing-and-priority-rules)).
 
 The website does this for the creator via the **My Bounties** action-required banner and the bounty page's **Close Expired Bounty** button. The flow below is for scripts, agents, and integrators that drive it through the API.
 
@@ -317,7 +325,7 @@ Response shape:
 }
 ```
 
-`timeoutEligible` is `true` once the submission is at least 10 minutes old (the on-chain timeout window). It's safe to poll this endpoint — it's read-only and small.
+`timeoutEligible` is a **server-side heuristic**: `true` once the submission is at least 10 minutes old, measured from `submittedAt` (the *prepare* time). The contract itself has no timer — `failTimedOutSubmission` is gated on the aggregator's state (see step 2). The flag does not query the aggregator, so treat the chain as authoritative. It's safe to poll this endpoint — it's read-only and small.
 
 For a system-wide view (all creators) use `GET /api/jobs/admin/expired` instead.
 
@@ -329,9 +337,14 @@ For each entry in `pendingSubmissions` where `timeoutEligible: true`:
 POST /api/jobs/:jobId/submissions/:submissionId/timeout
 ```
 
-Returns calldata for `failTimedOutSubmission(bountyId, submissionId)`. Sign and submit from any wallet (anyone may call). This is a last resort — whenever the oracle has actually responded, prefer `finalizeSubmission()`, which settles the evaluation on the aggregator and reliably returns the unspent ETH prepay to the hunter. `failTimedOutSubmission()` does not settle the aggregator first, so if the request never settled a small prepay can remain reserved there.
+Returns calldata for `failTimedOutSubmission(bountyId, submissionId)`. Sign and submit from any wallet (anyone may call). This is a last resort — whenever the oracle has actually responded, use `finalizeSubmission()` (the `/finalize` endpoint), which pays or fails the submission and returns the unspent ETH prepay to the hunter.
 
-If a submission is younger than 10 minutes, wait — the on-chain check enforces it.
+On-chain, `failTimedOutSubmission` has **no timer**. It first tries to settle the oracle round on the aggregator (`finalizeEvaluationTimeout`), then succeeds only if the round is settled **and** has no valid result. It also refunds the unspent prepay. Otherwise it reverts with one of:
+
+- `result available - use finalizeSubmission` — the oracle did respond (possibly late). Call `/finalize` instead. A passing score can never be discarded by force-fail.
+- `evaluation not settled` — the round is still open on the aggregator. Its response timeout is 300 seconds from `startPreparedSubmission`, so wait at least 5 minutes after the *start* transaction and retry.
+
+Note the endpoint's own pre-check (`canTimeout`, "Timeout not reached") is the same 10-minutes-since-`submittedAt` heuristic as `timeoutEligible`. On windowed bounties a submission is started long after it was prepared, so the heuristic can pass while the round is younger than 5 minutes (the tx then reverts `evaluation not settled`); and it does not detect a late oracle result (the tx reverts `result available`). Neither revert loses anything — retry, or finalize.
 
 #### 3. Close the bounty
 
@@ -346,8 +359,35 @@ Returns calldata for `closeExpiredBounty(bountyId)`. Sign and submit from any wa
 #### Common failure modes
 
 - **`closeExpiredBounty` reverts with no clear message:** a submission re-entered `PendingVerdikta` between your check and the close call. Re-query the action-required endpoint and timeout anything new.
-- **`failTimedOutSubmission` reverts with "too early":** submission is younger than 10 minutes. The endpoint's `timeoutEligible` flag should have caught this — check `ageMinutes` in the response.
+- **`failTimedOutSubmission` reverts with `evaluation not settled`:** the oracle round is still open on the aggregator (less than ~5 minutes since the start transaction). Wait and retry.
+- **`failTimedOutSubmission` reverts with `result available - use finalizeSubmission`:** the oracle responded after all. Call `/finalize` — that resolves the submission (pay or fail) and unblocks the close.
+- **`finalizeSubmission` reverts with `earlier submission pending - retry after it resolves`:** windowed bounty; another hunter's earlier submission is still in evaluation. Resolve that one first (finalize or force-fail), then retry.
 - **Bounty not in the list at all:** the job is not linked on-chain (`onChain === false` and not synced). There is no escrow to reclaim. Such an **un-funded orphan** (created by `POST /jobs/create` without a following `createBounty`) can be removed actively — it is not silently garbage-collected: hard-delete it with `DELETE /api/jobs/admin/:jobId`, or soft-hide it with `PATCH /api/jobs/admin/:jobId/status` `{ "status": "CANCELLED" }`. The delete is guarded (refuses on-chain jobs and jobs younger than 5 min) and does **not** roll back the auto-incremented `jobId` counter. Note this is distinct from the *old-contract* orphans handled by `GET/DELETE /api/jobs/admin/orphans`. See `CLAUDE.md` "Sync service orphan race" for the underlying issue.
+
+### Submission timing and priority rules
+
+These are enforced by `BountyEscrow.sol` and are the source of truth for every lifecycle description in the app.
+
+**Deadline.** Everything a hunter must do happens before `submissionDeadline`:
+
+- `prepareSubmission` requires `block.timestamp < submissionDeadline` (`deadline passed`).
+- `startPreparedSubmission` requires the same (`deadline passed`). A submission that was prepared but not started by the deadline is dead; it does not block `closeExpiredBounty`.
+- `finalizeSubmission` and `failTimedOutSubmission` may run after the deadline. An in-flight evaluation (`PendingVerdikta`) blocks closing until it is resolved (`activeEvaluations` counter).
+
+**Creator window.** `creatorAssessmentWindowSize` is a *per-submission* timer that starts at prepare: `creatorWindowEnd = submittedAt + creatorAssessmentWindowSize`. During the window only the creator can act (`creatorApproveSubmission`); `startPreparedSubmission` reverts `creator window still open`. After it, anyone may fund and start arbitration. Because the start must also be before the deadline, windowed `prepareSubmission` requires `submittedAt + creatorAssessmentWindowSize + 1 < submissionDeadline` (`window would end after deadline`). The effective submission cutoff on a windowed bounty is therefore `submissionDeadline − creatorAssessmentWindowSize`; the UI and API pass the raw deadline through, so scripts must compute this themselves. Every window closes before the deadline, so closing at the deadline can never cut off a hunter who is still waiting on the creator.
+
+**Priority on windowed bounties** (`_hasEarlierUnresolvedSubmission`). A lower-index submission blocks creator approval (`earlier submission unresolved`) or payout of a higher-index one only while it can still win:
+
+- it is `PendingVerdikta` (evaluation in flight — temporary, always resolves), or
+- it is `PendingCreatorApproval` and its window is still open.
+
+It does **not** block when it belongs to the same hunter (a resubmission supersedes that hunter's earlier versions; the usual windowed bounty is targeted, so the creator can approve the revision right away and nobody pays to arbitrate the stale one), or when its window expired and nobody started arbitration (preparing costs only gas, so such a submission would otherwise lock out everyone behind it for free).
+
+When a passing `finalizeSubmission` on a windowed bounty is blocked by another hunter's in-flight evaluation, it **reverts** with `earlier submission pending - retry after it resolves`. Nothing is written; the submission stays `PendingVerdikta` and finalize is retried once the earlier one finalizes or is force-failed. (It used to write terminal `PassedUnpaid`, which could leave a passing submission unpaid forever.) `PassedUnpaid` is now written only when the bounty is already awarded or closed.
+
+**Force-fail** (`failTimedOutSubmission`). No timer. Requires `PendingVerdikta`, then: try `finalizeEvaluationTimeout` on the aggregator (ignored if it reverts), require `getEvaluation(aggId).exists == false` (`result available - use finalizeSubmission`), require `getAggregationStatus(aggId).isComplete == true` (`evaluation not settled`). On success: `Failed`, `activeEvaluations` decremented, unspent prepay refunded to the hunter. The aggregator's `responseTimeoutSeconds` is 300 on both networks, so the practical rule is "at least 5 minutes after the start tx and the oracle never responded".
+
+**Malformed oracle result.** `_interpretScores` never reverts. A score vector that is not exactly `[DONT_FUND, FUND]` finalizes the submission as `Failed` with `acceptance = rejection = 0` and refunds the prepay, so a bad evaluation package (or a changed aggregator) cannot brick a bounty. The `SubmissionFinalized` event carries `passed = false` and zero scores in that case.
 
 ## Debugging
 
@@ -359,7 +399,7 @@ Returns calldata for `closeExpiredBounty(bountyId)`. Sign and submit from any wa
 
 ### Submission stuck in PENDING_EVALUATION
 - Use `GET /api/jobs/:jobId/submissions/:subId/diagnose` for actionable analysis
-- If oracle stuck >10 min, anyone can call `failTimedOutSubmission` (or use `/submissions/:subId/timeout`)
+- If the oracle never responded and the aggregator round has timed out (~5 min after the start tx), anyone can call `failTimedOutSubmission` (or use `/submissions/:subId/timeout`). If it reverts with `result available - use finalizeSubmission`, the oracle did respond — finalize instead.
 - If the parent bounty is also expired and you need to reclaim creator funds, see [Reclaiming funds from an expired bounty](#reclaiming-funds-from-an-expired-bounty)
 
 ### Diagnosing ID drift between API and on-chain (BOUNTY_NOT_ONCHAIN)

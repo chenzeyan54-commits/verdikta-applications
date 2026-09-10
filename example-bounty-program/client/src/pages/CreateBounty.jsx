@@ -1455,8 +1455,8 @@ function CreateBounty({ walletState }) {
           <li>Set submission window (example: 7 days / 168 hours).</li>
           <li>Rubric (including threshold for selection) is uploaded to IPFS (immutable).</li>
           <li>Smart contract locks your ETH in escrow.</li>
-          <li>Bounty status becomes OPEN - hunters can submit work before deadline.</li>
-          <li><strong>If approval window enabled:</strong> Each submission enters a creator review period. You can approve directly (paying the creator approval amount) or let the window expire for oracle evaluation.</li>
+          <li>Bounty status becomes OPEN - hunters can submit work before deadline. Hunters must also <em>start</em> oracle evaluation before the deadline; finalizing may happen later.</li>
+          <li><strong>If approval window enabled:</strong> Each submission enters a creator review period. You can approve directly (paying the creator approval amount) or let the window expire for oracle evaluation. The window must end before the deadline, so hunters can only submit up to one window-length before it.</li>
           <li>After deadline passes, bounty becomes EXPIRED if no winner yet.</li>
           <li>Anyone can close an EXPIRED bounty (if no active evaluations) to return funds to creator.</li>
         </ol>
@@ -1507,7 +1507,7 @@ function CreateBounty({ walletState }) {
             <strong>First Winner Takes All:</strong> The first submission that passes the threshold automatically wins. Plan your deadline and threshold accordingly.
           </p>
           <p style={{ marginBottom: 0 }}>
-            <strong>Approval Window:</strong> If enabled, submissions enter a "Pending Creator Approval" state. You can approve directly (faster, potentially lower cost) or let the window expire for standard AI oracle evaluation. Earlier submissions have priority — you must resolve them in order.
+            <strong>Approval Window:</strong> If enabled, submissions enter a "Pending Creator Approval" state. You can approve directly (faster, potentially lower cost) or let the window expire for standard AI oracle evaluation. The window runs per submission and must end before the deadline, so keep it short relative to the submission window — hunters cannot submit during the last window-length before the deadline. Earlier submissions from <em>other</em> hunters take priority only while under evaluation or still in their own window; a hunter's own resubmissions never block, so you can approve a revised version straight away.
           </p>
         </div>
       </div>

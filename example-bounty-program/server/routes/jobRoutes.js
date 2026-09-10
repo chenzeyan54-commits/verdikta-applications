@@ -552,6 +552,8 @@ router.get('/admin/diagnostics', async (req, res) => {
  * GET /api/jobs/admin/stuck
  * Find all stuck submissions and diagnose them.
  * A submission is considered "stuck" if it's been pending for more than 10 minutes.
+ * NOTE: this age is a server heuristic. On-chain, failTimedOutSubmission is gated on
+ * the aggregator's state (round timed out, no result), not on a timer.
  */
 router.get('/admin/stuck', async (req, res) => {
   const TIMEOUT_SECONDS = 10 * 60;
@@ -866,8 +868,9 @@ router.get('/admin/expired', async (req, res) => {
  * Returns expired bounties owned by `creator` along with a per-bounty verdict:
  *   - canClose: true  → ready for `closeExpiredBounty` (no pending evaluations)
  *   - canClose: false → first resolve `pendingSubmissions` (each one needs
- *                       `failTimedOutSubmission` after the 10-minute oracle
- *                       timeout, then the bounty can be closed)
+ *                       `finalizeSubmission` if the oracle responded, else
+ *                       `failTimedOutSubmission` once the aggregator round has
+ *                       timed out; then the bounty can be closed)
  *
  * Designed to be safe to poll (e.g., from a nav badge) — small response, no
  * mutations. Returns 200 with empty list when the creator has nothing to do.
@@ -4635,7 +4638,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         `Confirm submission with POST /api/jobs/${jobId}/submissions/confirm after step 1`,
         `Poll GET /api/jobs/${jobId}/submissions after step 2 until evaluation completes, then execute step 3`,
         'Step 3 (finalizeSubmission) is REQUIRED — oracle completion does NOT trigger payment automatically',
-        'If finalizeSubmission reverts with "Verdikta not ready", the oracle timed out — call failTimedOutSubmission instead (available after 10 min)',
+        'If finalizeSubmission reverts with "Verdikta not ready", the oracle has not completed — wait; if it never responds, failTimedOutSubmission works once the aggregator round has timed out (5+ min after step 2). It reverts "result available - use finalizeSubmission" if a result exists',
         ...(job.creatorAssessmentWindowSize > 0 ? [
           `WINDOWED BOUNTY: After step 1, the submission enters PendingCreatorApproval for ${job.creatorAssessmentWindowSize}s. The creator may approve directly. If the window expires, proceed with steps 2-3.`,
           `Poll GET /api/jobs/${jobId}/submissions/:subId/diagnose to check window status before executing step 2.`
@@ -5732,14 +5735,20 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
  *
  * On-chain requirements (from BountyEscrow.failTimedOutSubmission):
  * - Status must be PendingVerdikta (PENDING_EVALUATION)
- * - 10 minutes must have elapsed since submittedAt
+ * - No timer on-chain. The contract tries finalizeEvaluationTimeout on the
+ *   aggregator, then requires: no valid result ("result available - use
+ *   finalizeSubmission") AND the round settled ("evaluation not settled").
+ *   The aggregator's response timeout is 300 s after startPreparedSubmission.
  * - Anyone can call (no access restriction)
+ * The 10-minutes-since-submittedAt check below is a conservative local
+ * pre-check only; submittedAt is the PREPARE time, so on windowed bounties it
+ * can pass while the oracle round is still open.
  *
  * Returns contract call data for client to execute the transaction.
  */
 router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
   const { jobId, submissionId } = req.params;
-  const TIMEOUT_SECONDS = 10 * 60; // 10 minutes per contract
+  const TIMEOUT_SECONDS = 10 * 60; // local heuristic (the contract has no timer)
 
   try {
     logger.info('[timeout] check', { jobId, submissionId });

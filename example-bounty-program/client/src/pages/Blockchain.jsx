@@ -738,7 +738,16 @@ submission-package.zip
                 The bounty creator can then call <code>creatorApproveSubmission(bountyId, submissionId)</code>
                 during the window to pay the hunter directly (skipping oracle evaluation).
                 If the window expires, anyone can call <code>startPreparedSubmission</code> to begin the
-                normal AI evaluation flow (steps 2-3).
+                normal AI evaluation flow (steps 2-3) — but only before the bounty deadline. The window itself must
+                end before the deadline, so <code>prepareSubmission</code> reverts with <code>window would end after deadline</code>
+                once less than one window remains: the effective cutoff is <code>submissionDeadline − creatorAssessmentWindowSize</code>.
+              </p>
+              <p style={{ margin: '0.5rem 0 0 0' }}>
+                <strong>Priority:</strong> an earlier submission blocks creator approval or payout of a later one only while it can
+                still win — it is in oracle evaluation, or its window is still open. It never blocks a later submission from the
+                same hunter (resubmissions supersede that hunter's earlier versions), and it stops blocking once its window expires
+                with no arbitration started. A passing <code>finalizeSubmission</code> blocked by another hunter's in-flight evaluation
+                reverts with <code>earlier submission pending - retry after it resolves</code> instead of becoming <code>PassedUnpaid</code>; retry later.
               </p>
             </div>
           </div>
@@ -976,10 +985,11 @@ submission-package.zip
             </div>
             <h3>Timeouts</h3>
             <p>
-              Submissions stuck in <code>PendingVerdikta</code> for 10+ minutes can be failed by anyone
-              using <code>failTimedOutSubmission()</code>. Whenever the oracle has actually responded, prefer{' '}
-              <code>finalizeSubmission()</code> — it settles the aggregator and reliably returns your unspent
-              prepay. <code>failTimedOutSubmission()</code> is a last resort for a truly stuck oracle.
+              Submissions stuck in <code>PendingVerdikta</code> whose oracle never responded can be failed by anyone
+              using <code>failTimedOutSubmission()</code>. There is no fixed timer: the call succeeds only once the
+              aggregator's oracle round has timed out (about 5 minutes after the start transaction) with no result, and
+              it refunds your unspent prepay. If the oracle did respond it reverts with{' '}
+              <code>result available - use finalizeSubmission</code> — call <code>finalizeSubmission()</code> instead.
             </p>
           </div>
         </div>
@@ -1015,9 +1025,12 @@ submission-package.zip
             </div>
             <h3>Timeout Stuck Submissions</h3>
             <p>
-              Submissions stuck in <code>PendingVerdikta</code> for <strong>10+ minutes</strong> can be
-              marked as failed using <code>failTimedOutSubmission(bountyId, submissionId)</code>.
-              This refunds the unspent ETH prepay to the hunter and frees up the bounty for other submissions.
+              Submissions stuck in <code>PendingVerdikta</code> whose oracle round has <strong>timed out on the
+              aggregator with no result</strong> (about 5 minutes after the start transaction) can be marked as failed
+              using <code>failTimedOutSubmission(bountyId, submissionId)</code>. It reverts with{' '}
+              <code>evaluation not settled</code> while the round is still open and with{' '}
+              <code>result available - use finalizeSubmission</code> if a result exists, so it can never discard a passing score.
+              On success it refunds the unspent ETH prepay to the hunter and frees up the bounty for other submissions.
             </p>
           </div>
           <div className="info-card">
@@ -1038,7 +1051,7 @@ submission-package.zip
             <span>Maintenance Functions (JavaScript)</span>
             <button
               className="btn-icon"
-              onClick={() => copyToClipboard(`// Timeout a stuck submission (must be PendingVerdikta > 10 minutes)
+              onClick={() => copyToClipboard(`// Force-fail a stuck submission (PendingVerdikta, aggregator round timed out, no result)
 async function timeoutSubmission(bountyId, submissionId) {
   const tx = await escrow.failTimedOutSubmission(bountyId, submissionId);
   await tx.wait();
@@ -1072,7 +1085,7 @@ async function closeViaAPI(jobId) {
               {copiedCode === 'maintenance-code' ? <Check size={16} /> : <Copy size={16} />}
             </button>
           </div>
-          <pre><code>{`// Timeout a stuck submission (must be PendingVerdikta > 10 minutes)
+          <pre><code>{`// Force-fail a stuck submission (PendingVerdikta, aggregator round timed out, no result)
 async function timeoutSubmission(bountyId, submissionId) {
   const tx = await escrow.failTimedOutSubmission(bountyId, submissionId);
   await tx.wait();
@@ -1839,8 +1852,10 @@ curl -H "X-Bot-API-Key: YOUR_KEY" \\
               <div className="faq-answer">
                 <p>
                   AI evaluations take some time. Normal evaluation time is ~30 seconds to 2 minutes.
-                  If stuck longer than 10 minutes, you can call <code>failTimedOutSubmission()</code>
-                  to mark it as failed and recover your unspent ETH prepay.
+                  If the oracle never responds, the aggregator round times out about 5 minutes after your start
+                  transaction; after that anyone can call <code>failTimedOutSubmission()</code> to mark it as failed
+                  and recover your unspent ETH prepay. If it reverts with <code>result available - use finalizeSubmission</code>,
+                  the oracle did respond — call <code>finalizeSubmission()</code> instead.
                 </p>
               </div>
             )}

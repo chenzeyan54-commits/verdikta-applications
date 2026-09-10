@@ -501,13 +501,20 @@ contract BountyEscrow {
         // Leaving PendingVerdikta (every branch below sets a terminal status).
         activeEvaluations[bountyId] -= 1;
 
-        (uint256 acceptance, uint256 rejection) = _interpretScores(scores);
+        // A malformed score vector (anything other than the expected [DONT_FUND, FUND]
+        // pair) is treated as a failed evaluation rather than a revert. Reverting here
+        // would leave the submission stuck in PendingVerdikta forever: finalize can never
+        // succeed, and failTimedOutSubmission refuses because a result exists. That would
+        // pin activeEvaluations above zero, so the creator could never close the bounty
+        // and the escrow would be locked. Failing it keeps the bounty usable and refunds
+        // the hunter's leftover prepay.
+        (bool validScores, uint256 acceptance, uint256 rejection) = _interpretScores(scores);
         s.acceptance = acceptance;
         s.rejection  = rejection;
         s.justificationCids = justCids;
         s.finalizedAt = block.timestamp;
 
-        bool passed = _passed(acceptance, b.threshold);
+        bool passed = validScores && _passed(acceptance, b.threshold);
 
         if (!passed) {
             s.status = SubmissionStatus.Failed;
@@ -822,10 +829,15 @@ contract BountyEscrow {
     /// @dev Interpret Verdikta scores: scores[0]=reject (DONT_FUND), scores[1]=accept (FUND)
     /// @dev Verdikta returns scores that sum to 1,000,000 (e.g., [120000, 880000] = 12% reject, 88% accept)
     /// @dev We normalize to 0-100 by dividing by 10,000 to match threshold scale
+    /// @dev Never reverts. A vector that is not exactly 2 long is reported as invalid
+    ///      (valid == false, both scores 0) and the caller treats it as a failed evaluation.
     function _interpretScores(uint256[] memory scores)
-        internal pure returns (uint256 accept, uint256 reject)
+        internal pure returns (bool valid, uint256 accept, uint256 reject)
     {
-        require(scores.length == 2, "expected 2 scores from Verdikta");
+        if (scores.length != 2) {
+            return (false, 0, 0);
+        }
+        valid = true;
 
         // Two scores from Verdikta: [DONT_FUND, FUND]
         // scores[0] = DONT_FUND (rejection score)
@@ -838,7 +850,7 @@ contract BountyEscrow {
         if (accept > 100) accept = 100;
         if (reject > 100) reject = 100;
 
-        return (accept, reject);
+        return (valid, accept, reject);
     }
 
     /// @dev Pass rule: acceptance must meet or exceed threshold

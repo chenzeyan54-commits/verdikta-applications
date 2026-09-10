@@ -475,6 +475,146 @@ describe("BountyEscrow", function () {
       expect(bounty.payoutWei).to.equal(0);
     });
 
+    describe("Malformed score vectors", function () {
+      // The aggregator returns one score per outcome in the evaluation package. The
+      // escrow expects exactly [DONT_FUND, FUND]. Anything else must fail the
+      // submission (never pass, never revert) so the bounty stays usable.
+      const THREE_SCORES = [100000n, 800000n, 100000n];
+      const ONE_SCORE = [1000000n];
+      const NO_SCORES = [];
+
+      for (const [label, scores] of [
+        ["3 scores", THREE_SCORES],
+        ["1 score", ONE_SCORE],
+        ["0 scores", NO_SCORES],
+      ]) {
+        it(`Should fail (not pass, not revert) a submission with ${label}`, async function () {
+          const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+            await loadFixture(deployBountyEscrowFixture);
+          const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+          const { submissionId, aggId } = await submitFull(
+            bountyEscrow, verdiktaAggregator, hunter, bountyId
+          );
+
+          await verdiktaAggregator.setEvaluation(aggId, scores, JUST_CIDS, true);
+
+          await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+            .to.emit(bountyEscrow, "SubmissionFinalized")
+            .withArgs(bountyId, submissionId, false, 0, 0, JUST_CIDS);
+
+          const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
+          expect(sub.status).to.equal(2); // Failed
+          expect(sub.acceptance).to.equal(0);
+          expect(sub.rejection).to.equal(0);
+          expect(sub.finalizedAt).to.be.gt(0);
+
+          // Bounty untouched: still Open, escrow intact, no winner
+          const bounty = await bountyEscrow.getBounty(bountyId);
+          expect(bounty.status).to.equal(0); // Open
+          expect(bounty.payoutWei).to.equal(BOUNTY_WEI);
+          expect(bounty.winner).to.equal(ethers.ZeroAddress);
+          expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0);
+
+          // Terminal: cannot be finalized or force-failed again
+          await expect(
+            bountyEscrow.finalizeSubmission(bountyId, submissionId)
+          ).to.be.revertedWith("not pending");
+          await expect(
+            bountyEscrow.failTimedOutSubmission(bountyId, submissionId)
+          ).to.be.revertedWith("not pending");
+        });
+      }
+
+      it("Should never pay out on a malformed vector even if a value would pass the threshold", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        const { submissionId, aggId } = await submitFull(
+          bountyEscrow, verdiktaAggregator, hunter, bountyId
+        );
+
+        // scores[1] alone would read as 100% accept
+        await verdiktaAggregator.setEvaluation(
+          aggId, [0n, 1000000n, 0n], JUST_CIDS, true
+        );
+
+        const hunterBalBefore = await ethers.provider.getBalance(hunter.address);
+        await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+          .to.not.emit(bountyEscrow, "PayoutSent");
+        const hunterBalAfter = await ethers.provider.getBalance(hunter.address);
+        expect(hunterBalAfter).to.equal(hunterBalBefore);
+
+        expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(2);
+        expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(0);
+      });
+
+      it("Should refund the hunter's leftover prepay on a malformed vector", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+
+        const { submissionId, ethMaxBudget, evalWallet } =
+          await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await verdiktaAggregator.setRefundAmount(ethMaxBudget);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+          value: ethMaxBudget,
+        });
+        const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
+
+        await verdiktaAggregator.setEvaluation(aggId, THREE_SCORES, JUST_CIDS, true);
+
+        const hunterBalBefore = await ethers.provider.getBalance(hunter.address);
+        await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+          .to.emit(bountyEscrow, "EthRefunded")
+          .withArgs(bountyId, submissionId, ethMaxBudget);
+        const hunterBalAfter = await ethers.provider.getBalance(hunter.address);
+        expect(hunterBalAfter - hunterBalBefore).to.equal(ethMaxBudget);
+        expect(await verdiktaAggregator.ethOwed(evalWallet)).to.equal(0);
+      });
+
+      it("Should leave the bounty open so a later well-formed submission can win", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+
+        const bad = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+        await verdiktaAggregator.setEvaluation(bad.aggId, THREE_SCORES, JUST_CIDS, true);
+        await bountyEscrow.finalizeSubmission(bountyId, bad.submissionId);
+
+        const good = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
+        await verdiktaAggregator.setEvaluation(good.aggId, PASSING_SCORES, JUST_CIDS, true);
+
+        await expect(bountyEscrow.finalizeSubmission(bountyId, good.submissionId))
+          .to.emit(bountyEscrow, "PayoutSent")
+          .withArgs(bountyId, hunter2.address, BOUNTY_WEI);
+
+        const bounty = await bountyEscrow.getBounty(bountyId);
+        expect(bounty.status).to.equal(1); // Awarded
+        expect(bounty.winner).to.equal(hunter2.address);
+        expect((await bountyEscrow.getSubmission(bountyId, bad.submissionId)).status).to.equal(2);
+        expect((await bountyEscrow.getSubmission(bountyId, good.submissionId)).status).to.equal(3);
+      });
+
+      it("Should let the creator close an expired bounty after a malformed-vector failure", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
+
+        const { submissionId, aggId } = await submitFull(
+          bountyEscrow, verdiktaAggregator, hunter, bountyId
+        );
+        await verdiktaAggregator.setEvaluation(aggId, THREE_SCORES, JUST_CIDS, true);
+
+        // Before the fix, activeEvaluations would stay at 1 and this would be locked forever.
+        await bountyEscrow.finalizeSubmission(bountyId, submissionId);
+
+        await time.increaseTo(deadline);
+        await expect(bountyEscrow.closeExpiredBounty(bountyId))
+          .to.emit(bountyEscrow, "BountyClosed")
+          .withArgs(bountyId, creator.address, BOUNTY_WEI);
+      });
+    });
+
     it("Should process failing evaluation correctly", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } =
         await loadFixture(deployBountyEscrowFixture);

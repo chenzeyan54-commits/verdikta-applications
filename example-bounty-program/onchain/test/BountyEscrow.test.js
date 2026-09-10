@@ -440,6 +440,65 @@ describe("BountyEscrow", function () {
   });
 
   // =========================================================================
+  describe("Deadline Rule (non-windowed)", function () {
+    // Everything the hunter has to do — prepare AND start — must happen before the
+    // deadline. At the deadline a submission is either in evaluation or dead, which is
+    // what makes the deadline-based close safe.
+
+    it("Should reject starting a prepared submission at or after the deadline", async function () {
+      const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, ethMaxBudget } =
+        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+      await time.increaseTo(deadline);
+
+      await expect(
+        bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+          value: ethMaxBudget,
+        })
+      ).to.be.revertedWith("deadline passed");
+
+      // The dead submission does not block the creator from closing
+      await expect(bountyEscrow.closeExpiredBounty(bountyId))
+        .to.emit(bountyEscrow, "BountyClosed")
+        .withArgs(bountyId, creator.address, BOUNTY_WEI);
+
+      // And it can never be started afterwards either
+      await expect(
+        bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+          value: ethMaxBudget,
+        })
+      ).to.be.revertedWith("bounty not open");
+    });
+
+    it("Should allow starting one second before the deadline, then block close until finalized", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, ethMaxBudget } =
+        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+      await time.setNextBlockTimestamp(deadline - 1);
+      await expect(
+        bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+          value: ethMaxBudget,
+        })
+      ).to.emit(bountyEscrow, "WorkSubmitted");
+
+      await time.increaseTo(deadline);
+      await expect(bountyEscrow.closeExpiredBounty(bountyId))
+        .to.be.revertedWith("active evaluation - finalize first");
+
+      // Finalizing after the deadline is still fine, and pays the on-time hunter
+      const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
+      await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+        .to.emit(bountyEscrow, "PayoutSent")
+        .withArgs(bountyId, hunter.address, BOUNTY_WEI);
+    });
+  });
+
   describe("Evaluation Finalization", function () {
     it("Should process passing evaluation and pay winner", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } =
@@ -2167,6 +2226,125 @@ describe("BountyEscrow", function () {
         await expect(
           bountyEscrow.closeExpiredBounty(bountyId)
         ).to.be.revertedWith("active evaluation - finalize first");
+      });
+    });
+
+    describe("Deadline Rule (windowed)", function () {
+      // The creator window must end before the deadline with at least one second to
+      // spare, so the hunter can always start arbitration before the deadline. This
+      // removes the "free look" where a creator could close the bounty while a hunter's
+      // window was still running past the deadline.
+
+      it("Should reject preparing when the window would end after the deadline", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId, deadline } = await createWindowedBounty(bountyEscrow, creator);
+
+        // Prepare with less than one window left before the deadline
+        await time.increaseTo(deadline - WINDOW_SIZE + 60);
+        await expect(
+          prepareDefaultSubmission(bountyEscrow, hunter, bountyId)
+        ).to.be.revertedWith("window would end after deadline");
+      });
+
+      it("Should reject preparing when the window ends with no second left to start", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId, deadline } = await createWindowedBounty(bountyEscrow, creator);
+
+        // windowEnd = deadline - 1: start needs a timestamp > windowEnd AND < deadline — none.
+        await time.setNextBlockTimestamp(deadline - WINDOW_SIZE - 1);
+        await expect(
+          prepareDefaultSubmission(bountyEscrow, hunter, bountyId)
+        ).to.be.revertedWith("window would end after deadline");
+      });
+
+      it("Should accept preparing at the latest valid moment and allow the start in the last second", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId, deadline } = await createWindowedBounty(bountyEscrow, creator);
+
+        // windowEnd = deadline - 2, leaving exactly one valid start second (deadline - 1)
+        await time.setNextBlockTimestamp(deadline - WINDOW_SIZE - 2);
+        const { submissionId, ethMaxBudget } =
+          await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
+        expect(sub.creatorWindowEnd).to.equal(deadline - 2);
+
+        // Still inside the window: hunter locked out
+        await time.setNextBlockTimestamp(deadline - 2);
+        await expect(
+          bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+            value: ethMaxBudget,
+          })
+        ).to.be.revertedWith("creator window still open");
+
+        // Window over, deadline not yet reached: start succeeds
+        await time.setNextBlockTimestamp(deadline - 1);
+        await expect(
+          bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, {
+            value: ethMaxBudget,
+          })
+        ).to.emit(bountyEscrow, "WorkSubmitted");
+
+        // Creator cannot close over an in-flight evaluation
+        await time.increaseTo(deadline);
+        await expect(bountyEscrow.closeExpiredBounty(bountyId))
+          .to.be.revertedWith("active evaluation - finalize first");
+      });
+
+      it("Should reject starting an expired-window submission once the deadline has passed", async function () {
+        const { bountyEscrow, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId, deadline } = await createWindowedBounty(bountyEscrow, creator);
+
+        const { submissionId, ethMaxBudget } =
+          await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+
+        // Window ends well before the deadline; hunter simply never starts
+        await time.increaseTo(deadline);
+
+        // Neither the hunter nor a third party can start it now
+        for (const signer of [hunter, other]) {
+          await expect(
+            bountyEscrow.connect(signer).startPreparedSubmission(bountyId, submissionId, {
+              value: ethMaxBudget,
+            })
+          ).to.be.revertedWith("deadline passed");
+        }
+
+        // Creator approval is gone too (window expired), so the submission is dead
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, submissionId)
+        ).to.be.revertedWith("window expired");
+
+        // ...and the bounty can be closed
+        await expect(bountyEscrow.closeExpiredBounty(bountyId))
+          .to.emit(bountyEscrow, "BountyClosed");
+      });
+
+      it("Should never allow a creator window to be open at the deadline (no free look)", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId, deadline } = await createWindowedBounty(bountyEscrow, creator);
+
+        // Any submission that prepare accepts has its window closed before the deadline
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
+        expect(sub.creatorWindowEnd).to.be.lt(deadline);
+
+        // canBeClosed is false before the deadline regardless of window state
+        expect(await bountyEscrow.canBeClosed(bountyId)).to.equal(false);
+        await expect(bountyEscrow.closeExpiredBounty(bountyId))
+          .to.be.revertedWith("deadline not passed");
+      });
+
+      it("Should reject preparing a windowed submission when the window is longer than the bounty", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        // 1-hour bounty with a 2-hour window: no submission can ever be prepared
+        const deadline = (await time.latest()) + 3600;
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          deadline,
+          windowSize: 7200,
+        });
+        await expect(
+          prepareDefaultSubmission(bountyEscrow, hunter, bountyId)
+        ).to.be.revertedWith("window would end after deadline");
       });
     });
 

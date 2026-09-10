@@ -274,6 +274,9 @@ contract BountyEscrow {
     /// @notice Close an expired bounty and return funds to creator
     /// @dev Can be called by ANYONE after submissionDeadline passes
     /// @dev Requires no active evaluations (PendingVerdikta submissions)
+    /// @dev Safe to call at the deadline: prepare and start both require block.timestamp
+    ///      to be before the deadline, so no submission can enter evaluation afterwards.
+    ///      Only an evaluation already in flight (PendingVerdikta) blocks closing.
     /// @param bountyId The bounty to close
     function closeExpiredBounty(uint256 bountyId) external nonReentrant {
         Bounty storage b = _mustBounty(bountyId);
@@ -298,7 +301,8 @@ contract BountyEscrow {
     /// @dev The ethMaxBudget is emitted so the funder knows how much ETH to attach when starting.
     /// @dev If the bounty has a creator assessment window, status starts as PendingCreatorApproval.
     /// @dev Otherwise, status starts as Prepared (classic behavior).
-    /// @dev Can only be called before the submission deadline
+    /// @dev Can only be called before the submission deadline. On windowed bounties the
+    ///      effective cutoff is earlier: the creator window must end before the deadline.
     /// @param bountyId The bounty to submit to
     /// @param evaluationCid The evaluation package CID (must match the bounty's stored evaluationCid)
     /// @param hunterCid The hunter's work product archive CID (bCID containing the actual submission)
@@ -342,6 +346,18 @@ contract BountyEscrow {
         );
 
         bool hasWindow = b.creatorAssessmentWindowSize > 0;
+
+        // Windowed bounties: the deadline is the last moment for the hunter to have their
+        // evaluation STARTED (see startPreparedSubmission), and starting is only allowed
+        // strictly after the creator window ends. So the window must end early enough to
+        // leave at least one second in which the hunter can start. Otherwise the submission
+        // could never be arbitrated and the deadline-based close would be unsafe.
+        if (hasWindow) {
+            require(
+                block.timestamp + b.creatorAssessmentWindowSize + 1 < b.submissionDeadline,
+                "window would end after deadline"
+            );
+        }
 
         Submission memory s = Submission({
             hunter: msg.sender,
@@ -424,7 +440,10 @@ contract BountyEscrow {
     ///      EvaluationWallet, which prepays Verdikta. No ERC20 approval is needed.
     /// @dev For Prepared submissions (no window): only the hunter can call.
     /// @dev For PendingCreatorApproval submissions (window expired): anyone can call and fund.
-    /// @dev Can be called after deadline as long as submission was prepared before deadline
+    /// @dev Must be called BEFORE the submission deadline. Everything the hunter has to do
+    ///      (prepare, wait out any creator window, start) happens before the deadline, so at
+    ///      the deadline every submission is either paid, in evaluation, or dead. That is
+    ///      what makes closeExpiredBounty's deadline check sufficient.
     /// @dev Reverts if any existing submission has already passed evaluation (first-to-pass wins)
     function startPreparedSubmission(uint256 bountyId, uint256 submissionId) external payable nonReentrant {
         Bounty storage b = _mustBounty(bountyId);
@@ -442,7 +461,7 @@ contract BountyEscrow {
             require(msg.sender == s.hunter, "only hunter");
         }
 
-        require(s.submittedAt < b.submissionDeadline, "submitted too late");
+        require(block.timestamp < b.submissionDeadline, "deadline passed");
 
         // Check if any existing submission has already passed on Verdikta
         // This prevents wasting the prepay when someone else already won

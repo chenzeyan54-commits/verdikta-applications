@@ -2128,12 +2128,12 @@ describe("BountyEscrow", function () {
         ).to.emit(bountyEscrow, "CreatorApproved");
       });
 
-      it("Should block finalize payment of sub 1 while sub 0 is unresolved (windowed)", async function () {
+      it("Should defer (revert, not PassedUnpaid) finalize of sub 1 while sub 0 is in evaluation, then pay the right one", async function () {
         const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
 
-        // Sub 0 and sub 1 both submitted
+        // Sub 0 and sub 1 both submitted by different hunters
         const sub0 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
         const sub1 = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
 
@@ -2151,21 +2151,89 @@ describe("BountyEscrow", function () {
         const sub0Data = await bountyEscrow.getSubmission(bountyId, sub0.submissionId);
         const sub1Data = await bountyEscrow.getSubmission(bountyId, sub1.submissionId);
 
-        // Sub 1 completes first with passing score
+        // Sub 1 completes first with passing score: finalize is DEFERRED, nothing written
         await verdiktaAggregator.setEvaluation(sub1Data.verdiktaAggId, PASSING_SCORES, JUST_CIDS, true);
-        await bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId);
-
-        // Sub 1 should be PassedUnpaid (sub 0 is still PendingVerdikta)
-        const sub1After = await bountyEscrow.getSubmission(bountyId, sub1.submissionId);
-        expect(sub1After.status).to.equal(4); // PassedUnpaid
+        await expect(bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId))
+          .to.be.revertedWith("earlier submission pending - retry after it resolves");
+        expect((await bountyEscrow.getSubmission(bountyId, sub1.submissionId)).status)
+          .to.equal(1); // still PendingVerdikta
+        expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(2);
 
         // Sub 0 completes with passing score — gets paid (it has priority)
         await verdiktaAggregator.setEvaluation(sub0Data.verdiktaAggId, PASSING_SCORES, JUST_CIDS, true);
         await expect(bountyEscrow.finalizeSubmission(bountyId, sub0.submissionId))
-          .to.emit(bountyEscrow, "PayoutSent");
+          .to.emit(bountyEscrow, "PayoutSent")
+          .withArgs(bountyId, hunter.address, ARBITER_PAY);
+        expect((await bountyEscrow.getSubmission(bountyId, sub0.submissionId)).status)
+          .to.equal(3); // PassedPaid
 
-        const sub0After = await bountyEscrow.getSubmission(bountyId, sub0.submissionId);
-        expect(sub0After.status).to.equal(3); // PassedPaid
+        // Retry sub 1: bounty already Awarded, so now it is correctly PassedUnpaid
+        await bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId);
+        expect((await bountyEscrow.getSubmission(bountyId, sub1.submissionId)).status)
+          .to.equal(4); // PassedUnpaid
+        expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0);
+      });
+
+      it("Should pay sub 1 on retry when the earlier in-flight sub 0 fails (no windowed deadlock)", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        const sub0 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        const sub1 = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+        await time.increase(WINDOW_SIZE + 1);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, sub0.submissionId, {
+          value: sub0.ethMaxBudget,
+        });
+        await bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, sub1.submissionId, {
+          value: sub1.ethMaxBudget,
+        });
+        const sub0Data = await bountyEscrow.getSubmission(bountyId, sub0.submissionId);
+        const sub1Data = await bountyEscrow.getSubmission(bountyId, sub1.submissionId);
+
+        // Sub 1 passes first, deferred
+        await verdiktaAggregator.setEvaluation(sub1Data.verdiktaAggId, PASSING_SCORES, JUST_CIDS, true);
+        await expect(bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId))
+          .to.be.revertedWith("earlier submission pending - retry after it resolves");
+
+        // Sub 0 fails. Before this fix sub 1 would already be terminal PassedUnpaid and
+        // nobody would ever be paid; the creator would close and reclaim the escrow.
+        await verdiktaAggregator.setEvaluation(sub0Data.verdiktaAggId, FAILING_SCORES, JUST_CIDS, true);
+        await bountyEscrow.finalizeSubmission(bountyId, sub0.submissionId);
+
+        await expect(bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId))
+          .to.emit(bountyEscrow, "PayoutSent")
+          .withArgs(bountyId, hunter2.address, ARBITER_PAY);
+        expect((await bountyEscrow.getBounty(bountyId)).winner).to.equal(hunter2.address);
+      });
+
+      it("Should pay sub 1 on retry after the earlier in-flight sub 0 is force-failed", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        const sub0 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        const sub1 = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+        await time.increase(WINDOW_SIZE + 1);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, sub0.submissionId, {
+          value: sub0.ethMaxBudget,
+        });
+        await bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, sub1.submissionId, {
+          value: sub1.ethMaxBudget,
+        });
+        const sub1Data = await bountyEscrow.getSubmission(bountyId, sub1.submissionId);
+
+        await verdiktaAggregator.setEvaluation(sub1Data.verdiktaAggId, PASSING_SCORES, JUST_CIDS, true);
+        await expect(bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId))
+          .to.be.revertedWith("earlier submission pending - retry after it resolves");
+
+        // Sub 0's oracle round dies: past the aggregator timeout, anyone can force-fail it
+        await time.increase(Number(await verdiktaAggregator.responseTimeoutSeconds()) + 1);
+        await bountyEscrow.failTimedOutSubmission(bountyId, sub0.submissionId);
+
+        await expect(bountyEscrow.finalizeSubmission(bountyId, sub1.submissionId))
+          .to.emit(bountyEscrow, "PayoutSent")
+          .withArgs(bountyId, hunter2.address, ARBITER_PAY);
       });
 
       it("Should maintain first-to-complete behavior for non-windowed bounties", async function () {
@@ -2188,6 +2256,176 @@ describe("BountyEscrow", function () {
         await bountyEscrow.finalizeSubmission(bountyId, sub2.submissionId);
         expect((await bountyEscrow.getSubmission(bountyId, sub2.submissionId)).status)
           .to.equal(4); // PassedUnpaid
+      });
+    });
+
+    describe("Priority: same-hunter resubmission and abandoned submissions", function () {
+      // Windowed bounties are usually TARGETED, so every submission is from the same
+      // hunter and the normal flow is submit → feedback → resubmit. The stale first
+      // version must never block the creator from approving the revision, and nobody
+      // should have to pay an arbitration prepay to clear it.
+
+      it("Targeted: creator can approve the resubmission while the first version's window is still open", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          targetHunter: hunter.address,
+        });
+
+        const v1 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        // Quick revision, well inside v1's window
+        await time.increase(60);
+        const v2 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId, {
+          hunterCid: "QmRevisedWork",
+        });
+
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, v2.submissionId)
+        ).to.emit(bountyEscrow, "CreatorApproved")
+          .withArgs(bountyId, v2.submissionId, hunter.address, CREATOR_PAY);
+
+        expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(1); // Awarded
+        // v1 is simply left behind and can no longer be approved or started
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, v1.submissionId)
+        ).to.be.revertedWith("bounty not open");
+      });
+
+      it("Targeted: creator can approve the resubmission after the first version's window expired (no prepay needed)", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          targetHunter: hunter.address,
+        });
+
+        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await time.increase(WINDOW_SIZE + 1);
+        const v2 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId, {
+          hunterCid: "QmRevisedWork",
+        });
+
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, v2.submissionId)
+        ).to.emit(bountyEscrow, "CreatorApproved");
+      });
+
+      it("Targeted: hunter's appeal on the resubmission is paid even though the first version was never arbitrated", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          targetHunter: hunter.address,
+        });
+
+        const v1 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await time.increase(60);
+        const v2 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId, {
+          hunterCid: "QmRevisedWork",
+        });
+
+        // Creator ignores both. v2's window ends; hunter appeals v2 only.
+        await time.increase(WINDOW_SIZE + 1);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, v2.submissionId, {
+          value: v2.ethMaxBudget,
+        });
+        const aggId = (await bountyEscrow.getSubmission(bountyId, v2.submissionId)).verdiktaAggId;
+        await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+
+        // Before the fix: v1 (PendingCreatorApproval, never started) counted as unresolved,
+        // v2 was written terminal PassedUnpaid, and the creator could later close and
+        // reclaim the escrow — the hunter paid the prepay, passed, and got nothing.
+        await expect(bountyEscrow.finalizeSubmission(bountyId, v2.submissionId))
+          .to.emit(bountyEscrow, "PayoutSent")
+          .withArgs(bountyId, hunter.address, ARBITER_PAY);
+        expect((await bountyEscrow.getSubmission(bountyId, v2.submissionId)).status).to.equal(3);
+        expect((await bountyEscrow.getSubmission(bountyId, v1.submissionId)).status).to.equal(5); // still PendingCreatorApproval, harmless
+      });
+
+      it("Targeted: hunter arbitrating both versions gets paid once, for whichever passes first", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          targetHunter: hunter.address,
+        });
+
+        const v1 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        const v2 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId, {
+          hunterCid: "QmRevisedWork",
+        });
+        await time.increase(WINDOW_SIZE + 1);
+        for (const v of [v1, v2]) {
+          await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, v.submissionId, {
+            value: v.ethMaxBudget,
+          });
+        }
+        const agg1 = (await bountyEscrow.getSubmission(bountyId, v1.submissionId)).verdiktaAggId;
+        const agg2 = (await bountyEscrow.getSubmission(bountyId, v2.submissionId)).verdiktaAggId;
+
+        // v2 passes first: same hunter, so v1 in flight does NOT defer it
+        await verdiktaAggregator.setEvaluation(agg2, PASSING_SCORES, JUST_CIDS, true);
+        await expect(bountyEscrow.finalizeSubmission(bountyId, v2.submissionId))
+          .to.emit(bountyEscrow, "PayoutSent");
+
+        await verdiktaAggregator.setEvaluation(agg1, PASSING_SCORES, JUST_CIDS, true);
+        await bountyEscrow.finalizeSubmission(bountyId, v1.submissionId);
+        expect((await bountyEscrow.getSubmission(bountyId, v1.submissionId)).status).to.equal(4); // PassedUnpaid
+        expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(1); // Awarded, once
+      });
+
+      it("Open bounty: abandoned sub 0 (expired window, never started) no longer blocks another hunter's approval", async function () {
+        const { bountyEscrow, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId); // sub 0, abandoned
+        await time.increase(WINDOW_SIZE + 1);
+        const sub1 = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, sub1.submissionId)
+        ).to.emit(bountyEscrow, "CreatorApproved");
+      });
+
+      it("Open bounty: junk sub 0 planted by the creator cannot deny another hunter's passing appeal", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter2, other } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        // Creator (via a second address) plants a gas-only junk submission at index 0
+        await prepareDefaultSubmission(bountyEscrow, other, bountyId, { hunterCid: "QmJunk" });
+
+        const sub1 = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+        await time.increase(WINDOW_SIZE + 1);
+        await bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, sub1.submissionId, {
+          value: sub1.ethMaxBudget,
+        });
+        const aggId = (await bountyEscrow.getSubmission(bountyId, sub1.submissionId)).verdiktaAggId;
+        await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+
+        // The creator calls finalize themselves, hoping to lock in PassedUnpaid: no longer possible
+        await expect(bountyEscrow.connect(creator).finalizeSubmission(bountyId, sub1.submissionId))
+          .to.emit(bountyEscrow, "PayoutSent")
+          .withArgs(bountyId, hunter2.address, ARBITER_PAY);
+      });
+
+      it("Open bounty: another hunter's sub 0 still blocks while its window is open, then stops blocking when it expires unstarted", async function () {
+        const { bountyEscrow, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
+
+        const sub0 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await time.increase(60);
+        const sub1 = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+
+        // sub 0's window open: sub 0 keeps priority
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, sub1.submissionId)
+        ).to.be.revertedWith("earlier submission unresolved");
+
+        // sub 0's window ends (sub 1's is still open for another 60s), nobody started sub 0
+        const sub0End = Number((await bountyEscrow.getSubmission(bountyId, sub0.submissionId)).creatorWindowEnd);
+        await time.increaseTo(sub0End + 1);
+
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, sub1.submissionId)
+        ).to.emit(bountyEscrow, "CreatorApproved");
       });
     });
 

@@ -832,7 +832,7 @@ router.get('/api/docs', (req, res) => {
         contentType: 'application/json',
         fields: [
           'hunter: Ethereum address 0x... (required)',
-          'hunterCid: IPFS CID from POST /submit (required)',
+          'hunterCid: IPFS CID from POST /submit (required). Must be a bare CID (46–100 alphanumeric chars, no prefix or delimiters) or the contract reverts "bad hunterCid".',
           'addendum: DEPRECATED — IGNORED by the contract since the September 2026 revision — the escrow forwards fixed values (empty addendum, alpha 500, base cost 0, scaling 1) so the judged party cannot shape the evaluation. Accepted for backward compatibility only.',
           'alpha: DEPRECATED — ignored by the contract (fixed at 500 on-chain).',
           'maxOracleFee: max fee per oracle. Accepts decimal ETH (e.g. "0.00002") OR integer wei (e.g. "20000000000000") — same as /submit/bundle, so units are interchangeable across endpoints. A value with a decimal point is ETH, a bare integer is wei. Default "0.00002".',
@@ -1029,7 +1029,8 @@ router.get('/api/docs', (req, res) => {
           notes: [
             'Preferred form. The hunter supplies only the work CID and the per-oracle fee they agree to pay; the oracle request is otherwise built from the bounty (evaluation package, class) and the escrow\'s fixed parameters: FIXED_ADDENDUM "" , FIXED_ALPHA 500, FIXED_ESTIMATED_BASE_COST 0, FIXED_MAX_FEE_SCALING 1 (public constants).',
             'Why fixed: the hunter is the party being judged. The addendum is appended to the query the arbiters see (a prompt-injection channel) and the fee weights steer arbiter selection; neither may come from the hunter.',
-            'Cap: 128 submissions per bounty in total — reverts "submission limit reached" once full.'
+            'Cap: 128 submissions per bounty in total — reverts "submission limit reached" once full.',
+            'hunterCid must be a BARE CID: 46–100 alphanumeric characters (CIDv0 "Qm…" or base32 CIDv1 "b…"). Anything else — commas, colons, slashes, spaces, an "ipfs/" prefix — reverts "bad hunterCid". Reason: the aggregator serializes the request as "1:<evalCid>,<hunterCid>:<addendum>" for the oracle nodes, so a delimiter inside the string would smuggle an extra archive or an addendum into the evaluation. createBounty applies the same rule to evaluationCid ("bad evaluationCid").'
           ]
         },
         prepareSubmissionLegacy: {

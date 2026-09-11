@@ -92,6 +92,12 @@ contract BountyEscrow {
     ///      and the creator can still close at the deadline.
     uint256 public constant MAX_SUBMISSIONS_PER_BOUNTY = 128;
 
+    /// @notice Accepted length range for CID strings (evaluation package and work product).
+    /// @dev CIDv0 is exactly 46 chars; base32 CIDv1 is typically 59. The upper bound matches
+    ///      the aggregator's own MAX_CID_LENGTH. See _isValidCid for the character rule.
+    uint256 public constant MIN_CID_LENGTH = 46;
+    uint256 public constant MAX_CID_LENGTH = 100;
+
     /// @notice Oracle request parameters the escrow forwards to the aggregator for EVERY
     ///         evaluation. They are fixed here rather than taken from the hunter.
     /// @dev The hunter is the party being judged, so nothing that shapes the evaluation may
@@ -267,7 +273,7 @@ contract BountyEscrow {
             msg.value == _max(creatorDeterminationPayment, arbiterDeterminationPayment),
             "ETH must equal max payment"
         );
-        require(bytes(evaluationCid).length > 0, "empty evaluationCid");
+        require(_isValidCid(evaluationCid), "bad evaluationCid");
         require(threshold <= 100, "bad threshold");
         require(submissionDeadline > block.timestamp, "deadline in past");
         require(
@@ -384,8 +390,10 @@ contract BountyEscrow {
         if (b.targetHunter != address(0)) {
             require(msg.sender == b.targetHunter, "bounty is targeted");
         }
-        require(bytes(evaluationCid).length > 0, "empty evaluationCid");
-        require(bytes(hunterCid).length > 0, "empty hunterCid");
+        // The bounty's evaluationCid was validated at creation; the mismatch check below
+        // covers the caller's copy. The work-product CID is hunter-supplied free text and
+        // MUST be a bare CID (see _isValidCid).
+        require(_isValidCid(hunterCid), "bad hunterCid");
         require(subs[bountyId].length < MAX_SUBMISSIONS_PER_BOUNTY, "submission limit reached");
 
         // Verify evaluationCid matches the bounty's stored evaluationCid
@@ -937,6 +945,31 @@ contract BountyEscrow {
         uint256 refunded = EvaluationWallet(payable(s.evalWallet)).refundLeftoverEth();
         emit EthRefunded(bountyId, submissionId, refunded);
         _payOrCredit(s.hunter, refunded);
+    }
+
+    /// @dev Shape check for an IPFS CID string. Accepts CIDv0 (46 base58 chars, "Qm…") and
+    ///      base32 CIDv1 ("b…", lowercase a-z / 2-7), i.e. anything alphanumeric of a
+    ///      plausible length; rejects everything else.
+    ///
+    ///      WHY THIS MATTERS: the aggregator only length-checks CIDs and then serializes the
+    ///      request as a delimiter-based payload — "1:<cid0>,<cid1>:<addendum>" — for the
+    ///      oracle nodes to parse. A hunter-supplied "CID" containing ',' would smuggle extra
+    ///      archives into the evaluation, and one containing ':' would smuggle an addendum,
+    ///      re-opening the prompt channel this contract deliberately keeps empty
+    ///      (FIXED_ADDENDUM). Validating here keeps every CID a bare content reference all
+    ///      the way through parsing, regardless of how a node splits the payload.
+    function _isValidCid(string calldata cid) internal pure returns (bool) {
+        bytes calldata b = bytes(cid);
+        uint256 len = b.length;
+        if (len < MIN_CID_LENGTH || len > MAX_CID_LENGTH) return false;
+        for (uint256 i = 0; i < len; i++) {
+            bytes1 c = b[i];
+            bool ok = (c >= 0x30 && c <= 0x39)   // 0-9
+                   || (c >= 0x41 && c <= 0x5A)   // A-Z
+                   || (c >= 0x61 && c <= 0x7A);  // a-z
+            if (!ok) return false;
+        }
+        return true;
     }
 
     function _mustBounty(uint256 bountyId) internal view returns (Bounty storage) {

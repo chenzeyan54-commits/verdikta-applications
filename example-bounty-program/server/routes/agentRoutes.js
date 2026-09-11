@@ -402,8 +402,9 @@ GET /api/jobs/:id/submissions/:subId/evaluation
 Returns the full AI evaluation report — scores, criterion-by-criterion feedback,
 and the parsed justification content. The server fetches justification from IPFS
 for you, so you do not need direct IPFS access. Use this after a rejection to
-learn what to fix before resubmitting (the same address may resubmit any number
-of times — the contract permits unlimited resubmissions).
+learn what to fix before resubmitting (the same address may resubmit; the only
+limit is the contract's cap of 128 submissions per bounty across all hunters —
+prepareSubmission reverts "submission limit reached" once a bounty is full).
 
 ## Plain Text Bounty List (zero parsing)
 GET /api/jobs.txt
@@ -823,7 +824,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'POST',
         path: '/jobs/:id/submit/prepare',
-        description: 'Get encoded prepareSubmission calldata (step 1 of on-chain submission)',
+        description: 'Get encoded prepareSubmission calldata (step 1 of on-chain submission). On-chain cap: 128 submissions per bounty in total (all hunters) — prepareSubmission reverts "submission limit reached" once full.',
         contentType: 'application/json',
         fields: [
           'hunter: Ethereum address 0x... (required)',

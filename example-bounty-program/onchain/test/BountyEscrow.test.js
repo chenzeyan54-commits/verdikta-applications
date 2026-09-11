@@ -467,6 +467,70 @@ describe("BountyEscrow", function () {
   });
 
   // =========================================================================
+  describe("Submission cap (junk-flood lock prevention)", function () {
+    // Every per-bounty scan is bounded by MAX_SUBMISSIONS_PER_BOUNTY. Measured worst case
+    // at the cap (127 started siblings with results): finalize ≈ 5.6M gas, start ≈ 5.7M,
+    // far below the block limit, so a passing submission can always be finalized.
+    async function fillBounty(bountyEscrow, signer, bountyId, n) {
+      for (let i = 0; i < n; i++) {
+        await bountyEscrow.connect(signer).prepareSubmission(
+          bountyId, EVAL_CID, `Qm${i}`, "", ALPHA, MAX_ORACLE_FEE, EST_BASE_COST, MAX_FEE_SCALING
+        );
+      }
+    }
+
+    it("Should expose the cap and reject the 129th submission", async function () {
+      this.timeout(120000);
+      const { bountyEscrow, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+      const cap = Number(await bountyEscrow.MAX_SUBMISSIONS_PER_BOUNTY());
+      expect(cap).to.equal(128);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      await fillBounty(bountyEscrow, other, bountyId, cap);
+      expect(await bountyEscrow.submissionCount(bountyId)).to.equal(cap);
+      await expect(
+        prepareDefaultSubmission(bountyEscrow, hunter, bountyId)
+      ).to.be.revertedWith("submission limit reached");
+    });
+
+    it("Should still resolve existing submissions and allow close when a bounty is full", async function () {
+      this.timeout(120000);
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
+      // Real hunter first, then a griefer fills the rest of the cap
+      const { submissionId, aggId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      await fillBounty(bountyEscrow, other, bountyId, 127);
+      await expect(
+        prepareDefaultSubmission(bountyEscrow, other, bountyId)
+      ).to.be.revertedWith("submission limit reached");
+
+      // The hunter's passing submission still finalizes and is paid
+      await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+        .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter.address, BOUNTY_WEI);
+    });
+
+    it("Should let the creator close a full bounty with only junk (never-started) submissions", async function () {
+      this.timeout(120000);
+      const { bountyEscrow, creator, other } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
+      await fillBounty(bountyEscrow, other, bountyId, 128);
+      await time.increaseTo(deadline);
+      await expect(bountyEscrow.closeExpiredBounty(bountyId))
+        .to.emit(bountyEscrow, "BountyClosed").withArgs(bountyId, creator.address, BOUNTY_WEI);
+    });
+
+    it("Should apply the cap to targeted bounties too", async function () {
+      this.timeout(120000);
+      const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, { targetHunter: hunter.address });
+      await fillBounty(bountyEscrow, hunter, bountyId, 128);
+      await expect(
+        prepareDefaultSubmission(bountyEscrow, hunter, bountyId)
+      ).to.be.revertedWith("submission limit reached");
+    });
+  });
+
   describe("Deadline Rule (non-windowed)", function () {
     // Everything the hunter has to do — prepare AND start — must happen before the
     // deadline. At the deadline a submission is either in evaluation or dead, which is

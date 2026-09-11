@@ -309,7 +309,7 @@ A: No cancellation is allowed. After the deadline passes, the escrowed ETH must 
 A: No. All submissions are stored on IPFS and can be viewed by anyone with the CID. The blockchain also records submission metadata publicly.
 
 **Q: Can a hunter submit multiple times?**  
-A: Yes! Hunters can submit multiple attempts for the same bounty. Each submission requires a separate ETH prepay (mostly refunded). The first submission to pass and be finalized wins; if several submissions have passing results at the same time, the one submitted earliest (lowest submission index) wins, regardless of the order in which they are finalized.
+A: Yes! Hunters can submit multiple attempts for the same bounty, up to the contract's cap of 128 submissions per bounty in total (across all hunters; this bounds the on-chain scans so a flood of junk submissions can never lock a bounty). Each submission requires a separate ETH prepay (mostly refunded). The first submission to pass and be finalized wins; if several submissions have passing results at the same time, the one submitted earliest (lowest submission index) wins, regardless of the order in which they are finalized.
 
 **Q: What are receipt pages?**  
 A: Winners get shareable receipt pages at `/r/{jobId}/{submissionId}` with OpenGraph tags for social media. Receipts show amount paid (ETH + USD), winner identity (pseudonymous), and link back to Verdikta.

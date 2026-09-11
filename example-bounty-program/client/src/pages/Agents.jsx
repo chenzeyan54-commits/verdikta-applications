@@ -763,7 +763,7 @@ def finalize_submission(w3, account, job_id, sub_id):
               <p style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
                 <strong>Read the AI feedback (especially after rejection):</strong> Call <code>GET /api/jobs/:jobId/submissions/:subId/evaluation</code> to fetch the full AI evaluation report.
                 The server pulls the justification content from IPFS for you, so you don't need direct IPFS access. The response includes scores, criterion-by-criterion feedback, and pass/fail status.
-                You can resubmit any number of times with the same wallet — the contract permits unlimited resubmissions, so use the feedback to improve and try again.
+                You can resubmit with the same wallet — the only limit is the contract's cap of 128 submissions per bounty across all hunters, so use the feedback to improve and try again.
               </p>
               <p style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
                 <strong>Creator approval window:</strong> Some bounties let the creator approve submissions directly before oracle evaluation.

@@ -79,6 +79,19 @@ contract BountyEscrow {
     ///         and permanently lock the creator's escrow.
     mapping(uint256 => uint256) public activeEvaluations;
 
+    /// @notice Hard cap on submissions (prepared, in any state) per bounty.
+    /// @dev Bounds every per-bounty scan (_requireNoPassingSubmission at start,
+    ///      _hasOtherPassingSubmission / _hasEarlierUnresolvedSubmission at finalize and
+    ///      creator approval). Without it, a flood of gas-only prepareSubmission calls
+    ///      (~2.5k gas per junk entry at finalize, measured) could push a PASSING
+    ///      submission's finalize past the block gas limit; force-fail refuses because a
+    ///      result exists, activeEvaluations stays pinned, and closeExpiredBounty is
+    ///      blocked forever — locking both the hunter's payout and the creator's escrow.
+    ///      At 128 the worst-case scan is a few million gas, far below any block limit.
+    ///      A full bounty only rejects NEW prepares; existing submissions still resolve
+    ///      and the creator can still close at the deadline.
+    uint256 public constant MAX_SUBMISSIONS_PER_BOUNTY = 128;
+
     // Non-reentrancy guard (1 = unlocked, 2 = locked).
     uint256 private _lock = 1;
 
@@ -331,6 +344,7 @@ contract BountyEscrow {
         }
         require(bytes(evaluationCid).length > 0, "empty evaluationCid");
         require(bytes(hunterCid).length > 0, "empty hunterCid");
+        require(subs[bountyId].length < MAX_SUBMISSIONS_PER_BOUNTY, "submission limit reached");
 
         // Verify evaluationCid matches the bounty's stored evaluationCid
         require(

@@ -479,6 +479,103 @@ describe("BountyEscrow", function () {
   });
 
   // =========================================================================
+  describe("Payout gas cap (settlement independent of recipients)", function () {
+    // _payOrCredit forwards at most PAYOUT_GAS_LIMIT gas. A recipient that fits is paid
+    // directly; one that needs more, or burns everything, is credited to the pull ledger.
+    // Either way the finalizer's gas cost is bounded and no recipient can dictate it.
+    async function deployRecipient() {
+      const R = await ethers.getContractFactory("MockGasHungryRecipient");
+      const r = await R.deploy();
+      return { r, addr: await r.getAddress() };
+    }
+    async function hunterFlow(bountyEscrow, verdiktaAggregator, r, addr, creator, other) {
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      await other.sendTransaction({ to: addr, value: ethers.parseEther("0.01"), data: r.interface.encodeFunctionData("fund") });
+      await r.prepare(await bountyEscrow.getAddress(), bountyId, EVAL_CID, HUNTER_CID, MAX_ORACLE_FEE);
+      const sid = await r.lastSubId();
+      await r.start(await bountyEscrow.getAddress(), bountyId, sid);
+      const aggId = (await bountyEscrow.getSubmission(bountyId, sid)).verdiktaAggId;
+      await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+      return { bountyId, sid };
+    }
+
+    it("Should expose the cap as a constant of 120000", async function () {
+      const { bountyEscrow } = await loadFixture(deployBountyEscrowFixture);
+      expect(await bountyEscrow.PAYOUT_GAS_LIMIT()).to.equal(120000);
+    });
+
+    it("Pays a recipient that needs less than the cap directly", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, other } = await loadFixture(deployBountyEscrowFixture);
+      const { r, addr } = await deployRecipient();
+      await r.setGasToConsume(80000);
+      const { bountyId, sid } = await hunterFlow(bountyEscrow, verdiktaAggregator, r, addr, creator, other);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, sid))
+        .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, addr, BOUNTY_WEI)
+        .and.to.not.emit(bountyEscrow, "PaymentDeferred");
+      expect(await r.received()).to.equal(BOUNTY_WEI);
+      expect(await bountyEscrow.withdrawable(addr)).to.equal(0);
+    });
+
+    it("Credits a recipient that needs more than the cap to the pull ledger, and it can claim with full gas", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, other } = await loadFixture(deployBountyEscrowFixture);
+      const { r, addr } = await deployRecipient();
+      await r.setGasToConsume(200000); // > 120k
+      const { bountyId, sid } = await hunterFlow(bountyEscrow, verdiktaAggregator, r, addr, creator, other);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, sid))
+        .to.emit(bountyEscrow, "PaymentDeferred").withArgs(addr, BOUNTY_WEI);
+      expect(await bountyEscrow.withdrawable(addr)).to.equal(BOUNTY_WEI);
+      expect((await bountyEscrow.getSubmission(bountyId, sid)).status).to.equal(3); // PassedPaid regardless
+      // withdraw() forwards full gas, so the 200k receive succeeds there
+      await expect(r.claim(await bountyEscrow.getAddress()))
+        .to.emit(bountyEscrow, "Withdrawn").withArgs(addr, BOUNTY_WEI);
+      expect(await r.received()).to.equal(BOUNTY_WEI);
+    });
+
+    it("A hunter that burns all gas it is given cannot inflate the finalizer's cost beyond the cap", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, other } = await loadFixture(deployBountyEscrowFixture);
+      const { r, addr } = await deployRecipient();
+      await r.setBurnAll(true);
+      const { bountyId, sid } = await hunterFlow(bountyEscrow, verdiktaAggregator, r, addr, creator, other);
+      const gas = await bountyEscrow.finalizeSubmission.estimateGas(bountyId, sid);
+      // Before the cap this needed several million gas (EIP-150 63/64 rule); now it is
+      // the normal finalize cost plus at most 120k burned by the recipient.
+      expect(gas).to.be.lt(600000n);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, sid, { gasLimit: 600000 }))
+        .to.emit(bountyEscrow, "PaymentDeferred").withArgs(addr, BOUNTY_WEI);
+      expect(await bountyEscrow.withdrawable(addr)).to.equal(BOUNTY_WEI);
+      // Leftover-prepay recovery (the external calls AFTER the payout) still completed
+      expect((await bountyEscrow.getSubmission(bountyId, sid)).status).to.equal(3);
+    });
+
+    it("A creator that burns all gas cannot inflate closeExpiredBounty or the refund path", async function () {
+      const { bountyEscrow, verdiktaAggregator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+      const { r, addr } = await deployRecipient();
+      await r.setBurnAll(true);
+      const escrowAddr = await bountyEscrow.getAddress();
+      const deadline = (await time.latest()) + 86400;
+      // creator = gas burner, bounty 1: closed after deadline
+      await r.createBounty(escrowAddr, EVAL_CID, deadline, { value: BOUNTY_WEI });
+      const bountyId = (await bountyEscrow.bountyCount()) - 1n;
+      await time.increaseTo(deadline);
+      const gas = await bountyEscrow.closeExpiredBounty.estimateGas(bountyId);
+      expect(gas).to.be.lt(400000n);
+      await expect(bountyEscrow.closeExpiredBounty(bountyId, { gasLimit: 400000 }))
+        .to.emit(bountyEscrow, "PaymentDeferred").withArgs(addr, BOUNTY_WEI);
+      expect(await bountyEscrow.withdrawable(addr)).to.equal(BOUNTY_WEI);
+    });
+
+    it("Plain EOA recipients are unaffected", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, aggId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+      const before = await ethers.provider.getBalance(hunter.address);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+        .to.emit(bountyEscrow, "PayoutSent").and.to.not.emit(bountyEscrow, "PaymentDeferred");
+      expect((await ethers.provider.getBalance(hunter.address)) - before).to.equal(BOUNTY_WEI);
+    });
+  });
+
   describe("CID validation (payload-delimiter injection prevention)", function () {
     // The aggregator serializes the request as "1:<cid0>,<cid1>:<addendum>" and only
     // length-checks the CIDs. A hunterCid with ',' or ':' would smuggle extra archives or

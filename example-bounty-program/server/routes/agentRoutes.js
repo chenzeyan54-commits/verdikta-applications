@@ -1080,6 +1080,13 @@ router.get('/api/docs', (req, res) => {
             'Anyone can call this'
           ]
         },
+        withdraw: {
+          signature: 'withdraw()',
+          notes: [
+            'Claims msg.sender\'s balance on the escrow\'s pull ledger (withdrawable(address) view). A payout, refund or close is credited there instead of sent directly when the direct send fails or the recipient needs more than PAYOUT_GAS_LIMIT (120000) gas — watch for PaymentDeferred(to, amount) in the settlement tx.',
+            'Only relevant for contract-wallet recipients; EOAs are paid in the settlement transaction itself.'
+          ]
+        },
         getBounty: {
           signature: 'getBounty(uint256 bountyId) view returns (Bounty)',
           notes: ['Returns full bounty struct with all fields including evaluationCid']

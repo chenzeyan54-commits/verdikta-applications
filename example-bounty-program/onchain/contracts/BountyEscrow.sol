@@ -116,6 +116,17 @@ contract BountyEscrow {
     uint256 public constant FIXED_ESTIMATED_BASE_COST = 0;
     uint256 public constant FIXED_MAX_FEE_SCALING = 1;
 
+    /// @notice Gas forwarded to a recipient when the escrow pays out directly (_payOrCredit).
+    /// @dev Payouts, refunds and bounty closes send ETH with `call{gas: PAYOUT_GAS_LIMIT}`.
+    ///      Capping it makes settlement cost independent of the recipient: a contract that
+    ///      burns everything it is given can only burn the cap, instead of forcing whoever
+    ///      finalizes to bring ~64x the remaining work (EIP-150), and a callback gets too
+    ///      little gas to do anything interesting. Ordinary wallets and simple smart-contract
+    ///      wallets are paid directly; a recipient that needs more, or fails, is credited to
+    ///      `withdrawable` and claims via withdraw() with full gas, exactly as a recipient
+    ///      that rejects ETH is today. Deliberately a constant: this contract has no owner.
+    uint256 public constant PAYOUT_GAS_LIMIT = 120_000;
+
     // Non-reentrancy guard (1 = unlocked, 2 = locked).
     uint256 private _lock = 1;
 
@@ -925,13 +936,15 @@ contract BountyEscrow {
         return false;
     }
 
-    /// @dev Try to send `amount` to `to`. If the direct send fails (e.g. a contract that
-    ///      rejects ETH), credit it to the pull-payment ledger instead of reverting — so a
-    ///      hostile or incompatible recipient can never brick payout, refund, or bounty close.
+    /// @dev Try to send `amount` to `to` with at most PAYOUT_GAS_LIMIT gas. If the direct
+    ///      send fails (a contract that rejects ETH, or one that needs / burns more gas than
+    ///      the cap), credit it to the pull-payment ledger instead of reverting — so a
+    ///      hostile or incompatible recipient can never brick payout, refund, or bounty close,
+    ///      nor dictate how much gas the caller must bring.
     ///      Callers MUST update all contract state before calling this (checks-effects-interactions).
     function _payOrCredit(address to, uint256 amount) private {
         if (amount == 0) return;
-        (bool ok,) = payable(to).call{value: amount}("");
+        (bool ok,) = payable(to).call{value: amount, gas: PAYOUT_GAS_LIMIT}("");
         if (!ok) {
             withdrawable[to] += amount;
             emit PaymentDeferred(to, amount);

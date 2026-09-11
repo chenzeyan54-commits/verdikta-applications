@@ -364,6 +364,19 @@ Open issues and pull requests at [github.com/verdikta/verdikta-applications](htt
 
 ## Changelog
 
+### v0.5.0 (September 2026) — BountyEscrow hardening (contract revision, redeploy required)
+- Force-fail (`failTimedOutSubmission`) gated on the aggregator's round state instead of a 10-minute timer; it can never discard a passing result
+- Malformed oracle score vectors finalize as `Failed` with a refund instead of reverting (no more permanently stuck submissions)
+- Deadline rule: prepare AND start must happen before the deadline; a creator window must end before the deadline (`window would end after deadline`)
+- Windowed priority: same-hunter resubmissions and expired never-started submissions no longer block; a same-hunter submission already under evaluation blocks creator approval; a blocked passing finalize reverts (retryable) instead of becoming terminal `PassedUnpaid`
+- Non-windowed tie-break is order-independent: among simultaneous passing results the earliest-submitted wins
+- `MAX_SUBMISSIONS_PER_BOUNTY = 128` — bounds every on-chain scan so a flood of junk submissions cannot lock a bounty
+- Oracle request parameters fixed on-chain (`FIXED_ADDENDUM` empty, `FIXED_ALPHA` 500, no price-based arbiter boost); new 4-argument `prepareSubmission(bountyId, evaluationCid, hunterCid, maxOracleFee)`; the 8-argument overload is deprecated and ignores its extra arguments
+- CID validation: `evaluationCid` and `hunterCid` must be bare CIDs (46–100 alphanumeric characters) — `bad evaluationCid` / `bad hunterCid`
+- Payout gas cap: direct sends forward at most `PAYOUT_GAS_LIMIT = 120000` gas; recipients needing more are credited to the pull ledger (`withdrawable` / `withdraw()`)
+- `SubmissionPrepared` event reordered (`ethMaxBudget` before the `evaluationCid` string) — an event-signature change; all off-chain ABI copies flip at deployment
+- See [Submission timing rules](#submission-timing-rules) and DEVELOPER-GUIDE → "Submission timing and priority rules"
+
 ### v0.4.0 (April 2026)
 - Added creator approval window: bounty creators can offer split payments (creator approval vs oracle approval) and approve submissions directly within a configurable time window before AI evaluation
 - New on-chain function `creatorApproveSubmission` and 8-param `createBounty` overload

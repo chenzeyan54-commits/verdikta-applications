@@ -113,9 +113,19 @@ function Blockchain() {
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
   "function closeExpiredBounty(uint256 bountyId)",
   "function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)",
+  "function withdraw()", // claim a deferred payout/refund from the pull ledger
 
   // View Functions
   "function bountyCount() view returns (uint256)",
+  "function submissionCount(uint256 bountyId) view returns (uint256)",
+  "function canBeClosed(uint256 bountyId) view returns (bool)",
+  "function activeEvaluations(uint256 bountyId) view returns (uint256)",
+  "function withdrawable(address account) view returns (uint256)",
+  "function MAX_SUBMISSIONS_PER_BOUNTY() view returns (uint256)", // 128
+  "function PAYOUT_GAS_LIMIT() view returns (uint256)",           // 120000
+  "function MIN_CID_LENGTH() view returns (uint256)",             // 46
+  "function MAX_CID_LENGTH() view returns (uint256)",             // 100
+  "function FIXED_ALPHA() view returns (uint256)",                // 500
   "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))",
   "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
@@ -718,17 +728,22 @@ submission-package.zip
           </div>
           <div className="callout callout-info" style={{ marginLeft: '3rem', marginBottom: '1rem' }}>
             <div>
-              <strong>prepareSubmission takes 8 parameters:</strong>
+              <strong>prepareSubmission takes 4 parameters:</strong>
               <pre style={{ margin: '0.5rem 0 0 0', fontSize: '0.85rem' }}>{`prepareSubmission(
   bountyId,           // uint256 - on-chain bounty ID
-  evaluationCid,      // string - bounty's evaluation CID (NOT your submission)
-  hunterCid,          // string - your submission's IPFS CID
-  addendum,           // string - usually ""
-  alpha,              // uint256 - timeliness-vs-quality blend (0-1000). 500 = equal; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
-  maxOracleFee,       // uint256 - "20000000000000" (0.00002 ETH per oracle call, ceiling 0.0004 ETH)
-  estimatedBaseCost,  // uint256 - "100000000000000" (0.0001 ETH base cost)
-  maxFeeBasedScaling  // uint256 - x-factor cap on fee-based boost, "3" = up to 3x (contract scales by 1e18 internally; must be >= 1)
+  evaluationCid,      // string  - bounty's evaluation CID (NOT your submission; must match the bounty)
+  hunterCid,          // string  - your submission's IPFS CID: a bare CID, 46-100 alphanumeric chars
+  maxOracleFee        // uint256 - "20000000000000" (0.00002 ETH per oracle call, ceiling 0.0004 ETH)
 )`}</pre>
+              <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.9rem' }}>
+                Everything else in the oracle request is fixed by the escrow (empty addendum, alpha 500, no
+                price-based arbiter boost) so the party being judged cannot shape the evaluation. A deprecated
+                8-parameter overload (<code>…, addendum, alpha, maxOracleFee, estimatedBaseCost, maxFeeBasedScaling</code>)
+                still exists for older integrations; its four extra arguments are ignored. If your ABI lists both
+                overloads, call by full signature. A <code>hunterCid</code> containing anything but letters and digits
+                (a comma, colon, slash or space) reverts with <code>bad hunterCid</code>, and each bounty accepts at
+                most 128 submissions in total (<code>submission limit reached</code>).
+              </p>
             </div>
           </div>
 
@@ -859,7 +874,7 @@ submission-package.zip
               <div className="submission-state">
                 <span className="state-code">4</span>
                 <span className="state-name">PassedUnpaid</span>
-                <span className="state-desc">Passed threshold but another submission already won the bounty</span>
+                <span className="state-desc">Passed threshold but did not win: another submission was already paid, or an earlier-submitted one also passed and takes priority</span>
               </div>
               <div className="submission-state">
                 <span className="state-code">5</span>
@@ -1024,6 +1039,21 @@ submission-package.zip
         </p>
 
         <div className="info-cards">
+          <div className="info-card">
+            <div className="info-icon">
+              <DollarSign size={20} />
+            </div>
+            <h3>Deferred Payouts (Pull Ledger)</h3>
+            <p>
+              Payouts, refunds and bounty closes are sent directly with a <code>PAYOUT_GAS_LIMIT</code> of
+              120,000 gas. If the recipient rejects ETH, needs more gas than that, or burns what it is given,
+              the amount is credited to <code>withdrawable(recipient)</code> instead and{' '}
+              <code>PaymentDeferred(to, amount)</code> is emitted; the recipient collects it with{' '}
+              <code>withdraw()</code>, which forwards full gas. Ordinary wallets are paid in the settlement
+              transaction itself, so this only concerns contract-wallet recipients. Settlement can never be
+              blocked, or made expensive, by a recipient.
+            </p>
+          </div>
           <div className="info-card">
             <div className="info-icon">
               <Clock size={20} />

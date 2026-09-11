@@ -95,6 +95,12 @@ interface IVerdiktaAggregator {
         );
 
     /**
+     * @notice The per-oracle fee ceiling (wei) the aggregator clamps every request to
+     * @dev Arbiters priced above a request's (clamped) max fee are ineligible for it.
+     */
+    function maxOracleFee() external view returns (uint256);
+
+    /**
      * @notice Get the response timeout in seconds
      * @return Timeout duration in seconds
      */

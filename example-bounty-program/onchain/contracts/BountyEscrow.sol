@@ -24,6 +24,33 @@ contract BountyEscrow {
         PendingCreatorApproval  // 5: Awaiting creator approval during window
     }
 
+    /// @notice Oracle request settings, chosen by the CREATOR at bounty creation and used
+    ///         verbatim for every evaluation of that bounty. They shape the jury (who is
+    ///         eligible and how selection is weighted) and size the hunter's prepay, so they
+    ///         belong with the party whose money is at stake and are visible to hunters
+    ///         before they commit work. Hunters supply nothing that reaches the aggregator
+    ///         except their work CID.
+    struct OracleParams {
+        uint256 maxOracleFee;        // per-oracle fee ceiling (wei); arbiters priced above it are ineligible; sizes ethMaxBudget
+        uint256 alpha;               // 0..1000, quality-vs-timeliness blend in arbiter selection
+        uint256 estimatedBaseCost;   // wei, < maxOracleFee; price-boost baseline (0 disables the boost)
+        uint256 maxFeeBasedScaling;  // x-factor >= 1 capping the price boost (1 disables it)
+    }
+
+    /// @notice All inputs to createBounty, as one struct (avoids stack-too-deep and overload
+    ///         ambiguity; extensible without a new signature).
+    struct CreateParams {
+        string  evaluationCid;               // evaluation package CID (bare CID, see _isValidCid)
+        uint64  requestedClass;              // Verdikta class ID
+        uint8   threshold;                   // 0..100 acceptance threshold
+        uint64  submissionDeadline;          // unix seconds
+        address targetHunter;                // address(0) = open to all
+        uint256 creatorDeterminationPayment; // paid if the creator approves during the window
+        uint256 arbiterDeterminationPayment; // paid if the oracle approves
+        uint64  creatorAssessmentWindowSize; // seconds; 0 = no window (then the two payments must be equal)
+        OracleParams oracle;
+    }
+
     struct Bounty {
         address creator;
         string  evaluationCid;      // IPFS CID for evaluation package (contains jury config, rubric ref, instructions)
@@ -39,11 +66,11 @@ contract BountyEscrow {
         uint256 creatorDeterminationPayment;  // Payment if creator approves
         uint256 arbiterDeterminationPayment;  // Payment if arbiters approve via Verdikta
         uint64  creatorAssessmentWindowSize;  // Window duration in seconds (0 = no window)
+        OracleParams oracle;                  // creator-chosen oracle request settings
     }
 
     struct Submission {
-        address hunter;
-        string  evaluationCid;      // Evaluation package CID (must match bounty's evaluationCid)
+        address hunter;             // who prepared (and is paid the bounty if it wins)
         string  hunterCid;          // Hunter's work product archive CID (bCID containing the actual submission)
         address evalWallet;
         bytes32 verdiktaAggId;      // set once started
@@ -53,13 +80,9 @@ contract BountyEscrow {
         string  justificationCids;  // Verdikta result, if any
         uint256 submittedAt;
         uint256 finalizedAt;
-        uint256 ethMaxBudget;       // ETH wei budget computed from maxOracleFee
-        uint256 maxOracleFee;       // echo
-        uint256 alpha;              // echo
-        uint256 estimatedBaseCost;  // echo
-        uint256 maxFeeBasedScaling; // echo
-        string  addendum;           // echo
+        uint256 ethMaxBudget;       // ETH wei prepay, = maxTotalFee(bounty.oracle.maxOracleFee) at prepare time
         uint64  creatorWindowEnd;   // Timestamp when creator window expires (0 if no window)
+        address funder;             // who attached the prepay at start; receives the unspent refund
     }
 
     IVerdiktaAggregator public immutable verdikta;
@@ -98,23 +121,19 @@ contract BountyEscrow {
     uint256 public constant MIN_CID_LENGTH = 46;
     uint256 public constant MAX_CID_LENGTH = 100;
 
-    /// @notice Oracle request parameters the escrow forwards to the aggregator for EVERY
-    ///         evaluation. They are fixed here rather than taken from the hunter.
-    /// @dev The hunter is the party being judged, so nothing that shapes the evaluation may
-    ///      come from them:
-    ///        - addendum text is appended to the query the arbiters see (a free-text channel
-    ///          into the prompt) — always empty; the creator's evaluation package is the
-    ///          whole query, and anything a hunter wants to say belongs in the work product;
-    ///        - estimatedBaseCost / maxFeeBasedScaling weight arbiter selection by price —
-    ///          fixed to (0, 1), which disables the price boost so selection runs on
-    ///          reputation alone (a hunter running cheap arbiters could otherwise steer the
-    ///          draw toward their own nodes);
-    ///        - alpha blends arbiter quality vs timeliness in selection — fixed to an even mix.
-    ///      The hunter keeps only maxOracleFee, which is the per-oracle price they agree to pay.
-    string  public constant FIXED_ADDENDUM = "";
-    uint256 public constant FIXED_ALPHA = 500;
-    uint256 public constant FIXED_ESTIMATED_BASE_COST = 0;
-    uint256 public constant FIXED_MAX_FEE_SCALING = 1;
+    /// @notice Bounds on creator-chosen oracle settings, checked at createBounty so a bad
+    ///         bounty fails at creation instead of stranding hunters at start time.
+    /// @dev The aggregator/keeper themselves require estimatedBaseCost < maxFee and
+    ///      scaling >= 1, clamp maxFee to the aggregator ceiling, and would panic on
+    ///      alpha > 1000 or overflow on an astronomically large scaling factor.
+    uint256 public constant MAX_ALPHA = 1000;
+    uint256 public constant MAX_FEE_SCALING_FACTOR = 1000;
+
+    /// @notice The addendum text forwarded to the aggregator: always empty.
+    /// @dev It is appended to the query the arbiters see — a free-text channel into the
+    ///      prompt. The creator's evaluation package is the whole query; nothing else may
+    ///      be added by either party.
+    string public constant ADDENDUM = "";
 
     /// @notice Gas forwarded to a recipient when the escrow pays out directly (_payOrCredit).
     /// @dev Payouts, refunds and bounty closes send ETH with `call{gas: PAYOUT_GAS_LIMIT}`.
@@ -177,10 +196,14 @@ contract BountyEscrow {
         bytes32 verdiktaAggId
     );
 
+    /// @param passed  the oracle result met the threshold (or the creator approved)
+    /// @param paid    the bounty was awarded to this submission in this transaction
+    ///                (false for Failed, PassedUnpaid, and TIMED_OUT)
     event SubmissionFinalized(
         uint256 indexed bountyId,
         uint256 indexed submissionId,
         bool passed,
+        bool paid,
         uint256 acceptance,
         uint256 rejection,
         string justificationCids
@@ -231,93 +254,63 @@ contract BountyEscrow {
 
     // ------------- Bounty lifecycle -------------
 
-    /// @notice Create a bounty with ETH escrow (backward-compatible, no creator window)
-    /// @param targetHunter The only address allowed to submit; address(0) = open to all
-    function createBounty(
-        string calldata evaluationCid,
-        uint64  requestedClass,
-        uint8   threshold,
-        uint64  submissionDeadline,
-        address targetHunter
-    ) external payable returns (uint256 bountyId) {
-        return _createBounty(
-            evaluationCid, requestedClass, threshold, submissionDeadline,
-            targetHunter, msg.value, msg.value, 0
-        );
-    }
-
-    /// @notice Create a bounty with creator approval window and split payment amounts
-    /// @param targetHunter The only address allowed to submit; address(0) = open to all
-    /// @param creatorDeterminationPayment Payment amount if creator approves during window
-    /// @param arbiterDeterminationPayment Payment amount if arbiters approve via Verdikta
-    /// @param creatorAssessmentWindowSize Window duration in seconds after submission (0 = no window)
-    function createBounty(
-        string calldata evaluationCid,
-        uint64  requestedClass,
-        uint8   threshold,
-        uint64  submissionDeadline,
-        address targetHunter,
-        uint256 creatorDeterminationPayment,
-        uint256 arbiterDeterminationPayment,
-        uint64  creatorAssessmentWindowSize
-    ) external payable returns (uint256 bountyId) {
-        return _createBounty(
-            evaluationCid, requestedClass, threshold, submissionDeadline,
-            targetHunter, creatorDeterminationPayment, arbiterDeterminationPayment,
-            creatorAssessmentWindowSize
-        );
-    }
-
-    function _createBounty(
-        string calldata evaluationCid,
-        uint64  requestedClass,
-        uint8   threshold,
-        uint64  submissionDeadline,
-        address targetHunter,
-        uint256 creatorDeterminationPayment,
-        uint256 arbiterDeterminationPayment,
-        uint64  creatorAssessmentWindowSize
-    ) internal returns (uint256 bountyId) {
-        require(creatorDeterminationPayment > 0, "no creator payment");
-        require(arbiterDeterminationPayment > 0, "no arbiter payment");
+    /// @notice Create a bounty with ETH escrow.
+    /// @dev msg.value must equal max(creatorDeterminationPayment, arbiterDeterminationPayment).
+    ///      For a bounty without a creator window pass both payments equal to msg.value.
+    ///      The oracle settings are validated here (see OracleParams / MAX_* bounds) and used
+    ///      verbatim for every evaluation of this bounty; hunters cannot change them.
+    function createBounty(CreateParams calldata p) external payable returns (uint256 bountyId) {
+        require(p.creatorDeterminationPayment > 0, "no creator payment");
+        require(p.arbiterDeterminationPayment > 0, "no arbiter payment");
         require(
-            msg.value == _max(creatorDeterminationPayment, arbiterDeterminationPayment),
+            msg.value == _max(p.creatorDeterminationPayment, p.arbiterDeterminationPayment),
             "ETH must equal max payment"
         );
-        require(_isValidCid(evaluationCid), "bad evaluationCid");
-        require(threshold <= 100, "bad threshold");
-        require(submissionDeadline > block.timestamp, "deadline in past");
+        require(_isValidCid(p.evaluationCid), "bad evaluationCid");
+        require(p.threshold <= 100, "bad threshold");
+        require(p.submissionDeadline > block.timestamp, "deadline in past");
         require(
-            creatorAssessmentWindowSize > 0 || creatorDeterminationPayment == arbiterDeterminationPayment,
+            p.creatorAssessmentWindowSize > 0 ||
+                p.creatorDeterminationPayment == p.arbiterDeterminationPayment,
             "window required when payments differ"
         );
 
+        // Oracle settings: reject anything the aggregator/keeper would reject at start.
+        OracleParams calldata o = p.oracle;
+        require(o.maxOracleFee > 0, "bad oracle fee");
+        require(o.maxOracleFee <= verdikta.maxOracleFee(), "oracle fee above ceiling");
+        require(o.estimatedBaseCost < o.maxOracleFee, "base cost must be below fee");
+        require(o.maxFeeBasedScaling >= 1 && o.maxFeeBasedScaling <= MAX_FEE_SCALING_FACTOR, "bad fee scaling");
+        require(o.alpha <= MAX_ALPHA, "bad alpha");
+        require(verdikta.maxTotalFee(o.maxOracleFee) > 0, "bad budget");
+
         bounties.push(Bounty({
             creator: msg.sender,
-            evaluationCid: evaluationCid,
-            requestedClass: requestedClass,
-            threshold: threshold,
+            evaluationCid: p.evaluationCid,
+            requestedClass: p.requestedClass,
+            threshold: p.threshold,
             payoutWei: msg.value,
             createdAt: block.timestamp,
-            submissionDeadline: submissionDeadline,
+            submissionDeadline: p.submissionDeadline,
             status: BountyStatus.Open,
             winner: address(0),
             submissions: 0,
-            targetHunter: targetHunter,
-            creatorDeterminationPayment: creatorDeterminationPayment,
-            arbiterDeterminationPayment: arbiterDeterminationPayment,
-            creatorAssessmentWindowSize: creatorAssessmentWindowSize
+            targetHunter: p.targetHunter,
+            creatorDeterminationPayment: p.creatorDeterminationPayment,
+            arbiterDeterminationPayment: p.arbiterDeterminationPayment,
+            creatorAssessmentWindowSize: p.creatorAssessmentWindowSize,
+            oracle: o
         }));
 
         bountyId = bounties.length - 1;
         emit BountyCreated(
             bountyId,
             msg.sender,
-            evaluationCid,
-            requestedClass,
-            threshold,
+            p.evaluationCid,
+            p.requestedClass,
+            p.threshold,
             msg.value,
-            submissionDeadline
+            p.submissionDeadline
         );
     }
 
@@ -347,53 +340,33 @@ contract BountyEscrow {
 
     // ------------- Submissions & Verdikta -------------
 
-    /// @notice STEP 1 (legacy signature): Prepare a submission.
-    /// @dev DEPRECATED — kept so existing integrations keep working across the September
-    ///      2026 redeploy. `addendum`, `alpha`, `estimatedBaseCost` and `maxFeeBasedScaling`
-    ///      are IGNORED: the escrow forwards FIXED_* to the aggregator (see those constants).
-    ///      Use the 4-argument overload. This overload will be removed in the next
-    ///      signature-breaking revision.
-    /// @dev Callers whose ABI contains BOTH overloads must select by full signature
-    ///      (ethers refuses a bare name that is ambiguous), exactly as with createBounty.
-    function prepareSubmission(
-        uint256 bountyId,
-        string calldata evaluationCid,
-        string calldata hunterCid,
-        string calldata /* addendum — ignored */,
-        uint256 /* alpha — ignored */,
-        uint256 maxOracleFee,
-        uint256 /* estimatedBaseCost — ignored */,
-        uint256 /* maxFeeBasedScaling — ignored */
-    ) external returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget) {
-        return _prepareSubmission(bountyId, evaluationCid, hunterCid, maxOracleFee);
-    }
-
-    /// @notice STEP 1: Prepare a submission. Deploys an EvaluationWallet and records parameters.
+    /// @notice STEP 1: Prepare a submission. Deploys an EvaluationWallet and records the work.
     /// @dev The ethMaxBudget is emitted so the funder knows how much ETH to attach when starting.
+    ///      It is derived from the BOUNTY's oracle fee (maxTotalFee(bounty.oracle.maxOracleFee)),
+    ///      so every submission to a bounty prepays the same amount.
     /// @dev If the bounty has a creator assessment window, status starts as PendingCreatorApproval.
-    /// @dev Otherwise, status starts as Prepared (classic behavior).
+    ///      Otherwise, status starts as Prepared (classic behavior).
     /// @dev Can only be called before the submission deadline. On windowed bounties the
     ///      effective cutoff is earlier: the creator window must end before the deadline.
-    /// @dev The oracle request is built from the bounty (evaluation package, class) and the
-    ///      escrow's FIXED_* parameters; the hunter supplies only the work and the fee.
+    /// @dev The oracle request is built entirely from the bounty (evaluation package, class,
+    ///      creator-chosen oracle settings) plus an empty addendum; the hunter supplies only
+    ///      their work CID.
     /// @param bountyId The bounty to submit to
-    /// @param evaluationCid The evaluation package CID (must match the bounty's stored evaluationCid)
-    /// @param hunterCid The hunter's work product archive CID (bCID containing the actual submission)
-    /// @param maxOracleFee Maximum fee per oracle the hunter agrees to pay (sets the ETH prepay)
+    /// @param evaluationCid The evaluation package CID — must match the bounty's (a guard that
+    ///        the caller is submitting against the package they think they are)
+    /// @param hunterCid The hunter's work product archive CID (bare CID, see _isValidCid)
     function prepareSubmission(
         uint256 bountyId,
         string calldata evaluationCid,
-        string calldata hunterCid,
-        uint256 maxOracleFee
+        string calldata hunterCid
     ) external returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget) {
-        return _prepareSubmission(bountyId, evaluationCid, hunterCid, maxOracleFee);
+        return _prepareSubmission(bountyId, evaluationCid, hunterCid);
     }
 
     function _prepareSubmission(
         uint256 bountyId,
         string calldata evaluationCid,
-        string calldata hunterCid,
-        uint256 maxOracleFee
+        string calldata hunterCid
     ) internal returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget) {
         Bounty storage b = _mustBounty(bountyId);
         require(b.status == BountyStatus.Open, "bounty not open");
@@ -413,7 +386,7 @@ contract BountyEscrow {
             "evaluationCid mismatch"
         );
 
-        ethMaxBudget = verdikta.maxTotalFee(maxOracleFee);
+        ethMaxBudget = verdikta.maxTotalFee(b.oracle.maxOracleFee);
         require(ethMaxBudget > 0, "bad budget");
 
         EvaluationWallet wallet = new EvaluationWallet(
@@ -436,10 +409,8 @@ contract BountyEscrow {
             );
         }
 
-        // The echo fields record what will actually be sent to the aggregator.
         Submission memory s = Submission({
             hunter: msg.sender,
-            evaluationCid: evaluationCid,
             hunterCid: hunterCid,
             evalWallet: address(wallet),
             verdiktaAggId: bytes32(0),
@@ -452,14 +423,10 @@ contract BountyEscrow {
             submittedAt: block.timestamp,
             finalizedAt: 0,
             ethMaxBudget: ethMaxBudget,
-            maxOracleFee: maxOracleFee,
-            alpha: FIXED_ALPHA,
-            estimatedBaseCost: FIXED_ESTIMATED_BASE_COST,
-            maxFeeBasedScaling: FIXED_MAX_FEE_SCALING,
-            addendum: FIXED_ADDENDUM,
             creatorWindowEnd: hasWindow
                 ? uint64(block.timestamp) + b.creatorAssessmentWindowSize
-                : 0
+                : 0,
+            funder: address(0)
         });
 
         subs[bountyId].push(s);
@@ -557,19 +524,21 @@ contract BountyEscrow {
         // cids[1] = Hunter's work product (bCID containing the actual submission to evaluate)
         // Note: The rubric is referenced inside the evaluation package manifest, not passed separately
         string[] memory cids = new string[](2);
-        cids[0] = s.evaluationCid;
+        cids[0] = b.evaluationCid;
         cids[1] = s.hunterCid;
 
+        OracleParams storage o = b.oracle;
         bytes32 aggId = wallet.startEvaluation{value: msg.value}(
             cids,
-            s.addendum,
-            s.alpha,
-            s.maxOracleFee,
-            s.estimatedBaseCost,
-            s.maxFeeBasedScaling,
+            ADDENDUM,
+            o.alpha,
+            o.maxOracleFee,
+            o.estimatedBaseCost,
+            o.maxFeeBasedScaling,
             b.requestedClass
         );
 
+        s.funder = msg.sender;
         s.verdiktaAggId = aggId;
         s.status = SubmissionStatus.PendingVerdikta;
         activeEvaluations[bountyId] += 1;
@@ -617,15 +586,13 @@ contract BountyEscrow {
 
         if (!passed) {
             s.status = SubmissionStatus.Failed;
-            emit SubmissionFinalized(bountyId, submissionId, false, acceptance, rejection, justCids);
+            emit SubmissionFinalized(bountyId, submissionId, false, false, acceptance, rejection, justCids);
             _refundLeftoverEth(bountyId, submissionId);
             return;
         }
 
-        // Passed evaluation
-        emit SubmissionFinalized(bountyId, submissionId, true, acceptance, rejection, justCids);
-
-        // Pay if bounty is still Open AND submission has priority
+        // Passed evaluation. Pay if bounty is still Open AND submission has priority.
+        bool paid = false;
         if (b.status == BountyStatus.Open) {
             bool blocked;
             if (b.creatorAssessmentWindowSize > 0) {
@@ -656,7 +623,9 @@ contract BountyEscrow {
                 b.status = BountyStatus.Awarded;
                 b.winner = s.hunter;
                 s.status = SubmissionStatus.PassedPaid;
+                paid = true;
 
+                emit SubmissionFinalized(bountyId, submissionId, true, true, acceptance, rejection, justCids);
                 emit PayoutSent(bountyId, s.hunter, pay);
                 _payOrCredit(s.hunter, pay);
 
@@ -672,6 +641,9 @@ contract BountyEscrow {
         } else {
             // Bounty already awarded or closed
             s.status = SubmissionStatus.PassedUnpaid;
+        }
+        if (!paid) {
+            emit SubmissionFinalized(bountyId, submissionId, true, false, acceptance, rejection, justCids);
         }
 
         _refundLeftoverEth(bountyId, submissionId);
@@ -723,7 +695,8 @@ contract BountyEscrow {
         emit SubmissionFinalized(
             bountyId,
             submissionId,
-            false,  // passed = false
+            false,  // passed
+            false,  // paid
             0,      // acceptance
             0,      // rejection
             "TIMED_OUT"
@@ -954,10 +927,13 @@ contract BountyEscrow {
     function _refundLeftoverEth(uint256 bountyId, uint256 submissionId) private {
         Submission storage s = subs[bountyId][submissionId];
         // The wallet recovers its unspent prepay from the aggregator and hands it back to
-        // THIS contract (never directly to the hunter), so the hand-off cannot be reverted.
+        // THIS contract (never directly to the recipient), so the hand-off cannot be reverted.
+        // The refund goes to whoever attached the prepay at start (the hunter in the common
+        // case; the creator or a third party for an expired-window start), never to a party
+        // that did not fund it.
         uint256 refunded = EvaluationWallet(payable(s.evalWallet)).refundLeftoverEth();
         emit EthRefunded(bountyId, submissionId, refunded);
-        _payOrCredit(s.hunter, refunded);
+        _payOrCredit(s.funder, refunded);
     }
 
     /// @dev Shape check for an IPFS CID string. Accepts CIDv0 (46 base58 chars, "Qm…") and
@@ -969,7 +945,7 @@ contract BountyEscrow {
     ///      oracle nodes to parse. A hunter-supplied "CID" containing ',' would smuggle extra
     ///      archives into the evaluation, and one containing ':' would smuggle an addendum,
     ///      re-opening the prompt channel this contract deliberately keeps empty
-    ///      (FIXED_ADDENDUM). Validating here keeps every CID a bare content reference all
+    ///      (ADDENDUM). Validating here keeps every CID a bare content reference all
     ///      the way through parsing, regardless of how a node splits the payload.
     function _isValidCid(string calldata cid) internal pure returns (bool) {
         bytes calldata b = bytes(cid);

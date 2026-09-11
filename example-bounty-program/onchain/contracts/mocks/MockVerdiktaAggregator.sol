@@ -19,6 +19,9 @@ contract MockVerdiktaAggregator {
     uint256 public constant RESPONSE_TIMEOUT = 300;
 
     uint256 public feeMultiplier = 3; // maxTotalFee = input * multiplier
+    uint256 public maxOracleFee = 0.0004 ether; // per-oracle ceiling (live value on both nets)
+
+    function setMaxOracleFee(uint256 f) external { maxOracleFee = f; }
     uint256 public refundAmount;      // ETH (wei) credited to ethOwed[requester] (default 0)
     bool    public creditOnTimeout;   // if true, the refund is credited at finalizeEvaluationTimeout
                                       // (settlement) rather than at request time — models a round

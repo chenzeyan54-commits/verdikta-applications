@@ -20,11 +20,8 @@ contract MockRejectingHunter {
         string calldata evalCid,
         string calldata hunterCid
     ) external {
-        // 2e13 = 0.00002 ETH maxOracleFee, 1e13 = 0.00001 ETH base cost, x3 scaling.
         (uint256 sid, address w, uint256 budget) =
-            BountyEscrow(payable(escrow)).prepareSubmission(
-                bountyId, evalCid, hunterCid, "", 500, 2e13, 1e13, 3
-            );
+            BountyEscrow(payable(escrow)).prepareSubmission(bountyId, evalCid, hunterCid);
         lastSubId = sid;
         lastWallet = w;
         lastBudget = budget;

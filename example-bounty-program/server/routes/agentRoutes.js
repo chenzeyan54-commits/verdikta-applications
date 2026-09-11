@@ -445,7 +445,8 @@ never hand-rolled byte offsets. The struct returned is:
     address  targetHunter,
     uint256  creatorDeterminationPayment,
     uint256  arbiterDeterminationPayment,
-    uint64   creatorAssessmentWindowSize
+    uint64   creatorAssessmentWindowSize,
+    tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle
   )
 
 Because evaluationCid is a dynamic-length string, raw word-counting agents
@@ -456,21 +457,25 @@ eth_call if you're avoiding the API. The /onchain-status endpoint uses that call
 server-side.
 
 ### Creating Bounties (on-chain)
-Standard (no approval window):
-function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)
-
-With creator approval window (8-param overload):
-function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)
-- creatorDeterminationPayment: ETH (in wei) paid to hunter if creator approves directly
-- arbiterDeterminationPayment: ETH (in wei) paid to hunter if oracle approves after window
-- creatorAssessmentWindowSize: window duration in SECONDS
+One function, one struct argument (no overloads):
+function createBounty(tuple(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle) p) payable returns (uint256)
+- creatorDeterminationPayment: ETH (wei) paid to the hunter if the creator approves directly
+- arbiterDeterminationPayment: ETH (wei) paid to the hunter if the oracle approves
+- creatorAssessmentWindowSize: window duration in SECONDS; 0 = no window (then both payments must be equal)
 - msg.value: max(creatorPay, arbiterPay) in wei
-- If payments differ, window must be > 0
+- oracle: the CREATOR's oracle settings, used verbatim for every evaluation of this bounty and
+  visible to hunters before they submit. maxOracleFee (wei, > 0, <= aggregator ceiling 0.0004 ETH;
+  also the eligibility filter: arbiters priced above it are excluded, and it sizes the hunters'
+  prepay), alpha (0-1000 quality-vs-timeliness blend, 500 = even), estimatedBaseCost (wei,
+  < maxOracleFee; 0 disables the price boost), maxFeeBasedScaling (1-1000; 1 disables the price
+  boost). Defaults the API uses: 0.00002 ETH / 500 / 0.00001 ETH / 3. Reverts: "bad oracle fee",
+  "oracle fee above ceiling", "base cost must be below fee", "bad fee scaling", "bad alpha".
+- Hunters cannot influence any oracle parameter; run GET /api/jobs/:id/oracle-check before
+  submitting to see how many arbiters are eligible at the bounty's fee and who owns them.
 
 Common params:
 - submissionDeadline: unix timestamp in SECONDS (not milliseconds)
-- targetHunter: full wallet address for targeted bounties, or address(0) for open bounties
-Note: There is no 4-argument version. The targetHunter parameter is always required.
+- targetHunter: full wallet address for targeted bounties, or address(0) for open bounties (always required)
 
 ### Creator Approval Window (Windowed Bounties)
 Some bounties have a creator approval window. When a submission is prepared on such a bounty:
@@ -808,11 +813,6 @@ router.get('/api/docs', (req, res) => {
           'hunterAddress: Ethereum address 0x... (required)',
           'hunterCid: IPFS CID of pre-uploaded work (required if no files)',
           'files: multipart file uploads (required if no hunterCid). Must be oracle-readable (text/code/markdown, PDF, .docx, images). Do NOT zip/archive — archive & binary attachments are rejected (HTTP 400); the oracle skips them and the submission scores 0. Pre-check with POST /api/jobs/:id/submit/dry-run.',
-          'addendum: DEPRECATED — IGNORED by the contract since the September 2026 revision — the escrow forwards fixed values (empty addendum, alpha 500, base cost 0, scaling 1) so the judged party cannot shape the evaluation. Accepted for backward compatibility only.',
-          'alpha: DEPRECATED — ignored by the contract (fixed at 500 on-chain).',
-          'maxOracleFee: max fee per oracle. Accepts decimal ETH (e.g. "0.00002") OR integer wei (e.g. "20000000000000") — a value with a decimal point is ETH, a bare integer is wei. Default "20000000000000" (0.00002 ETH).',
-          'estimatedBaseCost: DEPRECATED — ignored by the contract (fixed at 0 on-chain).',
-          'maxFeeBasedScaling: DEPRECATED — ignored by the contract (fixed at 1 on-chain; the price-based arbiter boost is disabled, selection is by reputation).'
         ],
         returns: 'Step 1 calldata (ready to sign) + templates for steps 2-3, plus "event" (the canonical SubmissionPrepared descriptor: { name, signature, topic0, abi, indexedFields, dataFields, note }) and "abis". Filter the step-1 receipt logs on event.topic0 and decode with event.abi rather than deriving either.'
       },
@@ -833,11 +833,6 @@ router.get('/api/docs', (req, res) => {
         fields: [
           'hunter: Ethereum address 0x... (required)',
           'hunterCid: IPFS CID from POST /submit (required). Must be a bare CID (46–100 alphanumeric chars, no prefix or delimiters) or the contract reverts "bad hunterCid".',
-          'addendum: DEPRECATED — IGNORED by the contract since the September 2026 revision — the escrow forwards fixed values (empty addendum, alpha 500, base cost 0, scaling 1) so the judged party cannot shape the evaluation. Accepted for backward compatibility only.',
-          'alpha: DEPRECATED — ignored by the contract (fixed at 500 on-chain).',
-          'maxOracleFee: max fee per oracle. Accepts decimal ETH (e.g. "0.00002") OR integer wei (e.g. "20000000000000") — same as /submit/bundle, so units are interchangeable across endpoints. A value with a decimal point is ETH, a bare integer is wei. Default "0.00002".',
-          'estimatedBaseCost: DEPRECATED — ignored by the contract (fixed at 0 on-chain).',
-          'maxFeeBasedScaling: DEPRECATED — ignored by the contract (fixed at 1 on-chain).'
         ],
         returns: 'Standard calldataResponseShape. Extras: info: { bountyId, evaluationCid, hunterCid }, event, nextStep. "event" is the canonical SubmissionPrepared descriptor — { name, signature, topic0, abi, indexedFields, dataFields, note }: filter the receipt logs on event.topic0 and decode with event.abi instead of deriving either. After broadcasting, parse the event for submissionId, evalWallet, ethMaxBudget — ethMaxBudget is the LAST field, after the dynamic string evaluationCid; a truncated ABI returns 96 (the string offset). Simplest: use the transaction.value that /start returns.'
       },
@@ -1003,42 +998,24 @@ router.get('/api/docs', (req, res) => {
       readWarning: 'Use getBounty(uint256) to read bounty data. Do NOT use the auto-generated bounties(uint256) getter — it skips the string evaluationCid field and shifts all subsequent field positions.',
       functions: {
         createBounty: {
-          signature: 'createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)',
+          signature: 'createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle) p) payable returns (uint256 bountyId)',
           notes: [
-            'submissionDeadline is a unix timestamp in SECONDS (not milliseconds)',
-            'Both prepareSubmission and startPreparedSubmission must happen BEFORE submissionDeadline (start reverts "deadline passed"); finalize may happen after',
+            'ONE function taking a CreateParams struct — no overloads. Encode with ethers: contract.createBounty({ evaluationCid, requestedClass, threshold, submissionDeadline, targetHunter, creatorDeterminationPayment, arbiterDeterminationPayment, creatorAssessmentWindowSize, oracle: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling } }, { value })',
+            'submissionDeadline is a unix timestamp in SECONDS (not milliseconds); both prepareSubmission and startPreparedSubmission must happen BEFORE it',
             'targetHunter: full wallet address for targeted bounties, address(0) for open bounties',
-            'msg.value: bounty amount in wei (must be > 0)',
-            'There is no 4-argument version — targetHunter is always required'
-          ]
-        },
-        createBountyWindowed: {
-          signature: 'createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)',
-          notes: [
-            '8-param overload for bounties with a creator approval window',
-            'creatorDeterminationPayment: ETH in wei paid if creator approves directly',
-            'arbiterDeterminationPayment: ETH in wei paid if oracle approves after window',
-            'creatorAssessmentWindowSize: window duration in seconds',
+            'msg.value = max(creatorDeterminationPayment, arbiterDeterminationPayment); for no window pass both equal to the amount and creatorAssessmentWindowSize 0',
             'The window is per submission (starts at prepareSubmission) and must end before submissionDeadline — effective prepare cutoff is submissionDeadline - creatorAssessmentWindowSize',
-            'msg.value: max(creatorPay, arbiterPay) in wei',
-            'If payments differ, window must be > 0'
+            'oracle: creator-chosen settings used verbatim for every evaluation (fee ceiling = arbiter eligibility filter + prepay size; alpha; price-boost base cost and scaling). Validated on-chain: fee > 0 and <= aggregator ceiling, base cost < fee, scaling 1-1000, alpha 0-1000',
+            'evaluationCid must be a bare CID (46-100 alphanumeric chars) — "bad evaluationCid" otherwise'
           ]
         },
         prepareSubmission: {
-          signature: 'prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, uint256 maxOracleFee) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)',
+          signature: 'prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)',
           notes: [
-            'Preferred form. The hunter supplies only the work CID and the per-oracle fee they agree to pay; the oracle request is otherwise built from the bounty (evaluation package, class) and the escrow\'s fixed parameters: FIXED_ADDENDUM "" , FIXED_ALPHA 500, FIXED_ESTIMATED_BASE_COST 0, FIXED_MAX_FEE_SCALING 1 (public constants).',
-            'Why fixed: the hunter is the party being judged. The addendum is appended to the query the arbiters see (a prompt-injection channel) and the fee weights steer arbiter selection; neither may come from the hunter.',
-            'Cap: 128 submissions per bounty in total — reverts "submission limit reached" once full.',
-            'hunterCid must be a BARE CID: 46–100 alphanumeric characters (CIDv0 "Qm…" or base32 CIDv1 "b…"). Anything else — commas, colons, slashes, spaces, an "ipfs/" prefix — reverts "bad hunterCid". Reason: the aggregator serializes the request as "1:<evalCid>,<hunterCid>:<addendum>" for the oracle nodes, so a delimiter inside the string would smuggle an extra archive or an addendum into the evaluation. createBounty applies the same rule to evaluationCid ("bad evaluationCid").'
-          ]
-        },
-        prepareSubmissionLegacy: {
-          signature: 'prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)',
-          notes: [
-            'DEPRECATED 8-argument overload kept for existing integrations; will be removed in the next signature-breaking revision.',
-            'addendum, alpha, estimatedBaseCost and maxFeeBasedScaling are IGNORED — the fixed values above are used. Only maxOracleFee is read.',
-            'ethers gotcha: if your ABI contains BOTH prepareSubmission overloads you must call by full signature, e.g. contract["prepareSubmission(uint256,string,string,uint256)"](...). An ABI listing only one overload works with the bare name.'
+            'The hunter supplies ONLY their work CID (evaluationCid is a guard and must equal the bounty\'s). The oracle request is built from the bounty: evaluation package, class, the creator\'s oracle settings, and an always-empty addendum (constant ADDENDUM). Nothing the hunter passes reaches the aggregator except hunterCid',
+            'ethMaxBudget = maxTotalFee(bounty.oracle.maxOracleFee) — the same for every submission to a bounty; attach it as msg.value at startPreparedSubmission',
+            'hunterCid must be a BARE CID: 46-100 alphanumeric characters (CIDv0 "Qm…" or base32 CIDv1 "b…"). Commas, colons, slashes, spaces or an "ipfs/" prefix revert "bad hunterCid" — the aggregator serializes the request as "1:<evalCid>,<hunterCid>:<addendum>", so a delimiter would smuggle an extra archive or an addendum',
+            'Cap: 128 submissions per bounty in total — reverts "submission limit reached" once full'
           ]
         },
         creatorApproveSubmission: {
@@ -1059,7 +1036,9 @@ router.get('/api/docs', (req, res) => {
             'If below threshold: marks submission as Failed',
             'If reverts with "Verdikta not ready": oracle has not completed — wait, or use failTimedOutSubmission once the aggregator round has timed out (5+ min after start)',
             'If reverts with "earlier submission pending - retry after it resolves" (windowed bounty): another hunter\'s earlier submission is in evaluation; nothing is written — retry after it resolves',
-            'A malformed oracle result (score vector not of length 2) finalizes as Failed with zero scores and refunds the prepay; it never reverts'
+            'A malformed oracle result (score vector not of length 2) finalizes as Failed with zero scores and refunds the prepay; it never reverts',
+            'Emits SubmissionFinalized(bountyId, submissionId, passed, paid, acceptance, rejection, justificationCids) — paid is true only for the winner in that tx (false for Failed, PassedUnpaid, TIMED_OUT)',
+            'The unspent oracle prepay is refunded to the address that FUNDED the start (Submission.funder), not necessarily the hunter'
           ]
         },
         failTimedOutSubmission: {

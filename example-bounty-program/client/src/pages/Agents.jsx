@@ -152,7 +152,7 @@ function Agents({ walletState }) {
       method: 'POST',
       path: '/api/jobs/:jobId/submit/prepare',
       description: 'Encode prepareSubmission calldata. Returns transaction to deploy EvaluationWallet.',
-      params: 'hunter, hunterCid (required). Optional: maxOracleFee. Deprecated and ignored by the contract (fixed on-chain): addendum, alpha, estimatedBaseCost, maxFeeBasedScaling'
+      params: 'hunter, hunterCid (required). No oracle parameters — the bounty\'s creator-chosen settings are used and the prepay is the same for every submission to a bounty.'
     },
     {
       method: 'POST',
@@ -363,8 +363,11 @@ curl -X POST -H "X-Bot-API-Key: YOUR_API_KEY" \\
 #   "creatorDeterminationPayment": 0.005,    // ETH paid if creator approves directly
 #   "arbiterDeterminationPayment": 0.01,     // ETH paid if arbiters approve (after window)
 #   "creatorAssessmentWindowHours": 1        // Hours creator has to review
-# On-chain, use createBounty(evaluationCid, classId, threshold, deadline, targetHunter).
-# For windowed bounties, use the 8-param overload adding creatorPay, arbiterPay, windowSize.
+# Optional: oracle settings (yours; used for every evaluation; defaults shown):
+#   "oracleMaxOracleFee": 0.00002, "oracleAlpha": 500, "oracleEstimatedBaseCost": 0.00001, "oracleMaxFeeBasedScaling": 3
+# On-chain, createBounty takes ONE struct: { evaluationCid, requestedClass, threshold, submissionDeadline,
+#   targetHunter, creatorDeterminationPayment, arbiterDeterminationPayment, creatorAssessmentWindowSize,
+#   oracle: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling } } - no window: both payments = amount, window 0.
 # Now deploy on-chain using evaluationCid (createBounty on BountyEscrow contract)
 
 # 17. REQUIRED: Link API job to on-chain bounty after deployment

@@ -96,18 +96,16 @@ function Blockchain() {
   const bountyEscrowABI = `const BOUNTY_ESCROW_ABI = [
   // Events
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
-  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)",
+  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, uint256 ethMaxBudget, string evaluationCid)",
   "event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, bytes32 verdiktaAggId)",
-  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, uint256 acceptance, uint256 rejection, string justificationCids)",
+  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, bool paid, uint256 acceptance, uint256 rejection, string justificationCids)",
   "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)",
   "event CreatorApproved(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, uint256 amountPaid)",
   "event CreatorRefunded(uint256 indexed bountyId, address indexed creator, uint256 amountRefunded)",
 
   // Write Functions
-  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)",
-  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)",
-  "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, uint256 maxOracleFee) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)",
-  "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)", // DEPRECATED: extra args ignored
+  "function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle) p) payable returns (uint256 bountyId)",
+  "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)",
   "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
@@ -125,9 +123,11 @@ function Blockchain() {
   "function PAYOUT_GAS_LIMIT() view returns (uint256)",           // 120000
   "function MIN_CID_LENGTH() view returns (uint256)",             // 46
   "function MAX_CID_LENGTH() view returns (uint256)",             // 100
-  "function FIXED_ALPHA() view returns (uint256)",                // 500
-  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
+  "function MAX_ALPHA() view returns (uint256)",                  // 1000
+  "function MAX_FEE_SCALING_FACTOR() view returns (uint256)",     // 1000
+  "function ADDENDUM() view returns (string)",                    // always empty
+  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))",
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
   "function verdikta() view returns (address)"
@@ -153,14 +153,23 @@ async function createBounty() {
   const now = Math.floor(Date.now() / 1000);
   const deadline = now + 48 * 3600;  // 48 hours
 
-  const tx = await escrow.createBounty(
-    'QmYourEvaluationPackageCID',  // IPFS CID
-    128n,                          // Class ID (uint64)
-    70n,                           // Threshold 70% (uint8)
-    BigInt(deadline),              // Deadline (uint64)
-    ethers.ZeroAddress,            // targetHunter (address(0) = open to all)
-    { value: ethers.parseEther('0.1') }
-  );
+  const payout = ethers.parseEther('0.1');
+  const tx = await escrow.createBounty({
+    evaluationCid: 'QmYourEvaluationPackageCID',   // bare CID (46-100 alphanumeric chars)
+    requestedClass: 128n,                          // Class ID (uint64)
+    threshold: 70n,                                // Threshold 70% (uint8)
+    submissionDeadline: BigInt(deadline),          // Deadline (uint64, seconds)
+    targetHunter: ethers.ZeroAddress,              // address(0) = open to all
+    creatorDeterminationPayment: payout,           // no window: both payments equal the amount
+    arbiterDeterminationPayment: payout,
+    creatorAssessmentWindowSize: 0n,
+    oracle: {                                      // YOUR oracle settings, used for every evaluation
+      maxOracleFee: ethers.parseEther('0.00002'),  // per-arbiter fee ceiling (<= 0.0004 ETH); also the eligibility filter
+      alpha: 500n,                                 // quality-vs-timeliness blend, 0-1000
+      estimatedBaseCost: ethers.parseEther('0.00001'), // < maxOracleFee; 0 disables the price boost
+      maxFeeBasedScaling: 3n,                      // 1-1000; 1 disables the price boost
+    },
+  }, { value: payout });
 
   const receipt = await tx.wait();
 
@@ -180,16 +189,13 @@ async function submitWork(bountyId, hunterCid) {
   const bounty = await escrow.getBounty(bountyId);
   const evaluationCid = bounty.evaluationCid;
 
-  // 4-arg form. The oracle request is built from the bounty plus the escrow's fixed
-  // parameters (empty addendum, alpha 500, no price boost); you supply only the work
-  // and the per-oracle fee you agree to pay. (A deprecated 8-arg overload still exists;
-  // its extra addendum/alpha/baseCost/scaling arguments are ignored. If your ABI lists
-  // both overloads, call by full signature as shown.)
-  const prepareTx = await escrow["prepareSubmission(uint256,string,string,uint256)"](
+  // The oracle request is built entirely from the bounty (its evaluation package, class
+  // and the creator's oracle settings) plus an empty addendum; you supply only your work
+  // CID. The prepay (ethMaxBudget) is the same for every submission to this bounty.
+  const prepareTx = await escrow.prepareSubmission(
     bountyId,
-    evaluationCid,
-    hunterCid,                            // Your work's IPFS CID
-    ethers.parseEther('0.00002')          // maxOracleFee (per oracle call cap, in ETH)
+    evaluationCid,                        // must equal the bounty's evaluationCid (a guard)
+    hunterCid                             // Your work's IPFS CID: bare CID, 46-100 alphanumeric chars
   );
 
   const prepareReceipt = await prepareTx.wait();
@@ -241,25 +247,25 @@ async function finalizeSubmission(bountyId, submissionId) {
 
 // === Windowed bounties (creator approval window) ===
 
-// Create a windowed bounty (8-param overload)
+// Create a windowed bounty (same struct; set the window and split payments)
 async function createWindowedBounty() {
   const now = Math.floor(Date.now() / 1000);
   const deadline = now + 48 * 3600;
   const creatorPay = ethers.parseEther('0.05');  // creator approves directly
   const arbiterPay = ethers.parseEther('0.10');  // arbiters approve after window
-  const windowSize = 3600n;                       // 1 hour window
+  const windowSize = 3600n;                       // 1 hour window (must end before the deadline)
 
-  // Use the explicit signature to disambiguate the 8-param overload
-  const tx = await escrow['createBounty(string,uint64,uint8,uint64,address,uint256,uint256,uint64)'](
-    'QmYourEvaluationPackageCID',
-    128n,
-    70n,
-    BigInt(deadline),
-    ethers.ZeroAddress,
-    creatorPay,
-    arbiterPay,
-    windowSize,
-    { value: arbiterPay }  // escrow = max(creatorPay, arbiterPay)
+  const tx = await escrow.createBounty({
+    evaluationCid: 'QmYourEvaluationPackageCID',
+    requestedClass: 128n,
+    threshold: 70n,
+    submissionDeadline: BigInt(deadline),
+    targetHunter: ethers.ZeroAddress,
+    creatorDeterminationPayment: creatorPay,
+    arbiterDeterminationPayment: arbiterPay,
+    creatorAssessmentWindowSize: windowSize,
+    oracle: { maxOracleFee: ethers.parseEther('0.00002'), alpha: 500n, estimatedBaseCost: ethers.parseEther('0.00001'), maxFeeBasedScaling: 3n },
+  }, { value: arbiterPay }  // escrow = max(creatorPay, arbiterPay)
   );
   await tx.wait();
 }
@@ -299,15 +305,26 @@ def create_bounty(evaluation_cid, class_id, threshold, hours_window, payout_eth)
     import time
     deadline = int(time.time()) + hours_window * 3600
 
-    tx = escrow.functions.createBounty(
-        evaluation_cid,
+    payout = w3.to_wei(payout_eth, 'ether')
+    params = (
+        evaluation_cid,                                   # bare CID (46-100 alphanumeric chars)
         class_id,
         threshold,
         deadline,
-        '0x0000000000000000000000000000000000000000'  # open to all (or pass target address)
-    ).build_transaction({
+        '0x0000000000000000000000000000000000000000',     # open to all (or pass target address)
+        payout,                                           # creatorDeterminationPayment (no window: both = payout)
+        payout,                                           # arbiterDeterminationPayment
+        0,                                                # creatorAssessmentWindowSize
+        (                                                 # oracle settings — yours, used for every evaluation
+            w3.to_wei(0.00002, 'ether'),                  # maxOracleFee (<= 0.0004 ETH ceiling; eligibility filter)
+            500,                                          # alpha 0-1000
+            w3.to_wei(0.00001, 'ether'),                  # estimatedBaseCost (< maxOracleFee; 0 disables price boost)
+            3,                                            # maxFeeBasedScaling 1-1000 (1 disables price boost)
+        ),
+    )
+    tx = escrow.functions.createBounty(params).build_transaction({
         'from': account.address,
-        'value': w3.to_wei(payout_eth, 'ether'),
+        'value': payout,
         'nonce': w3.eth.get_transaction_count(account.address),
         'gas': 500000,
     })
@@ -347,24 +364,20 @@ def is_windowed(bounty_id):
 
 def create_windowed_bounty(eval_cid, class_id, threshold, hours_window,
                            creator_pay_eth, arbiter_pay_eth, approval_hours):
-    """Create a bounty with a creator approval window (8-param overload)"""
+    """Create a bounty with a creator approval window (same struct; window > 0, split payments)"""
     import time
     deadline = int(time.time()) + hours_window * 3600
     creator_pay = w3.to_wei(creator_pay_eth, 'ether')
     arbiter_pay = w3.to_wei(arbiter_pay_eth, 'ether')
     escrow_amount = max(creator_pay, arbiter_pay)
 
-    # web3.py auto-disambiguates based on argument count
-    tx = escrow.functions.createBounty(
-        eval_cid,
-        class_id,
-        threshold,
-        deadline,
+    params = (
+        eval_cid, class_id, threshold, deadline,
         '0x0000000000000000000000000000000000000000',
-        creator_pay,
-        arbiter_pay,
-        approval_hours * 3600,
-    ).build_transaction({
+        creator_pay, arbiter_pay, approval_hours * 3600,
+        (w3.to_wei(0.00002, 'ether'), 500, w3.to_wei(0.00001, 'ether'), 3),  # oracle settings
+    )
+    tx = escrow.functions.createBounty(params).build_transaction({
         'from': account.address,
         'value': escrow_amount,
         'nonce': w3.eth.get_transaction_count(account.address),
@@ -391,16 +404,12 @@ def submit_work(bounty_id, hunter_cid):
     evaluation_cid = bounty[1]
 
     # Step 1: prepareSubmission (deploys EvaluationWallet)
-    # 4-arg form: only the work CID and the per-oracle fee are yours to set; the escrow
-    # fixes the rest (empty addendum, alpha 500, no price boost). With both overloads in
-    # the ABI, web3.py needs the explicit signature.
-    prepare_tx = escrow.get_function_by_signature(
-        'prepareSubmission(uint256,string,string,uint256)'
-    )(
+    # Only the two CIDs: the bounty's evaluation package (a guard) and your work. The
+    # oracle settings come from the bounty; the prepay is the same for every submission.
+    prepare_tx = escrow.functions.prepareSubmission(
         bounty_id,
         evaluation_cid,
-        hunter_cid,                               # your work's IPFS CID
-        w3.to_wei(0.00002, 'ether'),              # maxOracleFee (per oracle call cap)
+        hunter_cid,                               # your work's IPFS CID (bare CID)
     ).build_transaction({
         'from': account.address,
         'nonce': w3.eth.get_transaction_count(account.address),
@@ -728,21 +737,22 @@ submission-package.zip
           </div>
           <div className="callout callout-info" style={{ marginLeft: '3rem', marginBottom: '1rem' }}>
             <div>
-              <strong>prepareSubmission takes 4 parameters:</strong>
+              <strong>prepareSubmission takes 3 parameters:</strong>
               <pre style={{ margin: '0.5rem 0 0 0', fontSize: '0.85rem' }}>{`prepareSubmission(
   bountyId,           // uint256 - on-chain bounty ID
   evaluationCid,      // string  - bounty's evaluation CID (NOT your submission; must match the bounty)
-  hunterCid,          // string  - your submission's IPFS CID: a bare CID, 46-100 alphanumeric chars
-  maxOracleFee        // uint256 - "20000000000000" (0.00002 ETH per oracle call, ceiling 0.0004 ETH)
+  hunterCid           // string  - your submission's IPFS CID: a bare CID, 46-100 alphanumeric chars
 )`}</pre>
               <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.9rem' }}>
-                Everything else in the oracle request is fixed by the escrow (empty addendum, alpha 500, no
-                price-based arbiter boost) so the party being judged cannot shape the evaluation. A deprecated
-                8-parameter overload (<code>…, addendum, alpha, maxOracleFee, estimatedBaseCost, maxFeeBasedScaling</code>)
-                still exists for older integrations; its four extra arguments are ignored. If your ABI lists both
-                overloads, call by full signature. A <code>hunterCid</code> containing anything but letters and digits
-                (a comma, colon, slash or space) reverts with <code>bad hunterCid</code>, and each bounty accepts at
-                most 128 submissions in total (<code>submission limit reached</code>).
+                The oracle request is built entirely from the bounty: its evaluation package, its class, and the
+                <em> creator's</em> oracle settings (<code>maxOracleFee</code>, <code>alpha</code>,
+                <code>estimatedBaseCost</code>, <code>maxFeeBasedScaling</code>, chosen at creation and readable via
+                <code>getBounty(id).oracle</code>), with an always-empty addendum. The party being judged cannot shape
+                the evaluation or the jury. The prepay (<code>ethMaxBudget</code>) is the same for every submission to a
+                bounty. Read the bounty's settings before you submit; the website's validate check warns if they look rigged.
+                A <code>hunterCid</code> containing anything but letters and digits (a comma, colon, slash or space)
+                reverts with <code>bad hunterCid</code>, and each bounty accepts at most 128 submissions in total
+                (<code>submission limit reached</code>).
               </p>
             </div>
           </div>

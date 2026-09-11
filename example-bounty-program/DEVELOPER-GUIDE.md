@@ -197,21 +197,44 @@ node -e "console.log(JSON.stringify(require('./artifacts/contracts/BountyEscrow.
 cmp /tmp/abi_old.json /tmp/abi_new.json && echo "identical ABI — drop-in"
 ```
 
-Identical ABI means internal-logic-only changes: safe to deploy against the existing off-chain code. The September 2026 hardening batch is entirely of this kind — behavior changes, the escrow interface does not:
+Identical ABI means internal-logic-only changes: safe to deploy against the existing off-chain code.
 
-- `PassedUnpaid` payout-deadlock fix in `_hasOtherPassingSubmission` (non-windowed bounties).
-- `failTimedOutSubmission` gated on aggregator state instead of a 10-minute timer (adds a read-only `getAggregationStatus` call to the aggregator interface; the live aggregators already expose it).
-- Malformed score vectors (not exactly 2 entries) finalize as `Failed` instead of reverting.
+**The September 2026 revision is NOT drop-in.** It is a breaking release: the contract must be deployed to a new address AND every off-chain ABI copy must flip in the same release (see the cutover patch and checklist). What changed in the interface:
+
+| Piece | Before | After |
+|---|---|---|
+| `createBounty` | two positional overloads (5 and 8 args) | one function taking a `CreateParams` struct, including `oracle: {maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling}` |
+| `prepareSubmission` | 8 args (hunter-supplied addendum / alpha / fee / base cost / scaling) | `(bountyId, evaluationCid, hunterCid)` |
+| `getBounty` tuple | 14 fields | + trailing nested `oracle` struct |
+| `getSubmission` tuple | 18 fields | 13 fields: `evaluationCid`, `maxOracleFee`, `alpha`, `estimatedBaseCost`, `maxFeeBasedScaling`, `addendum` removed; `funder` added last |
+| `SubmissionFinalized` | `(…, bool passed, acceptance, rejection, justification)` | `(…, bool passed, bool paid, acceptance, rejection, justification)` |
+| `SubmissionPrepared` | `(…, evalWallet, string evaluationCid, ethMaxBudget)` | `(…, evalWallet, ethMaxBudget, string evaluationCid)` — new topic0 |
+| New views | — | `withdraw()`, `withdrawable`, `canBeClosed`, `activeEvaluations`, `submissionCount`, constants `MAX_SUBMISSIONS_PER_BOUNTY`, `PAYOUT_GAS_LIMIT`, `MIN/MAX_CID_LENGTH`, `MAX_ALPHA`, `MAX_FEE_SCALING_FACTOR`, `ADDENDUM` |
+| Removed | `ILinkToken`, `MockLinkToken` | — |
+
+Exact fragments (copy verbatim into ABI lists):
+
+```
+function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle) p) payable returns (uint256 bountyId)
+function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)
+function getBounty(uint256 bountyId) view returns ((address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))
+function getSubmission(uint256 bountyId, uint256 submissionId) view returns ((address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))
+event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, bool paid, uint256 acceptance, uint256 rejection, string justificationCids)
+event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, uint256 ethMaxBudget, string evaluationCid)
+```
+
+Behavioral changes shipped in the same revision (all documented in [Submission timing and priority rules](#submission-timing-and-priority-rules)):
+
+- `PassedUnpaid` payout-deadlock fix; non-windowed tie-break by lowest index (order-independent).
+- `failTimedOutSubmission` gated on aggregator state instead of a 10-minute timer.
+- Malformed score vectors finalize as `Failed` instead of reverting.
 - Deadline rule: `startPreparedSubmission` must happen before the deadline; windowed `prepareSubmission` requires the window to end before the deadline.
-- Windowed priority: same-hunter resubmissions and expired never-started submissions no longer block; a blocked passing finalize reverts (retryable) instead of writing terminal `PassedUnpaid`.
-- Non-windowed tie-break by lowest index (order-independent); `MAX_SUBMISSIONS_PER_BOUNTY = 128`; same-hunter in-flight evaluation blocks creator approval.
-- Payout gas cap: direct ETH sends to hunters/creators forward at most `PAYOUT_GAS_LIMIT = 120000` gas; recipients that need more (or fail) are credited to `withdrawable` and claim via `withdraw()`.
-- CID shape validation: `evaluationCid` (at create) and `hunterCid` (at prepare) must be 46–100 alphanumeric characters; reverts `bad evaluationCid` / `bad hunterCid` replace the old `empty evaluationCid` / `empty hunterCid`.
-- Oracle request parameters fixed on-chain (`FIXED_ADDENDUM`, `FIXED_ALPHA`, `FIXED_ESTIMATED_BASE_COST`, `FIXED_MAX_FEE_SCALING`). The legacy 8-argument `prepareSubmission` keeps its signature and ignores those four arguments, and a new 4-argument overload `prepareSubmission(uint256,string,string,uint256)` was ADDED. Additive, so existing callers are unaffected — but an ABI that lists both overloads must call by full signature (ethers/web3 refuse an ambiguous bare name). The bundled `artifacts/` ABI lists both.
+- Windowed priority: same-hunter resubmissions and expired never-started submissions no longer block; a same-hunter in-flight evaluation blocks creator approval; a blocked passing finalize reverts (retryable).
+- `MAX_SUBMISSIONS_PER_BOUNTY = 128`; payout gas cap `PAYOUT_GAS_LIMIT = 120000`; CID shape validation; creator-owned oracle settings; leftover prepay refunded to the funder.
 
-The revert strings did change (`submitted too late` → `deadline passed`; `timeout not reached` gone, replaced by `result available - use finalizeSubmission` / `evaluation not settled`; new `window would end after deadline` and `earlier submission pending - retry after it resolves`). See [Submission timing and priority rules](#submission-timing-and-priority-rules).
+New/changed revert strings: `deadline passed`, `window would end after deadline`, `earlier submission pending - retry after it resolves`, `result available - use finalizeSubmission`, `evaluation not settled`, `submission limit reached`, `bad hunterCid`, `bad evaluationCid`, `bad oracle fee`, `oracle fee above ceiling`, `base cost must be below fee`, `bad fee scaling`, `bad alpha`. Gone: `submitted too late`, `timeout not reached`, `empty hunterCid`, `empty evaluationCid`.
 
-#### The one change that is NOT drop-in: the `SubmissionPrepared` field reorder
+#### The `SubmissionPrepared` field reorder (event-signature change)
 
 As of 2026-09-10 the contract **source** emits `SubmissionPrepared(bountyId, submissionId, hunter, evalWallet, ethMaxBudget, evaluationCid)` — static fields first, the dynamic string **last** — so even a naive `(address,uint256)` decode of the log data reads `ethMaxBudget` correctly instead of `96` (the string's offset word). The **deployed** contracts on Base and Base Sepolia still emit the old order (`…, evalWallet, evaluationCid, ethMaxBudget`), and every off-chain decoder in this repo still matches the deployed order on purpose.
 
@@ -400,11 +423,9 @@ When a passing `finalizeSubmission` on a windowed bounty is blocked by another h
 
 **Non-windowed tie-break.** `_hasOtherPassingSubmission` consults only lower-index siblings. If no other submission has a passing result yet, the one being finalized wins (first to complete in practice). If several have passing results at the same time, the lowest index wins regardless of the order finalize is called in, so a rival cannot knock out a passing submission by finalizing it first. A submission deferred this way is written `PassedUnpaid` (final): the lower-index one is guaranteed to be paid when finalized.
 
-**Oracle request parameters.** The hunter is the party being judged, so nothing that shapes the evaluation is taken from them. `prepareSubmission` reads only `maxOracleFee` (which sets the prepay); the request is otherwise built from the bounty's evaluation package and class plus the escrow's public constants: `FIXED_ADDENDUM = ""` (the addendum is appended to the query the arbiters see — a prompt-injection channel if hunter-controlled), `FIXED_ALPHA = 500` (even quality/timeliness blend in arbiter selection), `FIXED_ESTIMATED_BASE_COST = 0` and `FIXED_MAX_FEE_SCALING = 1` (disables the price-based selection boost, which a hunter running cheap arbiters could otherwise use to steer the draw toward their own nodes). The `Submission` struct's echo fields record these fixed values. The deprecated 8-argument overload accepts and discards the four hunter-supplied values; plan to migrate callers to the 4-argument overload before it is removed.
+**Oracle settings belong to the creator** (`Bounty.oracle`, set in `createBounty`, validated by `MAX_ALPHA = 1000`, `MAX_FEE_SCALING_FACTOR = 1000`, fee ≤ `verdikta.maxOracleFee()`, base cost < fee, scaling ≥ 1). They are used verbatim for every evaluation of the bounty; `prepareSubmission` takes only the two CIDs and the addendum forwarded to the aggregator is the constant `ADDENDUM = ""`. Why the creator and not the hunter: the aggregator's keeper treats `maxOracleFee` as an eligibility filter (an arbiter is selectable only if its fee ≤ the request's ceiling), and `estimatedBaseCost` / `maxFeeBasedScaling` weight selection by price — whoever sets them can shrink or tilt the jury toward nodes they run. A hunter can see a bounty's settings before committing work and walk away (the website's validate check warns on a small eligible pool, a dominant operator, an enabled price boost or an extreme alpha); a creator cannot inspect a hunter. Why the addendum is empty for everyone: it is appended to the query the arbiters see, and the creator's evaluation package is the whole query. `ethMaxBudget = maxTotalFee(bounty.oracle.maxOracleFee)` is identical for every submission to a bounty. The residual lever is the class itself (a class served by one operator is that operator's private jury) — visible on the bounty.
 
-**CID validation** (`_isValidCid`, `MIN_CID_LENGTH = 46`, `MAX_CID_LENGTH = 100`). Both CIDs the escrow forwards must be alphanumeric strings of 46–100 characters, which admits CIDv0 (`Qm…`, base58) and base32 CIDv1 (`b…`) and rejects delimiters, whitespace, path prefixes and non-ASCII. The aggregator only length-checks CIDs (its own `MAX_CID_LENGTH` is 100) and then builds the oracle payload as `"1:" + cids.join(",") + (addendum ? ":" + addendum : "")`. Without this check a hunter preparing directly on-chain could put `,` in `hunterCid` to attach extra archives (including one with its own manifest) or `:` to inject an addendum — re-opening the channel `FIXED_ADDENDUM` closes. The check keeps every CID a bare content reference regardless of how a node splits the payload. Cost: a few thousand gas per prepare.
-
-**Payout delivery** (`_payOrCredit`, `PAYOUT_GAS_LIMIT = 120000`, `withdrawable`, `withdraw()`). Every payout, creator refund and bounty close first tries a direct send with at most 120k gas. If that fails — the recipient rejects ETH, needs more gas than the cap, or burns what it is given — the amount is credited to the recipient's `withdrawable` balance instead and `PaymentDeferred(to, amount)` is emitted; the recipient collects it with `withdraw()`, which forwards full gas and emits `Withdrawn`. Settlement therefore never reverts because of a recipient, and its gas cost is bounded: a hostile contract recipient can burn at most the cap rather than forcing the finalizer to bring ~64× the remaining work (EIP-150). Ordinary wallets and simple smart-contract wallets are paid in the same transaction; `PayoutSent` / `CreatorRefunded` / `BountyClosed` / `EthRefunded` describe what is OWED, so an indexer must treat a following `PaymentDeferred` as "not yet delivered". The cap is a constant: the contract has no owner. Note the website has no claim button yet — a contract-wallet user whose payout was deferred must call `withdraw()` directly.
+**Funder refund** (`Submission.funder`). `startPreparedSubmission` records `msg.sender` as the funder; `_refundLeftoverEth` (from finalize and force-fail) returns the unspent prepay to the funder, which is the hunter in the common case and the creator or a third party for an expired-window start.
 
 **Force-fail** (`failTimedOutSubmission`). No timer. Requires `PendingVerdikta`, then: try `finalizeEvaluationTimeout` on the aggregator (ignored if it reverts), require `getEvaluation(aggId).exists == false` (`result available - use finalizeSubmission`), require `getAggregationStatus(aggId).isComplete == true` (`evaluation not settled`). On success: `Failed`, `activeEvaluations` decremented, unspent prepay refunded to the hunter. The aggregator's `responseTimeoutSeconds` is 300 on both networks, so the practical rule is "at least 5 minutes after the start tx and the oracle never responded".
 

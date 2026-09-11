@@ -19,9 +19,9 @@ contract MockGasHungryRecipient {
     function setBurnAll(bool v) external { burnAll = v; }
 
     // --- act as a hunter ---
-    function prepare(address escrow, uint256 bountyId, string calldata evalCid, string calldata hunterCid, uint256 maxOracleFee) external {
+    function prepare(address escrow, uint256 bountyId, string calldata evalCid, string calldata hunterCid) external {
         (uint256 sid, , uint256 budget) =
-            BountyEscrow(payable(escrow)).prepareSubmission(bountyId, evalCid, hunterCid, maxOracleFee);
+            BountyEscrow(payable(escrow)).prepareSubmission(bountyId, evalCid, hunterCid);
         lastSubId = sid;
         lastBudget = budget;
     }
@@ -30,7 +30,18 @@ contract MockGasHungryRecipient {
     }
     // --- act as a creator ---
     function createBounty(address escrow, string calldata evalCid, uint64 deadline) external payable returns (uint256) {
-        return BountyEscrow(payable(escrow)).createBounty{value: msg.value}(evalCid, 128, 70, deadline, address(0));
+        BountyEscrow.CreateParams memory p = BountyEscrow.CreateParams({
+            evaluationCid: evalCid,
+            requestedClass: 128,
+            threshold: 70,
+            submissionDeadline: deadline,
+            targetHunter: address(0),
+            creatorDeterminationPayment: msg.value,
+            arbiterDeterminationPayment: msg.value,
+            creatorAssessmentWindowSize: 0,
+            oracle: BountyEscrow.OracleParams({ maxOracleFee: 2e13, alpha: 500, estimatedBaseCost: 0, maxFeeBasedScaling: 1 })
+        });
+        return BountyEscrow(payable(escrow)).createBounty{value: msg.value}(p);
     }
     function claim(address escrow) external {
         BountyEscrow(payable(escrow)).withdraw();

@@ -106,7 +106,8 @@ function Blockchain() {
   // Write Functions
   "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)",
   "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)",
-  "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)",
+  "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, uint256 maxOracleFee) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)",
+  "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)", // DEPRECATED: extra args ignored
   "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
@@ -169,15 +170,16 @@ async function submitWork(bountyId, hunterCid) {
   const bounty = await escrow.getBounty(bountyId);
   const evaluationCid = bounty.evaluationCid;
 
-  const prepareTx = await escrow.prepareSubmission(
+  // 4-arg form. The oracle request is built from the bounty plus the escrow's fixed
+  // parameters (empty addendum, alpha 500, no price boost); you supply only the work
+  // and the per-oracle fee you agree to pay. (A deprecated 8-arg overload still exists;
+  // its extra addendum/alpha/baseCost/scaling arguments are ignored. If your ABI lists
+  // both overloads, call by full signature as shown.)
+  const prepareTx = await escrow["prepareSubmission(uint256,string,string,uint256)"](
     bountyId,
     evaluationCid,
     hunterCid,                            // Your work's IPFS CID
-    'Please evaluate carefully',          // Addendum
-    500n,                                 // Alpha: timeliness-vs-quality blend (0-1000). 500 = equal blend; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
-    ethers.parseEther('0.00002'),         // maxOracleFee (per oracle call cap, in ETH)
-    ethers.parseEther('0.0001'),          // estimatedBaseCost (base cost per evaluation, in ETH)
-    BigInt('3')                           // maxFeeBasedScaling: x-factor cap on fee-based boost (contract scales by 1e18 internally; must be >= 1)
+    ethers.parseEther('0.00002')          // maxOracleFee (per oracle call cap, in ETH)
   );
 
   const prepareReceipt = await prepareTx.wait();
@@ -379,15 +381,16 @@ def submit_work(bounty_id, hunter_cid):
     evaluation_cid = bounty[1]
 
     # Step 1: prepareSubmission (deploys EvaluationWallet)
-    prepare_tx = escrow.functions.prepareSubmission(
+    # 4-arg form: only the work CID and the per-oracle fee are yours to set; the escrow
+    # fixes the rest (empty addendum, alpha 500, no price boost). With both overloads in
+    # the ABI, web3.py needs the explicit signature.
+    prepare_tx = escrow.get_function_by_signature(
+        'prepareSubmission(uint256,string,string,uint256)'
+    )(
         bounty_id,
         evaluation_cid,
         hunter_cid,                               # your work's IPFS CID
-        'Please evaluate carefully',              # addendum
-        500,                                      # alpha: timeliness-vs-quality blend (0-1000)
         w3.to_wei(0.00002, 'ether'),              # maxOracleFee (per oracle call cap)
-        w3.to_wei(0.0001, 'ether'),               # estimatedBaseCost (base cost per evaluation)
-        3,                                        # maxFeeBasedScaling (>= 1)
     ).build_transaction({
         'from': account.address,
         'nonce': w3.eth.get_transaction_count(account.address),

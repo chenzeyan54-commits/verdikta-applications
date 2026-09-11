@@ -132,9 +132,10 @@ Receipt URL format: `bounties.verdikta.org/r/{jobId}/{submissionId}`
 
 The submission process is split into two on-chain transactions for better UX, followed by a finalize call:
 
-1. **Prepare Submission** (`prepareSubmission`)
+1. **Prepare Submission** (`prepareSubmission(bountyId, evaluationCid, hunterCid, maxOracleFee)`)
    - Deploys EvaluationWallet contract
-   - Records submission parameters
+   - Records the submission. The hunter supplies only the work CID and the per-oracle fee they agree to pay; everything else in the oracle request comes from the bounty (evaluation package, class) and the escrow's fixed parameters (`FIXED_ADDENDUM` empty, `FIXED_ALPHA` 500, no price-based arbiter boost). The judged party cannot append text to the arbiters' query or steer arbiter selection.
+   - A deprecated 8-argument overload (`…, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling`) still exists for older integrations; its four extra arguments are ignored. It will be removed in the next signature-breaking revision. If your ABI lists both overloads, call by full signature.
    - Emits `SubmissionPrepared(bountyId, submissionId, hunter, evalWallet, evaluationCid, ethMaxBudget)` — `ethMaxBudget` is the worst-case ETH prepay (wei) and is the **last** field, after the dynamic `string evaluationCid`. Decode with the full event ABI; a truncated/misordered ABI returns `96` (`0x60`, the string's offset word), not the budget. Simplest: use the `transaction.value` returned by the `/start` calldata endpoint.
    - Its `topic0` is `0xdf7bc54a6444d008cf527c6a4bcdfa31d05db5a08445b8dd2eb3a05f24b67437` = `keccak256("SubmissionPrepared(uint256,uint256,address,address,string,uint256)")`. Nothing exotic — but if you compute the hash from a signature that omits the trailing `uint256 ethMaxBudget` you get `0x87362e68…`, which matches no logs. Don't hand-write it: `/submit/prepare` and `/submit/bundle` both return an `event` object carrying `topic0` and the full `abi`.
 

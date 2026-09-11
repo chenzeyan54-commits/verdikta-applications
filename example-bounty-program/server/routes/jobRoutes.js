@@ -4382,14 +4382,15 @@ const bundleEscrowIface = new ethers.Interface(BUNDLE_ESCROW_ABI);
  *   hunterAddress   - Ethereum address (required)
  *   hunterCid       - IPFS CID of already-uploaded work (optional if files provided)
  *   files           - multipart file uploads (optional if hunterCid provided)
- *   addendum        - optional text appended to evaluation query
- *   alpha           - timeliness-vs-quality blend (0-1000), default 500.
- *                     ReputationKeeper: weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
- *                     0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
+ *   addendum        - DEPRECATED: ignored by the contract (forwards FIXED_ADDENDUM = "").
+ *   alpha           - DEPRECATED: ignored by the contract (forwards FIXED_ALPHA = 500).
  *   maxOracleFee    - max fee per oracle; accepts decimal ETH ("0.00002") OR integer wei ("20000000000000"). Default "20000000000000".
- *   estimatedBaseCost   - base cost per evaluation; decimal ETH or integer wei. Default "10000000000000" (0.00001 ETH).
- *   maxFeeBasedScaling  - plain integer N (x-factor), default "3". Cap on fee-boost
- *                         multiplier applied to oracles whose fee is below maxOracleFee.
+ *                     The ONLY oracle parameter the hunter controls (it sets the ETH prepay).
+ *   estimatedBaseCost   - DEPRECATED: ignored by the contract (forwards 0).
+ *   maxFeeBasedScaling  - DEPRECATED: ignored by the contract (forwards 1).
+ *   The four deprecated fields are still encoded into the legacy 8-arg prepareSubmission
+ *   calldata for backward compatibility; the contract discards them. See
+ *   BountyEscrow FIXED_* constants and the 4-arg prepareSubmission overload.
  *                         Contract multiplies by 1e18 internally — pass the x-factor itself, not a scaled value.
  *                         Must be >= 1.
  *

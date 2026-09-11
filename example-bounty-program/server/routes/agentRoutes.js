@@ -808,11 +808,11 @@ router.get('/api/docs', (req, res) => {
           'hunterAddress: Ethereum address 0x... (required)',
           'hunterCid: IPFS CID of pre-uploaded work (required if no files)',
           'files: multipart file uploads (required if no hunterCid). Must be oracle-readable (text/code/markdown, PDF, .docx, images). Do NOT zip/archive — archive & binary attachments are rejected (HTTP 400); the oracle skips them and the submission scores 0. Pre-check with POST /api/jobs/:id/submit/dry-run.',
-          'addendum: optional text appended to evaluation query',
-          'alpha: timeliness-vs-quality blend (0-1000), default 500. weighted = ((1000-alpha)*quality + alpha*timeliness)/1000; 0 = pure quality, 1000 = pure timeliness, 500 = equal.',
+          'addendum: DEPRECATED — IGNORED by the contract since the September 2026 revision — the escrow forwards fixed values (empty addendum, alpha 500, base cost 0, scaling 1) so the judged party cannot shape the evaluation. Accepted for backward compatibility only.',
+          'alpha: DEPRECATED — ignored by the contract (fixed at 500 on-chain).',
           'maxOracleFee: max fee per oracle. Accepts decimal ETH (e.g. "0.00002") OR integer wei (e.g. "20000000000000") — a value with a decimal point is ETH, a bare integer is wei. Default "20000000000000" (0.00002 ETH).',
-          'estimatedBaseCost: base cost per evaluation. Same dual-unit rule (decimal ETH or integer wei). Default "10000000000000" (0.00001 ETH).',
-          'maxFeeBasedScaling: plain integer x-factor, default "3". Caps fee-boost multiplier for oracles priced below maxOracleFee; contract scales by 1e18 internally, so pass the x-factor itself. Must be >= 1.'
+          'estimatedBaseCost: DEPRECATED — ignored by the contract (fixed at 0 on-chain).',
+          'maxFeeBasedScaling: DEPRECATED — ignored by the contract (fixed at 1 on-chain; the price-based arbiter boost is disabled, selection is by reputation).'
         ],
         returns: 'Step 1 calldata (ready to sign) + templates for steps 2-3, plus "event" (the canonical SubmissionPrepared descriptor: { name, signature, topic0, abi, indexedFields, dataFields, note }) and "abis". Filter the step-1 receipt logs on event.topic0 and decode with event.abi rather than deriving either.'
       },
@@ -833,11 +833,11 @@ router.get('/api/docs', (req, res) => {
         fields: [
           'hunter: Ethereum address 0x... (required)',
           'hunterCid: IPFS CID from POST /submit (required)',
-          'addendum: optional string appended to the evaluation query. Default "".',
-          'alpha: timeliness-vs-quality blend 0-1000. Default 500. weighted = ((1000-alpha)*quality + alpha*timeliness)/1000.',
+          'addendum: DEPRECATED — IGNORED by the contract since the September 2026 revision — the escrow forwards fixed values (empty addendum, alpha 500, base cost 0, scaling 1) so the judged party cannot shape the evaluation. Accepted for backward compatibility only.',
+          'alpha: DEPRECATED — ignored by the contract (fixed at 500 on-chain).',
           'maxOracleFee: max fee per oracle. Accepts decimal ETH (e.g. "0.00002") OR integer wei (e.g. "20000000000000") — same as /submit/bundle, so units are interchangeable across endpoints. A value with a decimal point is ETH, a bare integer is wei. Default "0.00002".',
-          'estimatedBaseCost: base cost per evaluation. Same dual-unit rule (decimal ETH or integer wei). Default "0.00001".',
-          'maxFeeBasedScaling: plain integer x-factor (>= 1). Default "3". Caps fee-boost multiplier for cheap oracles; contract scales by 1e18 internally.'
+          'estimatedBaseCost: DEPRECATED — ignored by the contract (fixed at 0 on-chain).',
+          'maxFeeBasedScaling: DEPRECATED — ignored by the contract (fixed at 1 on-chain).'
         ],
         returns: 'Standard calldataResponseShape. Extras: info: { bountyId, evaluationCid, hunterCid }, event, nextStep. "event" is the canonical SubmissionPrepared descriptor — { name, signature, topic0, abi, indexedFields, dataFields, note }: filter the receipt logs on event.topic0 and decode with event.abi instead of deriving either. After broadcasting, parse the event for submissionId, evalWallet, ethMaxBudget — ethMaxBudget is the LAST field, after the dynamic string evaluationCid; a truncated ABI returns 96 (the string offset). Simplest: use the transaction.value that /start returns.'
       },
@@ -1022,6 +1022,22 @@ router.get('/api/docs', (req, res) => {
             'The window is per submission (starts at prepareSubmission) and must end before submissionDeadline — effective prepare cutoff is submissionDeadline - creatorAssessmentWindowSize',
             'msg.value: max(creatorPay, arbiterPay) in wei',
             'If payments differ, window must be > 0'
+          ]
+        },
+        prepareSubmission: {
+          signature: 'prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, uint256 maxOracleFee) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)',
+          notes: [
+            'Preferred form. The hunter supplies only the work CID and the per-oracle fee they agree to pay; the oracle request is otherwise built from the bounty (evaluation package, class) and the escrow\'s fixed parameters: FIXED_ADDENDUM "" , FIXED_ALPHA 500, FIXED_ESTIMATED_BASE_COST 0, FIXED_MAX_FEE_SCALING 1 (public constants).',
+            'Why fixed: the hunter is the party being judged. The addendum is appended to the query the arbiters see (a prompt-injection channel) and the fee weights steer arbiter selection; neither may come from the hunter.',
+            'Cap: 128 submissions per bounty in total — reverts "submission limit reached" once full.'
+          ]
+        },
+        prepareSubmissionLegacy: {
+          signature: 'prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)',
+          notes: [
+            'DEPRECATED 8-argument overload kept for existing integrations; will be removed in the next signature-breaking revision.',
+            'addendum, alpha, estimatedBaseCost and maxFeeBasedScaling are IGNORED — the fixed values above are used. Only maxOracleFee is read.',
+            'ethers gotcha: if your ABI contains BOTH prepareSubmission overloads you must call by full signature, e.g. contract["prepareSubmission(uint256,string,string,uint256)"](...). An ABI listing only one overload works with the bare name.'
           ]
         },
         creatorApproveSubmission: {

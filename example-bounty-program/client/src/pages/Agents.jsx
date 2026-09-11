@@ -152,7 +152,7 @@ function Agents({ walletState }) {
       method: 'POST',
       path: '/api/jobs/:jobId/submit/prepare',
       description: 'Encode prepareSubmission calldata. Returns transaction to deploy EvaluationWallet.',
-      params: 'hunter, hunterCid (required). Optional: addendum, alpha, maxOracleFee, estimatedBaseCost, maxFeeBasedScaling'
+      params: 'hunter, hunterCid (required). Optional: maxOracleFee. Deprecated and ignored by the contract (fixed on-chain): addendum, alpha, estimatedBaseCost, maxFeeBasedScaling'
     },
     {
       method: 'POST',

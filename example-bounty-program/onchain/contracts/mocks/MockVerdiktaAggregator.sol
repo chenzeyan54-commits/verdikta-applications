@@ -88,17 +88,34 @@ contract MockVerdiktaAggregator {
 
     // --- IVerdiktaAggregator implementation ---
 
+    /// @dev What the escrow actually forwarded, per request — lets tests assert that
+    ///      hunter-supplied addendum / selection weights are NOT passed through.
+    struct RequestParams {
+        string addendum;
+        uint256 alpha;
+        uint256 maxFee;
+        uint256 estimatedBaseCost;
+        uint256 maxFeeBasedScaling;
+        uint64 requestedClass;
+        uint256 cidCount;
+    }
+    mapping(bytes32 => RequestParams) public requestParams;
+
     function requestAIEvaluationWithApproval(
-        string[] memory,
-        string memory,
-        uint256,
-        uint256,
-        uint256,
-        uint256,
-        uint64
+        string[] memory cids,
+        string memory addendumText,
+        uint256 _alpha,
+        uint256 _maxFee,
+        uint256 _estimatedBaseCost,
+        uint256 _maxFeeBasedScalingFactor,
+        uint64 _requestedClass
     ) external payable returns (bytes32 requestId) {
         _nonce++;
         requestId = keccak256(abi.encodePacked(_nonce, msg.sender));
+        requestParams[requestId] = RequestParams(
+            addendumText, _alpha, _maxFee, _estimatedBaseCost, _maxFeeBasedScalingFactor,
+            _requestedClass, cids.length
+        );
         requesterOf[requestId] = msg.sender;
         startTimestamp[requestId] = block.timestamp;
         // Default: settle at fulfillment — credit the unspent prepay refund now.

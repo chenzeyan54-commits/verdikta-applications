@@ -92,6 +92,24 @@ contract BountyEscrow {
     ///      and the creator can still close at the deadline.
     uint256 public constant MAX_SUBMISSIONS_PER_BOUNTY = 128;
 
+    /// @notice Oracle request parameters the escrow forwards to the aggregator for EVERY
+    ///         evaluation. They are fixed here rather than taken from the hunter.
+    /// @dev The hunter is the party being judged, so nothing that shapes the evaluation may
+    ///      come from them:
+    ///        - addendum text is appended to the query the arbiters see (a free-text channel
+    ///          into the prompt) — always empty; the creator's evaluation package is the
+    ///          whole query, and anything a hunter wants to say belongs in the work product;
+    ///        - estimatedBaseCost / maxFeeBasedScaling weight arbiter selection by price —
+    ///          fixed to (0, 1), which disables the price boost so selection runs on
+    ///          reputation alone (a hunter running cheap arbiters could otherwise steer the
+    ///          draw toward their own nodes);
+    ///        - alpha blends arbiter quality vs timeliness in selection — fixed to an even mix.
+    ///      The hunter keeps only maxOracleFee, which is the per-oracle price they agree to pay.
+    string  public constant FIXED_ADDENDUM = "";
+    uint256 public constant FIXED_ALPHA = 500;
+    uint256 public constant FIXED_ESTIMATED_BASE_COST = 0;
+    uint256 public constant FIXED_MAX_FEE_SCALING = 1;
+
     // Non-reentrancy guard (1 = unlocked, 2 = locked).
     uint256 private _lock = 1;
 
@@ -312,30 +330,54 @@ contract BountyEscrow {
 
     // ------------- Submissions & Verdikta -------------
 
+    /// @notice STEP 1 (legacy signature): Prepare a submission.
+    /// @dev DEPRECATED — kept so existing integrations keep working across the September
+    ///      2026 redeploy. `addendum`, `alpha`, `estimatedBaseCost` and `maxFeeBasedScaling`
+    ///      are IGNORED: the escrow forwards FIXED_* to the aggregator (see those constants).
+    ///      Use the 4-argument overload. This overload will be removed in the next
+    ///      signature-breaking revision.
+    /// @dev Callers whose ABI contains BOTH overloads must select by full signature
+    ///      (ethers refuses a bare name that is ambiguous), exactly as with createBounty.
+    function prepareSubmission(
+        uint256 bountyId,
+        string calldata evaluationCid,
+        string calldata hunterCid,
+        string calldata /* addendum — ignored */,
+        uint256 /* alpha — ignored */,
+        uint256 maxOracleFee,
+        uint256 /* estimatedBaseCost — ignored */,
+        uint256 /* maxFeeBasedScaling — ignored */
+    ) external returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget) {
+        return _prepareSubmission(bountyId, evaluationCid, hunterCid, maxOracleFee);
+    }
+
     /// @notice STEP 1: Prepare a submission. Deploys an EvaluationWallet and records parameters.
     /// @dev The ethMaxBudget is emitted so the funder knows how much ETH to attach when starting.
     /// @dev If the bounty has a creator assessment window, status starts as PendingCreatorApproval.
     /// @dev Otherwise, status starts as Prepared (classic behavior).
     /// @dev Can only be called before the submission deadline. On windowed bounties the
     ///      effective cutoff is earlier: the creator window must end before the deadline.
+    /// @dev The oracle request is built from the bounty (evaluation package, class) and the
+    ///      escrow's FIXED_* parameters; the hunter supplies only the work and the fee.
     /// @param bountyId The bounty to submit to
     /// @param evaluationCid The evaluation package CID (must match the bounty's stored evaluationCid)
     /// @param hunterCid The hunter's work product archive CID (bCID containing the actual submission)
-    /// @param addendum Optional text addendum for the evaluation
-    /// @param alpha Reputation weight (0-1000, see ReputationKeeper)
-    /// @param maxOracleFee Maximum fee per oracle
-    /// @param estimatedBaseCost Estimated base cost
-    /// @param maxFeeBasedScaling Maximum fee-based scaling
+    /// @param maxOracleFee Maximum fee per oracle the hunter agrees to pay (sets the ETH prepay)
     function prepareSubmission(
         uint256 bountyId,
         string calldata evaluationCid,
         string calldata hunterCid,
-        string calldata addendum,
-        uint256 alpha,
-        uint256 maxOracleFee,
-        uint256 estimatedBaseCost,
-        uint256 maxFeeBasedScaling
+        uint256 maxOracleFee
     ) external returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget) {
+        return _prepareSubmission(bountyId, evaluationCid, hunterCid, maxOracleFee);
+    }
+
+    function _prepareSubmission(
+        uint256 bountyId,
+        string calldata evaluationCid,
+        string calldata hunterCid,
+        uint256 maxOracleFee
+    ) internal returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget) {
         Bounty storage b = _mustBounty(bountyId);
         require(b.status == BountyStatus.Open, "bounty not open");
         require(block.timestamp < b.submissionDeadline, "deadline passed");
@@ -375,6 +417,7 @@ contract BountyEscrow {
             );
         }
 
+        // The echo fields record what will actually be sent to the aggregator.
         Submission memory s = Submission({
             hunter: msg.sender,
             evaluationCid: evaluationCid,
@@ -391,10 +434,10 @@ contract BountyEscrow {
             finalizedAt: 0,
             ethMaxBudget: ethMaxBudget,
             maxOracleFee: maxOracleFee,
-            alpha: alpha,
-            estimatedBaseCost: estimatedBaseCost,
-            maxFeeBasedScaling: maxFeeBasedScaling,
-            addendum: addendum,
+            alpha: FIXED_ALPHA,
+            estimatedBaseCost: FIXED_ESTIMATED_BASE_COST,
+            maxFeeBasedScaling: FIXED_MAX_FEE_SCALING,
+            addendum: FIXED_ADDENDUM,
             creatorWindowEnd: hasWindow
                 ? uint64(block.timestamp) + b.creatorAssessmentWindowSize
                 : 0
@@ -413,7 +456,7 @@ contract BountyEscrow {
             evaluationCid
         );
 
-        return (submissionId, address(wallet), ethMaxBudget);
+        evalWallet = address(wallet);
     }
 
     /// @notice Creator approves a submission during the assessment window

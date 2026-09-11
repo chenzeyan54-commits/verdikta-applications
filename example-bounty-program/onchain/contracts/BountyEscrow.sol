@@ -221,6 +221,10 @@ contract BountyEscrow {
         uint256 amount
     );
 
+    /// @notice The inline recovery of a submission's unspent oracle prepay failed; the
+    ///         resolution itself succeeded. Anyone may retry with recoverLeftoverEth().
+    event RefundDeferred(uint256 indexed bountyId, uint256 indexed submissionId);
+
     event CreatorApproved(
         uint256 indexed bountyId,
         uint256 indexed submissionId,
@@ -924,14 +928,49 @@ contract BountyEscrow {
         }
     }
 
+    /// @dev Best-effort inline recovery of the unspent oracle prepay, run at the end of
+    ///      finalizeSubmission / failTimedOutSubmission. The wallet pulls its ethOwed credit
+    ///      from the aggregator and hands its balance back to THIS contract, which routes it
+    ///      to whoever funded the start (Submission.funder).
+    ///
+    ///      Resolution must NOT depend on this succeeding: the chain wallet -> aggregator
+    ///      withdrawEth -> wallet -> escrow is an external dependency, and if it ever reverted
+    ///      (an aggregator upgrade, a paused withdrawal, a changed accounting rule) an
+    ///      un-wrapped call would leave the submission stuck in PendingVerdikta, pin
+    ///      activeEvaluations, and lock the bounty. So the call is wrapped: on failure the
+    ///      status change and payout stand, RefundDeferred is emitted, and anyone can retry
+    ///      later with recoverLeftoverEth(). In the common case the funder is refunded here,
+    ///      in the same transaction, exactly as before.
     function _refundLeftoverEth(uint256 bountyId, uint256 submissionId) private {
         Submission storage s = subs[bountyId][submissionId];
-        // The wallet recovers its unspent prepay from the aggregator and hands it back to
-        // THIS contract (never directly to the recipient), so the hand-off cannot be reverted.
-        // The refund goes to whoever attached the prepay at start (the hunter in the common
-        // case; the creator or a third party for an expired-window start), never to a party
-        // that did not fund it.
+        try EvaluationWallet(payable(s.evalWallet)).refundLeftoverEth() returns (uint256 refunded) {
+            emit EthRefunded(bountyId, submissionId, refunded);
+            _payOrCredit(s.funder, refunded);
+        } catch {
+            emit RefundDeferred(bountyId, submissionId);
+        }
+    }
+
+    /// @notice Retry recovery of a resolved submission's unspent oracle prepay and pay it to
+    ///         the address that funded the start. Anyone may call.
+    /// @dev Only for submissions that have left evaluation (Failed / PassedPaid /
+    ///      PassedUnpaid) — while a round is open the prepay is still reserved on the
+    ///      aggregator and there is nothing to recover. The wallet's refundLeftoverEth() is
+    ///      idempotent (pull any ethOwed credit, sweep the wallet balance), so this also
+    ///      recovers ETH that reaches the wallet AFTER resolution. Reverts from the wallet or
+    ///      aggregator are NOT swallowed here, so a caller can see why a retry failed.
+    function recoverLeftoverEth(uint256 bountyId, uint256 submissionId) external nonReentrant {
+        _mustBounty(bountyId);
+        Submission storage s = _mustSubmission(bountyId, submissionId);
+        require(
+            s.status == SubmissionStatus.Failed ||
+            s.status == SubmissionStatus.PassedPaid ||
+            s.status == SubmissionStatus.PassedUnpaid,
+            "not resolved"
+        );
+        require(s.funder != address(0), "never started");
         uint256 refunded = EvaluationWallet(payable(s.evalWallet)).refundLeftoverEth();
+        require(refunded > 0, "nothing to recover");
         emit EthRefunded(bountyId, submissionId, refunded);
         _payOrCredit(s.funder, refunded);
     }

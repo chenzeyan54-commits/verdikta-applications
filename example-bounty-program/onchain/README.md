@@ -7,8 +7,7 @@ Solidity contracts for the Verdikta AI-Powered Bounty Program, built with Hardha
 - **`BountyEscrow.sol`** — main contract. Holds ETH escrow, manages bounty lifecycle, coordinates with VerdiktaAggregator, supports an optional creator approval window.
 - **`EvaluationWallet.sol`** — per-submission wallet that holds the ETH prepay and funds the oracle evaluation (recovers the unspent ETH refund and returns it to the hunter).
 - **`interfaces/IVerdiktaAggregator.sol`** — interface to the ETH-funded AI oracle aggregator (payable `requestAIEvaluationWithApproval`, `ethOwed`/`withdrawEth`).
-- **`interfaces/ILinkToken.sol`** — legacy minimal ERC-20 interface, retained only for the unused `MockLinkToken` test stub.
-- **`mocks/`** — test stubs: `MockVerdiktaAggregator` (round lifecycle, refund credit, records forwarded request params), `MockRejectingHunter` (rejects ETH), `MockGasHungryRecipient` (burns gas on receive).
+- **`mocks/`** — test stubs: `MockVerdiktaAggregator` (round lifecycle, refund credit, fee ceiling, records forwarded request params, switchable broken withdraw), `MockRejectingHunter` (rejects ETH), `MockGasHungryRecipient` (burns gas on receive).
 
 The contract's behavioral rules (deadline, creator window, priority, submission cap, fixed oracle parameters, CID validation, payout gas cap, force-fail gate) are documented in [../DEVELOPER-GUIDE.md → Submission timing and priority rules](../DEVELOPER-GUIDE.md#submission-timing-and-priority-rules). The contract has no owner and no upgrade path; every rule is a constant.
 

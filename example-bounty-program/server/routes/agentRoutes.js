@@ -472,6 +472,10 @@ function createBounty(tuple(string evaluationCid, uint64 requestedClass, uint8 t
   "oracle fee above ceiling", "base cost must be below fee", "bad fee scaling", "bad alpha".
 - Hunters cannot influence any oracle parameter; run GET /api/jobs/:id/oracle-check before
   submitting to see how many arbiters are eligible at the bounty's fee and who owns them.
+- Via the API (POST /api/jobs/create) the same settings are the optional body fields
+  oracleMaxOracleFee, oracleAlpha, oracleEstimatedBaseCost, oracleMaxFeeBasedScaling
+  (defaults 0.00002 ETH / 500 / 0.00001 ETH / 3) and are echoed back as oracleSettings
+  on GET /api/jobs/:id.
 
 Common params:
 - submissionDeadline: unix timestamp in SECONDS (not milliseconds)
@@ -518,9 +522,9 @@ Step 1 — Prepare:   POST /api/jobs/:id/submit/prepare
                     The response carries an "event" object — { name, signature, topic0, abi,
                     indexedFields, dataFields }. Filter the receipt logs on event.topic0 and
                     decode with event.abi; do NOT derive either yourself.
-                    (ethMaxBudget is the LAST field, after a dynamic string — decode with the
-                    full event ABI; a truncated ABI returns 96, the string's offset word. Or just
-                    use the transaction.value returned by /start, which reads the budget from chain.)
+                    (ethMaxBudget comes BEFORE the dynamic evaluationCid string, so even a naive
+                    (address,uint256) decode of the data reads it. It is the same for every
+                    submission to a bounty. Or just use the transaction.value returned by /start.)
 Confirm (API):      POST /api/jobs/:id/submissions/confirm
                     (registers the submission in the backend so /diagnose etc. work)
 Step 2 — Start:     POST /api/jobs/:id/submissions/:subId/start
@@ -559,9 +563,10 @@ do NOT call contract functions directly unless you know the ABI.
 
 4. PENDING_EVALUATION and the oracle never responded:
    POST /api/jobs/:id/submissions/:subId/timeout
-   - Returns { canTimeout: bool, ... }. If false, read "error"/"details" for
-     why. The endpoint's pre-check ("Timeout not reached", remainingSeconds) is a
-     server-side heuristic: 10 minutes since submittedAt (the PREPARE time).
+   - Returns { canTimeout: bool, ... }. If false, read "reason": "evaluation not
+     settled" (round still open; "settlesAt" says when the aggregator's 300 s timeout
+     elapses) or "result available" (the oracle responded — use /finalize instead).
+     The server applies the contract's own aggregator-based rule, not a timer.
    - If true, sign and broadcast the returned transaction — refunds the unspent
      ETH prepay to the hunter. Anyone may call; hunter address not required for this endpoint.
    - On-chain, failTimedOutSubmission has NO timer. It tries to settle the oracle
@@ -603,10 +608,10 @@ the discovery endpoint and drive the close flow themselves.
    oracle: if the oracle has actually responded, use /finalize instead — the
    contract refuses to force-fail a submission that has a result. Both paths
    settle the aggregator and return the unspent ETH prepay to the hunter.
-   timeoutEligible is a server heuristic (10 minutes since submittedAt); the
-   on-chain gate is the aggregator's state (round timed out, no result). If the tx
-   reverts "evaluation not settled", wait and retry; if it reverts "result
-   available - use finalizeSubmission", use /finalize for that submission instead.
+   timeoutEligible mirrors the on-chain gate (aggregator round settled or timed out,
+   no result). Entries whose oracle DID respond carry needsFinalize: true instead —
+   call /finalize for those. If a tx still reverts "evaluation not settled", wait and
+   retry; "result available - use finalizeSubmission" means finalize instead.
 
 3. Once canClose is true:
    POST /api/jobs/:jobId/close
@@ -866,7 +871,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'POST',
         path: '/jobs/:id/submissions/:subId/timeout',
-        description: 'Get encoded failTimedOutSubmission calldata (for submissions stuck in PENDING_EVALUATION whose oracle never responded). Gated endpoint — returns canTimeout flag. The gate is a server heuristic (10 min since submittedAt); on-chain the call succeeds only once the aggregator round has timed out with no result, and reverts "result available - use finalizeSubmission" if the oracle did respond.',
+        description: 'Get encoded failTimedOutSubmission calldata (for submissions stuck in PENDING_EVALUATION whose oracle never responded). Gated endpoint — returns canTimeout using the contract\'s own rule: the aggregator round must be settled (or past its 300 s timeout since start) with no result. If the oracle responded, canTimeout is false with reason "result available" — use /finalize.',
         contentType: 'application/json',
         fields: [],
         returns: '{ success, canTimeout: bool, message, transaction: { to, data, value, chainId }, contractCall: { method, args, abi }, submission: { id, hunter, status, submittedAt, elapsedMinutes } }. If canTimeout=false, status is 400 and response contains { error, details, remainingSeconds, timeoutAt } instead of transaction. A false is NOT a server error — it means conditions are not yet met.'
@@ -915,8 +920,14 @@ router.get('/api/docs', (req, res) => {
       // Admin endpoints
       {
         method: 'GET',
+        path: '/jobs/:id/oracle-check',
+        description: 'Sanity-check a bounty\'s oracle settings against the live arbiter registry for its class. Returns { available, eligibleCount (active arbiters priced <= the bounty\'s maxOracleFee), totalInClass, distinctOwnersEligible, priceBoostEnabled, alphaExtreme, warnings: [] } — plain-English warnings when the eligible pool is small (< 6), one operator owns half or more of it, the price boost is on, or alpha is extreme. Hunters: run this before preparing; a rigged jury shows up here. available:false means the registry could not be read.',
+        params: ['none']
+      },
+      {
+        method: 'GET',
         path: '/jobs/admin/stuck',
-        description: 'List submissions stuck in PENDING_EVALUATION for 10+ minutes (timeout candidates — a server heuristic; on-chain eligibility is the aggregator round having timed out with no result)'
+        description: 'List submissions in PENDING_EVALUATION whose aggregator round is settled/timed out with no result (timeout candidates), plus those whose oracle responded but nobody finalized (needsFinalize)'
       },
       {
         method: 'GET',
@@ -1057,6 +1068,14 @@ router.get('/api/docs', (req, res) => {
             'Returns escrowed ETH to creator after deadline passes',
             'All PendingVerdikta submissions must be finalized first',
             'Anyone can call this'
+          ]
+        },
+        recoverLeftoverEth: {
+          signature: 'recoverLeftoverEth(uint256 bountyId, uint256 submissionId)',
+          notes: [
+            'Retry recovery of a RESOLVED submission\'s unspent oracle prepay (Failed / PassedPaid / PassedUnpaid) and pay it to the address that funded the start. Anyone may call.',
+            'Only needed when the resolving tx emitted RefundDeferred(bountyId, submissionId) instead of EthRefunded — i.e. the wallet -> aggregator withdraw chain failed. Resolution itself never depends on it.',
+            'Reverts "not resolved" while the submission is still pending, "nothing to recover" if there is no leftover, or with the aggregator\'s own reason if the retry still fails.'
           ]
         },
         withdraw: {

@@ -209,6 +209,7 @@ Identical ABI means internal-logic-only changes: safe to deploy against the exis
 | `getSubmission` tuple | 18 fields | 13 fields: `evaluationCid`, `maxOracleFee`, `alpha`, `estimatedBaseCost`, `maxFeeBasedScaling`, `addendum` removed; `funder` added last |
 | `SubmissionFinalized` | `(…, bool passed, acceptance, rejection, justification)` | `(…, bool passed, bool paid, acceptance, rejection, justification)` |
 | `SubmissionPrepared` | `(…, evalWallet, string evaluationCid, ethMaxBudget)` | `(…, evalWallet, ethMaxBudget, string evaluationCid)` — new topic0 |
+| New functions/events | — | `recoverLeftoverEth(bountyId, submissionId)`, event `RefundDeferred(bountyId, submissionId)` |
 | New views | — | `withdraw()`, `withdrawable`, `canBeClosed`, `activeEvaluations`, `submissionCount`, constants `MAX_SUBMISSIONS_PER_BOUNTY`, `PAYOUT_GAS_LIMIT`, `MIN/MAX_CID_LENGTH`, `MAX_ALPHA`, `MAX_FEE_SCALING_FACTOR`, `ADDENDUM` |
 | Removed | `ILinkToken`, `MockLinkToken` | — |
 
@@ -236,24 +237,14 @@ New/changed revert strings: `deadline passed`, `window would end after deadline`
 
 #### The `SubmissionPrepared` field reorder (event-signature change)
 
-As of 2026-09-10 the contract **source** emits `SubmissionPrepared(bountyId, submissionId, hunter, evalWallet, ethMaxBudget, evaluationCid)` — static fields first, the dynamic string **last** — so even a naive `(address,uint256)` decode of the log data reads `ethMaxBudget` correctly instead of `96` (the string's offset word). The **deployed** contracts on Base and Base Sepolia still emit the old order (`…, evalWallet, evaluationCid, ethMaxBudget`), and every off-chain decoder in this repo still matches the deployed order on purpose.
-
-This is an event-signature change, so at the next redeploy the following must flip **in the same release** as the new contract address — skipping any one of them makes the running system mis-decode live logs:
-
-- `server/utils/submissionEvents.js` — the canonical ABI string, signature string, `dataFields` order and `note` (topic0 recomputes from the signature)
-- `server/utils/contractService.js` (event ABI)
-- `server/routes/jobRoutes.js` (`BUNDLE_ESCROW_ABI` and the "ethMaxBudget is the LAST field" hint strings)
-- `server/scripts/submitToBounties.js`
-- `client/src/services/contractService.js`, `client/src/pages/Blockchain.jsx` (ABI + sample), `client/src/pages/Agents.jsx` (Python sample's topic0 comment)
-- `config.deploymentBlock` bump + a sync-state reset
-- the literal topic0 hashes and field-order prose in `README.md` (step 1 of the submission flow) and in "Finding the SubmissionPrepared log" below
+The contract emits `SubmissionPrepared(bountyId, submissionId, hunter, evalWallet, ethMaxBudget, evaluationCid)` — static fields first, the dynamic string **last** — so even a naive `(address,uint256)` decode of the log data reads `ethMaxBudget` correctly instead of `96` (the string's offset word). Contracts deployed before September 2026 emitted the old order (`…, evalWallet, evaluationCid, ethMaxBudget`).
 
 | | signature | topic0 |
 |---|---|---|
-| deployed (old) | `SubmissionPrepared(uint256,uint256,address,address,string,uint256)` | `0xdf7bc54a6444d008cf527c6a4bcdfa31d05db5a08445b8dd2eb3a05f24b67437` |
-| source (new) | `SubmissionPrepared(uint256,uint256,address,address,uint256,string)` | `0x147341637c0b8d941e61a743cd410afff8526bec154904bb54f857b8f59cd6ca` |
+| current | `SubmissionPrepared(uint256,uint256,address,address,uint256,string)` | `0x147341637c0b8d941e61a743cd410afff8526bec154904bb54f857b8f59cd6ca` |
+| pre-Sept-2026 (old) | `SubmissionPrepared(uint256,uint256,address,address,string,uint256)` | `0xdf7bc54a6444d008cf527c6a4bcdfa31d05db5a08445b8dd2eb3a05f24b67437` |
 
-Anything that keeps reading the **old** contract's logs after cutover (e.g. closing out its remaining bounties) must keep the old ABI for that address. Until the redeploy, the docs below intentionally describe the deployed (old) order.
+Every off-chain decoder (`server/utils/submissionEvents.js` is the canonical descriptor; `server/utils/contractService.js`, `server/routes/jobRoutes.js`, `server/scripts/submitToBounties.js`, `client/src/services/contractService.js`, the Blockchain/Agents page samples) carries the current fragment. Anything that still reads an **old** contract's logs (e.g. closing out its remaining bounties) must use the old fragment for that address — the sync service is keyed per network, not per address, so finish the old contract's business before switching or special-case it.
 
 > **Single source of truth:** the running website's `/analytics` page always shows the live BountyEscrow address from the backend's runtime config. If any doc disagrees with it, the doc is stale. Only `README.md`'s "Contract Addresses" section has a hardcoded snapshot — all other docs and examples point at `.env.example` files or `/analytics`, so they self-update.
 
@@ -357,7 +348,7 @@ Response shape:
 }
 ```
 
-`timeoutEligible` is a **server-side heuristic**: `true` once the submission is at least 10 minutes old, measured from `submittedAt` (the *prepare* time). The contract itself has no timer — `failTimedOutSubmission` is gated on the aggregator's state (see step 2). The flag does not query the aggregator, so treat the chain as authoritative. It's safe to poll this endpoint — it's read-only and small.
+`timeoutEligible` mirrors the contract's own gate: the server reads the aggregator and reports `true` only when the round has no result AND is settled (or its 300-second response timeout has elapsed since the start transaction). When the round has a result the entry carries `needsFinalize: true` instead — call `/finalize` for it. It's safe to poll this endpoint — it's read-only and small.
 
 For a system-wide view (all creators) use `GET /api/jobs/admin/expired` instead.
 
@@ -376,7 +367,7 @@ On-chain, `failTimedOutSubmission` has **no timer**. It first tries to settle th
 - `result available - use finalizeSubmission` — the oracle did respond (possibly late). Call `/finalize` instead. A passing score can never be discarded by force-fail.
 - `evaluation not settled` — the round is still open on the aggregator. Its response timeout is 300 seconds from `startPreparedSubmission`, so wait at least 5 minutes after the *start* transaction and retry.
 
-Note the endpoint's own pre-check (`canTimeout`, "Timeout not reached") is the same 10-minutes-since-`submittedAt` heuristic as `timeoutEligible`. On windowed bounties a submission is started long after it was prepared, so the heuristic can pass while the round is younger than 5 minutes (the tx then reverts `evaluation not settled`); and it does not detect a late oracle result (the tx reverts `result available`). Neither revert loses anything — retry, or finalize.
+The endpoint's own pre-check (`canTimeout`) applies the same aggregator-based rule before returning calldata: `canTimeout:false` with `reason: "evaluation not settled"` (and `settlesAt`) while the round is open, or `reason: "result available"` with a pointer to `/finalize` when the oracle responded. Either way nothing is lost — wait and retry, or finalize.
 
 #### 3. Close the bounty
 
@@ -426,6 +417,8 @@ When a passing `finalizeSubmission` on a windowed bounty is blocked by another h
 **Oracle settings belong to the creator** (`Bounty.oracle`, set in `createBounty`, validated by `MAX_ALPHA = 1000`, `MAX_FEE_SCALING_FACTOR = 1000`, fee ≤ `verdikta.maxOracleFee()`, base cost < fee, scaling ≥ 1). They are used verbatim for every evaluation of the bounty; `prepareSubmission` takes only the two CIDs and the addendum forwarded to the aggregator is the constant `ADDENDUM = ""`. Why the creator and not the hunter: the aggregator's keeper treats `maxOracleFee` as an eligibility filter (an arbiter is selectable only if its fee ≤ the request's ceiling), and `estimatedBaseCost` / `maxFeeBasedScaling` weight selection by price — whoever sets them can shrink or tilt the jury toward nodes they run. A hunter can see a bounty's settings before committing work and walk away (the website's validate check warns on a small eligible pool, a dominant operator, an enabled price boost or an extreme alpha); a creator cannot inspect a hunter. Why the addendum is empty for everyone: it is appended to the query the arbiters see, and the creator's evaluation package is the whole query. `ethMaxBudget = maxTotalFee(bounty.oracle.maxOracleFee)` is identical for every submission to a bounty. The residual lever is the class itself (a class served by one operator is that operator's private jury) — visible on the bounty.
 
 **Funder refund** (`Submission.funder`). `startPreparedSubmission` records `msg.sender` as the funder; `_refundLeftoverEth` (from finalize and force-fail) returns the unspent prepay to the funder, which is the hunter in the common case and the creator or a third party for an expired-window start.
+
+**Refund recovery is separate from resolution** (`_refundLeftoverEth`, `recoverLeftoverEth`, event `RefundDeferred`). At the end of `finalizeSubmission` and `failTimedOutSubmission` the escrow tries to recover the unspent oracle prepay (wallet → aggregator `withdrawEth` → wallet → escrow → funder) — but inside a `try/catch`. If that chain reverts (an aggregator upgrade, a paused withdrawal, a changed accounting rule), the status change and the payout still stand and `RefundDeferred(bountyId, submissionId)` is emitted instead of `EthRefunded`. Anyone can then call `recoverLeftoverEth(bountyId, submissionId)` on a resolved submission (Failed / PassedPaid / PassedUnpaid): it re-runs the wallet's idempotent refund, pays the funder, and reverts with the underlying reason if it still cannot (or `nothing to recover` if there is nothing). Because the wallet's refund sweeps its whole balance, this also recovers ETH that reaches a wallet after resolution. In the normal case the funder is refunded inline, in the resolving transaction, exactly as before; a resolution can never be blocked by the refund path.
 
 **Force-fail** (`failTimedOutSubmission`). No timer. Requires `PendingVerdikta`, then: try `finalizeEvaluationTimeout` on the aggregator (ignored if it reverts), require `getEvaluation(aggId).exists == false` (`result available - use finalizeSubmission`), require `getAggregationStatus(aggId).isComplete == true` (`evaluation not settled`). On success: `Failed`, `activeEvaluations` decremented, unspent prepay refunded to the hunter. The aggregator's `responseTimeoutSeconds` is 300 on both networks, so the practical rule is "at least 5 minutes after the start tx and the oracle never responded".
 
@@ -487,18 +480,18 @@ The `linkage` field is a structured verdict — `state` is one of:
 ### ETH prepay errors at startPreparedSubmission
 - `startPreparedSubmission(uint256 bountyId, uint256 submissionId)` is **payable** — the funder attaches `ethMaxBudget` as `msg.value`. There is no LINK token, ERC-20 approval, or allowance step.
 - Attach exactly the `ethMaxBudget` (raw wei) from the `SubmissionPrepared` event as `msg.value`. Too little ETH and the call reverts; any unspent prepay is automatically refunded when the submission finalizes (or on `failTimedOutSubmission`).
-- **Decoding gotcha:** `ethMaxBudget` is the **last** event field, after the dynamic `string evaluationCid`. Decode with the full event ABI — a truncated/misordered ABI (e.g. dropping the string, or putting `ethMaxBudget` before it) returns `96` (`0x60`, the string's offset word) instead of the real value, and the start tx then reverts for insufficient funds. The robust path is to use the value the API hands back (`/submit/bundle/complete` → `parsed.ethMaxBudget`, or the `/start` calldata endpoint's `transaction.value`), which the server reads straight from chain.
-- Per-oracle fee is ~0.00002 ETH (on-chain ceiling 0.0004 ETH); the worst-case prepay (`ethMaxBudget` = maxTotalFee) is ~0.00024 ETH.
+- **Decoding note:** `ethMaxBudget` is the second data word, before the dynamic `string evaluationCid`, so even a naive `(address,uint256)` decode reads it correctly. Decode with the full event ABI anyway, or use the value the API hands back (`/submit/bundle/complete` → `parsed.ethMaxBudget`, or the `/start` calldata endpoint's `transaction.value`), which the server reads straight from chain. `ethMaxBudget` is the same for every submission to a bounty (it derives from the bounty's `oracle.maxOracleFee`), so `getBounty` + the aggregator's `maxTotalFee` also give it.
+- The per-oracle fee is the bounty's `oracle.maxOracleFee` (API default 0.00002 ETH; on-chain ceiling 0.0004 ETH); the worst-case prepay (`ethMaxBudget` = maxTotalFee) is 12× that, ~0.00024 ETH at the default.
 
 ### Finding the SubmissionPrepared log (topic0)
 To pull the event off a step-1 receipt you first have to match the log by `topic0`:
 
 ```
-topic0 = 0xdf7bc54a6444d008cf527c6a4bcdfa31d05db5a08445b8dd2eb3a05f24b67437
-       = keccak256("SubmissionPrepared(uint256,uint256,address,address,string,uint256)")
+topic0 = 0x147341637c0b8d941e61a743cd410afff8526bec154904bb54f857b8f59cd6ca
+       = keccak256("SubmissionPrepared(uint256,uint256,address,address,uint256,string)")
 ```
 
-That **is** the plain keccak256 of the signature — there is no hidden discrepancy between the deployed contract and the naive computation. If your computed hash disagrees, your signature string is wrong; the usual cause is dropping the trailing `uint256 ethMaxBudget`, which yields `0x87362e68…` and matches zero logs. (It's the same root cause as the decoding gotcha above: an ABI copy that predates the `ethMaxBudget` field.)
+That **is** the plain keccak256 of the signature — there is no hidden discrepancy between the deployed contract and the naive computation. If your computed hash disagrees, your signature string is wrong; the usual cause is using the pre-September-2026 order (`…,string,uint256`) or dropping a field, which yields `0x87362e68…` and matches zero logs. (It's the same root cause as the decoding gotcha above: an ABI copy that predates the `ethMaxBudget` field.)
 
 Rather than typing either the signature or the hash, take both from the API — `/submit/prepare` and `/submit/bundle` return an `event` object:
 
@@ -506,11 +499,11 @@ Rather than typing either the signature or the hash, take both from the API — 
 {
   "event": {
     "name": "SubmissionPrepared",
-    "signature": "SubmissionPrepared(uint256,uint256,address,address,string,uint256)",
-    "topic0": "0xdf7bc54a6444d008cf527c6a4bcdfa31d05db5a08445b8dd2eb3a05f24b67437",
-    "abi": "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)",
+    "signature": "SubmissionPrepared(uint256,uint256,address,address,uint256,string)",
+    "topic0": "0x147341637c0b8d941e61a743cd410afff8526bec154904bb54f857b8f59cd6ca",
+    "abi": "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, uint256 ethMaxBudget, string evaluationCid)",
     "indexedFields": ["bountyId", "submissionId", "hunter"],
-    "dataFields": ["evalWallet", "evaluationCid", "ethMaxBudget"]
+    "dataFields": ["evalWallet", "ethMaxBudget", "evaluationCid"]
   }
 }
 ```

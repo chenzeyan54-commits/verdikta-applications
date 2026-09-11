@@ -112,6 +112,10 @@ function Blockchain() {
   "function closeExpiredBounty(uint256 bountyId)",
   "function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)",
   "function withdraw()", // claim a deferred payout/refund from the pull ledger
+  "function recoverLeftoverEth(uint256 bountyId, uint256 submissionId)", // retry a deferred oracle-prepay refund (RefundDeferred)
+  "event RefundDeferred(uint256 indexed bountyId, uint256 indexed submissionId)",
+  "event PaymentDeferred(address indexed to, uint256 amount)",
+  "event Withdrawn(address indexed account, uint256 amount)",
 
   // View Functions
   "function bountyCount() view returns (uint256)",
@@ -204,9 +208,8 @@ async function submitWork(bountyId, hunterCid) {
   for (const log of prepareReceipt.logs) {
     const parsed = escrow.interface.parseLog(log);
     if (parsed?.name === 'SubmissionPrepared') {
-      // Use named access with the FULL event ABI (above). ethMaxBudget is the last
-      // field, after the dynamic 'string evaluationCid' — a truncated/misordered ABI
-      // would return 96 (0x60, the string's offset word) instead of the real budget.
+      // Use named access with the FULL event ABI (above). ethMaxBudget comes before the
+      // dynamic 'string evaluationCid'; it is the same for every submission to a bounty.
       submissionId = Number(parsed.args.submissionId);
       evalWallet = parsed.args.evalWallet;
       ethMaxBudget = parsed.args.ethMaxBudget;
@@ -1061,7 +1064,10 @@ submission-package.zip
               <code>PaymentDeferred(to, amount)</code> is emitted; the recipient collects it with{' '}
               <code>withdraw()</code>, which forwards full gas. Ordinary wallets are paid in the settlement
               transaction itself, so this only concerns contract-wallet recipients. Settlement can never be
-              blocked, or made expensive, by a recipient.
+              blocked, or made expensive, by a recipient. Likewise the unspent oracle prepay is recovered
+              inline but best-effort: if that path fails the resolving transaction emits{' '}
+              <code>RefundDeferred</code> and anyone can retry with{' '}
+              <code>recoverLeftoverEth(bountyId, submissionId)</code> once the submission is resolved.
             </p>
           </div>
           <div className="info-card">
@@ -1167,7 +1173,7 @@ async function closeViaAPI(jobId) {
           <div>
             <strong>Eligibility Requirements:</strong>
             <ul style={{ marginTop: '0.5rem', marginBottom: '0.5rem' }}>
-              <li><strong>Timeout:</strong> Submission must be in <code>PendingVerdikta</code> status AND 10+ minutes must have elapsed since <code>submittedAt</code></li>
+              <li><strong>Timeout:</strong> Submission must be in <code>PendingVerdikta</code> status AND its aggregator round must be settled (or past the 300-second response timeout since the start transaction) with no result — a round that produced a result can only be finalized</li>
               <li><strong>Close:</strong> Bounty must be past its deadline AND have no submissions in <code>PendingVerdikta</code> status (all evaluations resolved)</li>
             </ul>
           </div>
@@ -1878,7 +1884,7 @@ curl -H "X-Bot-API-Key: YOUR_KEY" \\
                   (there is no token approval). Make sure you:
                 </p>
                 <ol>
-                  <li>Attach <code>msg.value</code> exactly equal to the <code>ethMaxBudget</code> returned from prepareSubmission (the <code>SubmissionPrepared</code> event's last field)</li>
+                  <li>Attach <code>msg.value</code> exactly equal to the <code>ethMaxBudget</code> returned from prepareSubmission (the <code>SubmissionPrepared</code> event's <code>ethMaxBudget</code> field — the same for every submission to a bounty)</li>
                   <li>Send the ETH with the <code>startPreparedSubmission</code> call itself (e.g. <code>{`{ value: ethMaxBudget }`}</code> in ethers, <code>'value': eth_max_budget</code> in web3.py)</li>
                   <li>Have enough ETH in your wallet to cover both the prepay and gas</li>
                 </ol>

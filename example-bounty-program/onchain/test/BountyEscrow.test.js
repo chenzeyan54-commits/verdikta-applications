@@ -806,6 +806,123 @@ describe("BountyEscrow", function () {
     });
   });
 
+  describe("Refund recovery is separate from resolution", function () {
+    // The unspent-prepay recovery (wallet -> aggregator withdrawEth -> wallet -> escrow) is
+    // best-effort inside finalize / force-fail; a failure there can never revert the
+    // resolution. recoverLeftoverEth() is the permissionless retry.
+    async function startedWithRefund(bountyEscrow, verdiktaAggregator, creator, hunter, funder) {
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, ethMaxBudget, evalWallet } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await verdiktaAggregator.setRefundAmount(ethMaxBudget);
+      await bountyEscrow.connect(funder ?? hunter).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
+      const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
+      return { bountyId, submissionId, ethMaxBudget, evalWallet, aggId };
+    }
+
+    it("A broken aggregator withdraw does not block a PASSING finalize: winner paid, RefundDeferred emitted", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId, submissionId, ethMaxBudget, evalWallet, aggId } =
+        await startedWithRefund(bountyEscrow, verdiktaAggregator, creator, hunter);
+      await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+      await verdiktaAggregator.setWithdrawBroken(true);
+
+      const before = await ethers.provider.getBalance(hunter.address);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+        .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter.address, BOUNTY_WEI)
+        .and.to.emit(bountyEscrow, "RefundDeferred").withArgs(bountyId, submissionId)
+        .and.to.not.emit(bountyEscrow, "EthRefunded");
+      expect((await ethers.provider.getBalance(hunter.address)) - before).to.equal(BOUNTY_WEI); // payout only
+      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(3); // PassedPaid
+      expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(1); // Awarded
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0);
+      // prepay still sits on the aggregator as the wallet's credit
+      expect(await verdiktaAggregator.ethOwed(evalWallet)).to.equal(ethMaxBudget);
+    });
+
+    it("recoverLeftoverEth retries: reverts (with the aggregator's reason) while broken, succeeds after, then has nothing left", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId, submissionId, ethMaxBudget, aggId } =
+        await startedWithRefund(bountyEscrow, verdiktaAggregator, creator, hunter);
+      await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
+      await verdiktaAggregator.setWithdrawBroken(true);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+        .to.emit(bountyEscrow, "RefundDeferred");
+      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(2); // Failed
+
+      // Retry surfaces the underlying reason (not swallowed)
+      await expect(bountyEscrow.connect(other).recoverLeftoverEth(bountyId, submissionId))
+        .to.be.revertedWith("aggregator withdraw disabled");
+
+      await verdiktaAggregator.setWithdrawBroken(false);
+      const before = await ethers.provider.getBalance(hunter.address);
+      // anyone may call; the funder (hunter) is paid
+      await expect(bountyEscrow.connect(other).recoverLeftoverEth(bountyId, submissionId))
+        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, ethMaxBudget);
+      expect((await ethers.provider.getBalance(hunter.address)) - before).to.equal(ethMaxBudget);
+
+      await expect(bountyEscrow.recoverLeftoverEth(bountyId, submissionId))
+        .to.be.revertedWith("nothing to recover");
+    });
+
+    it("recoverLeftoverEth refuses unresolved submissions", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const prepared = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await expect(bountyEscrow.recoverLeftoverEth(bountyId, prepared.submissionId)).to.be.revertedWith("not resolved");
+      const started = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
+      await expect(bountyEscrow.recoverLeftoverEth(bountyId, started.submissionId)).to.be.revertedWith("not resolved");
+    });
+
+    it("Force-fail with a broken withdraw still fails the submission; recovery pays the FUNDER later", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
+        creatorPay: BOUNTY_WEI, arbiterPay: BOUNTY_WEI, windowSize: 3600,
+      });
+      const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await verdiktaAggregator.setRefundAmount(ethMaxBudget);
+      await verdiktaAggregator.setCreditOnTimeout(true);
+      await time.increase(3601);
+      await bountyEscrow.connect(other).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget }); // third-party funder
+      await time.increase(Number(await verdiktaAggregator.responseTimeoutSeconds()) + 1);
+      await verdiktaAggregator.setWithdrawBroken(true);
+      await expect(bountyEscrow.failTimedOutSubmission(bountyId, submissionId))
+        .to.emit(bountyEscrow, "RefundDeferred").withArgs(bountyId, submissionId);
+      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(2);
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0);
+
+      await verdiktaAggregator.setWithdrawBroken(false);
+      const ob = await ethers.provider.getBalance(other.address);
+      await bountyEscrow.connect(creator).recoverLeftoverEth(bountyId, submissionId);
+      expect((await ethers.provider.getBalance(other.address)) - ob).to.equal(ethMaxBudget);
+    });
+
+    it("ETH that reaches the wallet AFTER resolution is recoverable", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId, submissionId, evalWallet, aggId } =
+        await startedWithRefund(bountyEscrow, verdiktaAggregator, creator, hunter);
+      await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
+      await bountyEscrow.finalizeSubmission(bountyId, submissionId); // normal inline refund
+      await expect(bountyEscrow.recoverLeftoverEth(bountyId, submissionId)).to.be.revertedWith("nothing to recover");
+      // late ETH lands in the wallet (e.g. a stray send)
+      const late = ethers.parseEther("0.001");
+      await other.sendTransaction({ to: evalWallet, value: late });
+      const before = await ethers.provider.getBalance(hunter.address);
+      await expect(bountyEscrow.connect(other).recoverLeftoverEth(bountyId, submissionId))
+        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, late);
+      expect((await ethers.provider.getBalance(hunter.address)) - before).to.equal(late);
+    });
+
+    it("Normal path unchanged: inline refund in the resolving transaction, no RefundDeferred", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId, submissionId, ethMaxBudget, aggId } =
+        await startedWithRefund(bountyEscrow, verdiktaAggregator, creator, hunter);
+      await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, ethMaxBudget)
+        .and.to.not.emit(bountyEscrow, "RefundDeferred");
+    });
+  });
+
   describe("SubmissionFinalized carries a paid flag", function () {
     it("paid=true only for the winner; PassedUnpaid emits passed=true, paid=false", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);

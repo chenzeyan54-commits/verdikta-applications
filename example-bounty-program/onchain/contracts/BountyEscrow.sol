@@ -418,8 +418,9 @@ contract BountyEscrow {
 
     /// @notice Creator approves a submission during the assessment window
     /// @dev Pays creatorDeterminationPayment to hunter, refunds excess to creator
-    /// @dev Blocked while an earlier submission by ANOTHER hunter still holds priority
-    ///      (in evaluation, or in its own open window) — see _hasEarlierUnresolvedSubmission
+    /// @dev Blocked while an earlier submission still holds priority: another hunter's in
+    ///      evaluation or in its own open window, or the SAME hunter's in evaluation (their
+    ///      live claim to the arbiter rate) — see _hasEarlierUnresolvedSubmission
     function creatorApproveSubmission(uint256 bountyId, uint256 submissionId) external nonReentrant {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
@@ -429,7 +430,7 @@ contract BountyEscrow {
         require(s.status == SubmissionStatus.PendingCreatorApproval, "not pending creator approval");
         require(block.timestamp <= s.creatorWindowEnd, "window expired");
         require(
-            !_hasEarlierUnresolvedSubmission(bountyId, submissionId),
+            !_hasEarlierUnresolvedSubmission(bountyId, submissionId, true),
             "earlier submission unresolved"
         );
 
@@ -575,7 +576,7 @@ contract BountyEscrow {
                 // here instead would discard a passing result for good — and if the
                 // earlier submission then failed, nobody would ever be paid.
                 require(
-                    !_hasEarlierUnresolvedSubmission(bountyId, submissionId),
+                    !_hasEarlierUnresolvedSubmission(bountyId, submissionId, false),
                     "earlier submission pending - retry after it resolves"
                 );
                 blocked = false;
@@ -832,22 +833,39 @@ contract BountyEscrow {
     ///        - PendingCreatorApproval with its window still OPEN: the creator may still
     ///          approve it. Bounded by the window length.
     ///      It does NOT block when:
-    ///        - It belongs to the SAME hunter. A hunter who resubmits is choosing the later
-    ///          version; the usual windowed flow is a targeted bounty where every submission
-    ///          is theirs, and the creator must be able to approve the revision without
-    ///          anyone paying to arbitrate the stale one.
     ///        - Its window expired and nobody started arbitration. Preparing costs only gas
     ///          and nobody is obliged to fund it, so such a submission would otherwise stay
     ///          "unresolved" forever and lock out every later submission for free.
+    ///        - It belongs to the SAME hunter and is sitting in its window
+    ///          (PendingCreatorApproval). A hunter who resubmits is choosing the later
+    ///          version; the usual windowed flow is a targeted bounty where every
+    ///          submission is theirs, and the creator must be able to approve the revision
+    ///          without anyone paying to arbitrate the stale one.
+    ///        - It belongs to the SAME hunter, is in evaluation (PendingVerdikta), and the
+    ///          caller is finalizeSubmission (`forCreatorApproval == false`): both versions
+    ///          pay the same hunter at the same arbiter rate, so paying the later one first
+    ///          harms nobody.
+    ///      A same-hunter PendingVerdikta sibling DOES block creator approval
+    ///      (`forCreatorApproval == true`). That sibling is the hunter's live, paid-for
+    ///      claim to the arbiter rate — possibly already passing on the aggregator. Letting
+    ///      the creator approve a newer version for the (possibly far smaller) creator rate
+    ///      would extinguish that claim: the bounty becomes Awarded, and the earlier
+    ///      version finalizes to PassedUnpaid. The creator may approve the newer version
+    ///      once the earlier one has resolved (if it failed) — no prepay is forced on anyone.
     function _hasEarlierUnresolvedSubmission(
         uint256 bountyId,
-        uint256 submissionId
+        uint256 submissionId,
+        bool forCreatorApproval
     ) internal view returns (bool) {
         address hunter = subs[bountyId][submissionId].hunter;
         for (uint256 i = 0; i < submissionId; i++) {
             Submission storage e = subs[bountyId][i];
-            if (e.hunter == hunter) continue;
-            if (e.status == SubmissionStatus.PendingVerdikta) return true;
+            bool sameHunter = e.hunter == hunter;
+            if (e.status == SubmissionStatus.PendingVerdikta) {
+                if (!sameHunter || forCreatorApproval) return true;
+                continue;
+            }
+            if (sameHunter) continue;
             if (e.status == SubmissionStatus.PendingCreatorApproval &&
                 block.timestamp <= e.creatorWindowEnd) {
                 return true;

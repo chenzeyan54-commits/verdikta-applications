@@ -489,9 +489,13 @@ out the window AND start arbitration before the deadline if the creator does not
 
 Priority: submissions are ordered by index. An earlier submission blocks creator approval
 or payout of a later one ONLY while it can still win — it is in oracle evaluation, or its
-window is still open. It never blocks a later submission from the SAME hunter (resubmit
-freely; the creator can approve your revision at once and nobody has to arbitrate the old
-version), and it stops blocking once its window expires with no arbitration started.
+window is still open. Your OWN earlier version sitting in its window never blocks your
+newer one (resubmit freely; the creator can approve your revision at once and nobody has
+to arbitrate the old version). But if your earlier version is already in oracle
+evaluation, the creator CANNOT approve a newer one until it resolves — that evaluation is
+your paid-for claim to the arbiter payment, and a cheap creator approval of the revision
+would void it. Your own finalize of the newer version is not blocked. Any earlier
+submission stops blocking once its window expires with no arbitration started.
 
 Creator approval calldata: POST /api/jobs/:id/submissions/:subId/approve-as-creator
 Body: { "creator": "0xCreatorWallet" }
@@ -1027,7 +1031,7 @@ router.get('/api/docs', (req, res) => {
             'Pays hunter creatorDeterminationPayment, refunds excess to creator',
             'Marks bounty as Awarded',
             'Get calldata via POST /jobs/:id/submissions/:subId/approve-as-creator with { "creator": "0x..." }',
-            'Reverts "earlier submission unresolved" while an earlier submission by ANOTHER hunter is in oracle evaluation or still in its own open window. Earlier submissions by the same hunter, and expired never-started ones, do not block'
+            'Reverts "earlier submission unresolved" while an earlier submission by ANOTHER hunter is in oracle evaluation or still in its own open window, OR while an earlier submission by the SAME hunter is in oracle evaluation (protects that hunter\'s arbiter-rate claim from a cheap creator approval of a revision). Same-hunter submissions sitting in a window, and expired never-started ones, do not block'
           ]
         },
         finalizeSubmission: {
@@ -1086,7 +1090,7 @@ router.get('/api/docs', (req, res) => {
         approvalMethod: 'POST /jobs/:id/submissions/:subId/approve-as-creator with { "creator": "0x..." } returns encoded calldata. Creator signs and broadcasts the transaction.',
         afterWindowExpiry: 'Anyone can fund it with ETH (attach ethMaxBudget as msg.value) and call startPreparedSubmission to begin oracle evaluation — but only before submissionDeadline',
         timing: 'The window must end before submissionDeadline: prepareSubmission reverts "window would end after deadline" otherwise. Effective prepare cutoff = submissionDeadline - creatorAssessmentWindowSize',
-        priority: 'Earlier submissions block creator approval / payout of later ones only while in oracle evaluation or in an open window. Same-hunter resubmissions and expired never-started submissions never block. A blocked passing finalize reverts (retryable) rather than becoming PassedUnpaid'
+        priority: 'Earlier submissions block creator approval / payout of later ones only while in oracle evaluation or in an open window. Same-hunter resubmissions sitting in a window and expired never-started submissions never block; a same-hunter submission in evaluation blocks creator approval (not the hunter\'s own finalize). A blocked passing finalize reverts (retryable) rather than becoming PassedUnpaid'
       }
     },
     feeds: {

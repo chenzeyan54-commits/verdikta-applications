@@ -1507,7 +1507,7 @@ function CreateBounty({ walletState }) {
             <strong>First Winner Takes All:</strong> The first submission that passes the threshold automatically wins. Plan your deadline and threshold accordingly.
           </p>
           <p style={{ marginBottom: 0 }}>
-            <strong>Approval Window:</strong> If enabled, submissions enter a "Pending Creator Approval" state. You can approve directly (faster, potentially lower cost) or let the window expire for standard AI oracle evaluation. The window runs per submission and must end before the deadline, so keep it short relative to the submission window — hunters cannot submit during the last window-length before the deadline. Earlier submissions from <em>other</em> hunters take priority only while under evaluation or still in their own window; a hunter's own resubmissions never block, so you can approve a revised version straight away.
+            <strong>Approval Window:</strong> If enabled, submissions enter a "Pending Creator Approval" state. You can approve directly (faster, potentially lower cost) or let the window expire for standard AI oracle evaluation. The window runs per submission and must end before the deadline, so keep it short relative to the submission window — hunters cannot submit during the last window-length before the deadline. Earlier submissions from <em>other</em> hunters take priority only while under evaluation or still in their own window. A hunter's own earlier version sitting in its window never blocks, so you can approve a revised version straight away; if their earlier version is already under oracle evaluation you must wait for it to resolve before approving the revision.
           </p>
         </div>
       </div>

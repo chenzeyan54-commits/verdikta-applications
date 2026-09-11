@@ -2535,6 +2535,96 @@ describe("BountyEscrow", function () {
         expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(1); // Awarded, once
       });
 
+      it("Targeted: creator CANNOT cheap-approve v2 while the same hunter's v1 is in evaluation with a passing score", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        // creator rate 1 wei, arbiter rate 1 ETH
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          targetHunter: hunter.address, creatorPay: 1n, arbiterPay: ethers.parseEther("1"),
+        });
+        const v1 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await time.increase(WINDOW_SIZE + 1);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, v1.submissionId, {
+          value: v1.ethMaxBudget,
+        });
+        const agg1 = (await bountyEscrow.getSubmission(bountyId, v1.submissionId)).verdiktaAggId;
+        await verdiktaAggregator.setEvaluation(agg1, PASSING_SCORES, JUST_CIDS, true); // v1 is owed 1 ETH
+
+        // Hunter (unwisely) prepares v2 before finalizing v1
+        const v2 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId, { hunterCid: "QmV2" });
+
+        // Before the fix this succeeded and paid the hunter 1 wei, voiding v1's 1 ETH.
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, v2.submissionId)
+        ).to.be.revertedWith("earlier submission unresolved");
+
+        // v1 finalizes and is paid the arbiter rate
+        await expect(bountyEscrow.finalizeSubmission(bountyId, v1.submissionId))
+          .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter.address, ethers.parseEther("1"));
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, v2.submissionId)
+        ).to.be.revertedWith("bounty not open");
+      });
+
+      it("Targeted: creator CANNOT approve v2 while the same hunter's v1 is in evaluation with NO result yet", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          targetHunter: hunter.address, creatorPay: 1n, arbiterPay: ethers.parseEther("1"),
+        });
+        const v1 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await time.increase(WINDOW_SIZE + 1);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, v1.submissionId, {
+          value: v1.ethMaxBudget,
+        });
+        const v2 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId, { hunterCid: "QmV2" });
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, v2.submissionId)
+        ).to.be.revertedWith("earlier submission unresolved");
+      });
+
+      it("Targeted: creator CAN approve v2 once the same hunter's v1 evaluation has FAILED (no prepay forced)", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          targetHunter: hunter.address,
+        });
+        const v1 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await time.increase(WINDOW_SIZE + 1);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, v1.submissionId, {
+          value: v1.ethMaxBudget,
+        });
+        const agg1 = (await bountyEscrow.getSubmission(bountyId, v1.submissionId)).verdiktaAggId;
+        await verdiktaAggregator.setEvaluation(agg1, FAILING_SCORES, JUST_CIDS, true);
+        await bountyEscrow.finalizeSubmission(bountyId, v1.submissionId);
+
+        const v2 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId, { hunterCid: "QmV2" });
+        await expect(
+          bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, v2.submissionId)
+        ).to.emit(bountyEscrow, "CreatorApproved").withArgs(bountyId, v2.submissionId, hunter.address, CREATOR_PAY);
+      });
+
+      it("Targeted: the hunter's OWN finalize of v2 is still not blocked by their v1 in evaluation", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createWindowedBounty(bountyEscrow, creator, {
+          targetHunter: hunter.address,
+        });
+        const v1 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        const v2 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId, { hunterCid: "QmV2" });
+        await time.increase(WINDOW_SIZE + 1);
+        for (const v of [v1, v2]) {
+          await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, v.submissionId, {
+            value: v.ethMaxBudget,
+          });
+        }
+        const agg2 = (await bountyEscrow.getSubmission(bountyId, v2.submissionId)).verdiktaAggId;
+        await verdiktaAggregator.setEvaluation(agg2, PASSING_SCORES, JUST_CIDS, true);
+        // v1 has no result yet; same hunter, finalize path → v2 paid at the arbiter rate
+        await expect(bountyEscrow.finalizeSubmission(bountyId, v2.submissionId))
+          .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter.address, ARBITER_PAY);
+      });
+
       it("Open bounty: abandoned sub 0 (expired window, never started) no longer blocks another hunter's approval", async function () {
         const { bountyEscrow, creator, hunter, hunter2 } =
           await loadFixture(deployBountyEscrowFixture);

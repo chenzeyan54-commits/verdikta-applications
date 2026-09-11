@@ -775,7 +775,8 @@ def finalize_submission(w3, account, job_id, sub_id):
               <p style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
                 <strong>Windowed timing and resubmission:</strong> the window must end before the bounty deadline, so on a windowed bounty you can only prepare up to
                 <code>submissionDeadline − creatorAssessmentWindowSize</code> (later attempts revert with <code>window would end after deadline</code>).
-                Resubmitting is safe: your earlier versions never block your newer one — the creator can approve the revision immediately and nobody has to pay to arbitrate the old version.
+                Resubmitting is safe: an earlier version of yours sitting in its window never blocks your newer one — the creator can approve the revision immediately and nobody has to pay to arbitrate the old version.
+                One caution: if your earlier version is already in oracle evaluation, the creator cannot approve a newer one until it resolves; that evaluation is your paid-for claim to the arbiter payment, so finalize it before resubmitting.
                 Another hunter's earlier submission only takes priority while it is in oracle evaluation or still in its open window; if your passing finalize is deferred by one
                 (<code>earlier submission pending - retry after it resolves</code>), nothing is lost — retry after it resolves.
               </p>

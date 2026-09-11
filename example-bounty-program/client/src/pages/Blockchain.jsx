@@ -744,8 +744,10 @@ submission-package.zip
               </p>
               <p style={{ margin: '0.5rem 0 0 0' }}>
                 <strong>Priority:</strong> an earlier submission blocks creator approval or payout of a later one only while it can
-                still win — it is in oracle evaluation, or its window is still open. It never blocks a later submission from the
-                same hunter (resubmissions supersede that hunter's earlier versions), and it stops blocking once its window expires
+                still win — it is in oracle evaluation, or its window is still open. A hunter's own earlier version sitting in its
+                window never blocks their newer one (resubmissions supersede it), but their own earlier version already in oracle
+                evaluation does block <em>creator approval</em> of the newer one (it is that hunter's paid-for claim to the arbiter
+                rate) — not the hunter's own finalize. Any earlier submission stops blocking once its window expires
                 with no arbitration started. A passing <code>finalizeSubmission</code> blocked by another hunter's in-flight evaluation
                 reverts with <code>earlier submission pending - retry after it resolves</code> instead of becoming <code>PassedUnpaid</code>; retry later.
               </p>

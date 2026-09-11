@@ -207,21 +207,26 @@ Identical ABI means internal-logic-only changes: safe to deploy against the exis
 
 The revert strings did change (`submitted too late` → `deadline passed`; `timeout not reached` gone, replaced by `result available - use finalizeSubmission` / `evaluation not settled`; new `window would end after deadline` and `earlier submission pending - retry after it resolves`). See [Submission timing and priority rules](#submission-timing-and-priority-rules).
 
-#### The one change that would NOT be drop-in
+#### The one change that is NOT drop-in: the `SubmissionPrepared` field reorder
 
-There is a **queued, deliberately-unshipped** reorder of the `SubmissionPrepared` event — see the long comment at its definition in `onchain/contracts/BountyEscrow.sol`. It is *optional*. You are never obliged to do it as part of a redeploy, and leaving it alone is always safe.
+As of 2026-09-10 the contract **source** emits `SubmissionPrepared(bountyId, submissionId, hunter, evalWallet, ethMaxBudget, evaluationCid)` — static fields first, the dynamic string **last** — so even a naive `(address,uint256)` decode of the log data reads `ethMaxBudget` correctly instead of `96` (the string's offset word). The **deployed** contracts on Base and Base Sepolia still emit the old order (`…, evalWallet, evaluationCid, ethMaxBudget`), and every off-chain decoder in this repo still matches the deployed order on purpose.
 
-If you do decide to take it, it changes the event signature, so the `.sol` edit and every off-chain decoder must ship in the same deploy:
+This is an event-signature change, so at the next redeploy the following must flip **in the same release** as the new contract address — skipping any one of them makes the running system mis-decode live logs:
 
-- `server/utils/submissionEvents.js` (the canonical signature/topic0 — one string, the hash recomputes)
-- `server/utils/contractService.js`
-- `server/routes/jobRoutes.js` (`BUNDLE_ESCROW_ABI`)
+- `server/utils/submissionEvents.js` — the canonical ABI string, signature string, `dataFields` order and `note` (topic0 recomputes from the signature)
+- `server/utils/contractService.js` (event ABI)
+- `server/routes/jobRoutes.js` (`BUNDLE_ESCROW_ABI` and the "ethMaxBudget is the LAST field" hint strings)
 - `server/scripts/submitToBounties.js`
-- `client/src/services/contractService.js`, `client/src/pages/Blockchain.jsx`
-- `config.deploymentBlock` bump + a re-sync
-- the literal topic0 hashes written out in `README.md` and in "Finding the SubmissionPrepared log" below
+- `client/src/services/contractService.js`, `client/src/pages/Blockchain.jsx` (ABI + sample), `client/src/pages/Agents.jsx` (Python sample's topic0 comment)
+- `config.deploymentBlock` bump + a sync-state reset
+- the literal topic0 hashes and field-order prose in `README.md` (step 1 of the submission flow) and in "Finding the SubmissionPrepared log" below
 
-Skipping any one of them makes the running system mis-decode live logs. If that list looks like more than you want to take on during a redeploy, don't — the reorder is a nice-to-have, and the docs already steer agents away from the decoding trap it addresses.
+| | signature | topic0 |
+|---|---|---|
+| deployed (old) | `SubmissionPrepared(uint256,uint256,address,address,string,uint256)` | `0xdf7bc54a6444d008cf527c6a4bcdfa31d05db5a08445b8dd2eb3a05f24b67437` |
+| source (new) | `SubmissionPrepared(uint256,uint256,address,address,uint256,string)` | `0x147341637c0b8d941e61a743cd410afff8526bec154904bb54f857b8f59cd6ca` |
+
+Anything that keeps reading the **old** contract's logs after cutover (e.g. closing out its remaining bounties) must keep the old ABI for that address. Until the redeploy, the docs below intentionally describe the deployed (old) order.
 
 > **Single source of truth:** the running website's `/analytics` page always shows the live BountyEscrow address from the backend's runtime config. If any doc disagrees with it, the doc is stale. Only `README.md`'s "Contract Addresses" section has a hardcoded snapshot — all other docs and examples point at `.env.example` files or `/analytics`, so they self-update.
 

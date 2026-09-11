@@ -99,26 +99,28 @@ contract BountyEscrow {
         uint256 amountReturned
     );
 
-    // QUEUED FOR NEXT CONTRACT REVISION — do NOT reorder in isolation.
-    // `ethMaxBudget` currently sits AFTER the dynamic `string evaluationCid`, so a
-    // consumer that decodes the log with a truncated/misordered ABI reads the string's
-    // offset word (96 / 0x60) instead of the real budget and then under-funds the start
-    // tx. Moving `string evaluationCid` to LAST (static fields first: evalWallet,
-    // ethMaxBudget, then the string) makes even a naive `(address,uint256)` decode read
-    // ethMaxBudget correctly. This is an event-signature change: when it ships it MUST be
-    // deployed and flipped atomically with every off-chain ABI copy that decodes this
-    // event (server/utils/contractService.js, server/routes/jobRoutes.js BUNDLE_ESCROW_ABI,
-    // server/scripts/submitToBounties.js, client/src/services/contractService.js,
-    // client/src/pages/Blockchain.jsx) plus config.deploymentBlock + a re-sync, or the
-    // running system will mis-decode live logs. Until then the order below is correct and
-    // matches the deployed contracts on Base + Base Sepolia.
+    // FIELD ORDER MATTERS: static fields first, the dynamic string LAST.
+    // Earlier revisions emitted `string evaluationCid` before `ethMaxBudget`. Because a
+    // dynamic field is encoded as an offset word (96 / 0x60) with the bytes appended
+    // later, any consumer decoding the log with a truncated or misordered ABI (e.g. a
+    // naive `(address,uint256)`) read 96 as the budget and under-funded the start tx.
+    // With the string last, even that naive decode reads evalWallet and ethMaxBudget
+    // correctly.
+    //
+    // !! This is an EVENT-SIGNATURE CHANGE relative to the contracts deployed before
+    // !! September 2026. It must be deployed together with every off-chain ABI copy
+    // !! that decodes this event (server/utils/contractService.js,
+    // !! server/routes/jobRoutes.js BUNDLE_ESCROW_ABI, server/scripts/submitToBounties.js,
+    // !! client/src/services/contractService.js, client/src/pages/Blockchain.jsx), plus
+    // !! a config.deploymentBlock bump and a sync reset. Anything that still reads the
+    // !! OLD contract's logs must keep the old field order for that address.
     event SubmissionPrepared(
         uint256 indexed bountyId,
         uint256 indexed submissionId,
         address indexed hunter,
         address evalWallet,
-        string evaluationCid,
-        uint256 ethMaxBudget
+        uint256 ethMaxBudget,
+        string evaluationCid
     );
 
     event WorkSubmitted(
@@ -393,8 +395,8 @@ contract BountyEscrow {
             submissionId,
             msg.sender,
             address(wallet),
-            evaluationCid,
-            ethMaxBudget
+            ethMaxBudget,
+            evaluationCid
         );
 
         return (submissionId, address(wallet), ethMaxBudget);

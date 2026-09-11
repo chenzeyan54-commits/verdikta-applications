@@ -280,12 +280,39 @@ describe("BountyEscrow", function () {
 
       await expect(tx)
         .to.emit(bountyEscrow, "SubmissionPrepared")
-        .withArgs(bountyId, 0, hunter.address, evalWallet, EVAL_CID, ethMaxBudget);
+        .withArgs(bountyId, 0, hunter.address, evalWallet, ethMaxBudget, EVAL_CID);
 
       const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
       expect(sub.hunter).to.equal(hunter.address);
       expect(sub.status).to.equal(0); // Prepared
       expect(sub.evalWallet).to.equal(evalWallet);
+    });
+
+    it("Should emit SubmissionPrepared with static fields first so a naive decode reads ethMaxBudget", async function () {
+      const { bountyEscrow, creator, hunter } = await loadFixture(
+        deployBountyEscrowFixture
+      );
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { tx, evalWallet, ethMaxBudget } =
+        await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      const receipt = await tx.wait();
+      const log = receipt.logs.find(
+        (l) => l.fragment && l.fragment.name === "SubmissionPrepared"
+      );
+
+      // Decode the raw data with a truncated ABI that ignores the trailing string —
+      // the exact mistake that used to yield 96 (0x60, the string's offset word).
+      const coder = ethers.AbiCoder.defaultAbiCoder();
+      const [naiveWallet, naiveBudget] = coder.decode(["address", "uint256"], log.data);
+      expect(naiveWallet).to.equal(evalWallet);
+      expect(naiveBudget).to.equal(ethMaxBudget);
+      expect(naiveBudget).to.not.equal(96n);
+
+      // Full decode still yields the string last
+      const [w, b, cid] = coder.decode(["address", "uint256", "string"], log.data);
+      expect(w).to.equal(evalWallet);
+      expect(b).to.equal(ethMaxBudget);
+      expect(cid).to.equal(EVAL_CID);
     });
 
     it("Should reject submission with mismatched evaluationCid", async function () {

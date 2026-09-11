@@ -854,6 +854,81 @@ describe("BountyEscrow", function () {
       expect(b.payoutWei).to.equal(0n);
     });
 
+    describe("Tie-break is order-independent (lowest index wins among simultaneous passes)", function () {
+      async function twoPassing(fixture) {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = fixture;
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        const A = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);  // index 0
+        const B = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId); // index 1
+        await verdiktaAggregator.setEvaluation(A.aggId, PASSING_SCORES, JUST_CIDS, true);
+        await verdiktaAggregator.setEvaluation(B.aggId, PASSING_SCORES, JUST_CIDS, true);
+        return { bountyId, A, B };
+      }
+
+      it("A finalized first: A is paid, B becomes PassedUnpaid", async function () {
+        const f = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId, A, B } = await twoPassing(f);
+        await expect(f.bountyEscrow.finalizeSubmission(bountyId, A.submissionId))
+          .to.emit(f.bountyEscrow, "PayoutSent").withArgs(bountyId, f.hunter.address, BOUNTY_WEI);
+        await f.bountyEscrow.finalizeSubmission(bountyId, B.submissionId);
+        expect((await f.bountyEscrow.getSubmission(bountyId, B.submissionId)).status).to.equal(4);
+        expect((await f.bountyEscrow.getBounty(bountyId)).winner).to.equal(f.hunter.address);
+      });
+
+      it("B finalized first: B defers (PassedUnpaid), A is still paid — same winner", async function () {
+        const f = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId, A, B } = await twoPassing(f);
+        await f.bountyEscrow.finalizeSubmission(bountyId, B.submissionId);
+        expect((await f.bountyEscrow.getSubmission(bountyId, B.submissionId)).status).to.equal(4);
+        await expect(f.bountyEscrow.finalizeSubmission(bountyId, A.submissionId))
+          .to.emit(f.bountyEscrow, "PayoutSent").withArgs(bountyId, f.hunter.address, BOUNTY_WEI);
+        expect((await f.bountyEscrow.getBounty(bountyId)).winner).to.equal(f.hunter.address);
+      });
+
+      it("A rival calling finalize on A first cannot make A lose", async function () {
+        const f = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId, A, B } = await twoPassing(f);
+        // hunter2 (B) tries the old trick: finalize A to knock it into PassedUnpaid
+        await expect(f.bountyEscrow.connect(f.hunter2).finalizeSubmission(bountyId, A.submissionId))
+          .to.emit(f.bountyEscrow, "PayoutSent").withArgs(bountyId, f.hunter.address, BOUNTY_WEI);
+        await f.bountyEscrow.connect(f.hunter2).finalizeSubmission(bountyId, B.submissionId);
+        expect((await f.bountyEscrow.getSubmission(bountyId, B.submissionId)).status).to.equal(4);
+      });
+
+      it("First to complete still wins: B passes while A has no result yet → B paid, A later PassedUnpaid", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        const A = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+        const B = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
+        await verdiktaAggregator.setEvaluation(B.aggId, PASSING_SCORES, JUST_CIDS, true);
+        await expect(bountyEscrow.finalizeSubmission(bountyId, B.submissionId))
+          .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter2.address, BOUNTY_WEI);
+        await verdiktaAggregator.setEvaluation(A.aggId, PASSING_SCORES, JUST_CIDS, true);
+        await bountyEscrow.finalizeSubmission(bountyId, A.submissionId);
+        expect((await bountyEscrow.getSubmission(bountyId, A.submissionId)).status).to.equal(4);
+      });
+
+      it("A lower-index FAILING or PassedUnpaid sibling never blocks", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2, other } =
+          await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        const s0 = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);  // will fail
+        const s1 = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId); // passes
+        const s2 = await submitFull(bountyEscrow, verdiktaAggregator, other, bountyId);   // passes
+        await verdiktaAggregator.setEvaluation(s0.aggId, FAILING_SCORES, JUST_CIDS, true);
+        await verdiktaAggregator.setEvaluation(s1.aggId, PASSING_SCORES, JUST_CIDS, true);
+        await verdiktaAggregator.setEvaluation(s2.aggId, PASSING_SCORES, JUST_CIDS, true);
+        // s2 first: deferred by s1 (lower index, passing, pending); s0 failing does not block s1
+        await bountyEscrow.finalizeSubmission(bountyId, s2.submissionId);
+        expect((await bountyEscrow.getSubmission(bountyId, s2.submissionId)).status).to.equal(4);
+        await expect(bountyEscrow.finalizeSubmission(bountyId, s1.submissionId))
+          .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter2.address, BOUNTY_WEI);
+        await bountyEscrow.finalizeSubmission(bountyId, s0.submissionId);
+        expect((await bountyEscrow.getSubmission(bountyId, s0.submissionId)).status).to.equal(2);
+      });
+    });
+
     it("Should mark late finalizer as PassedUnpaid when another already won", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } =
         await loadFixture(deployBountyEscrowFixture);

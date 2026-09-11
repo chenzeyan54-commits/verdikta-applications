@@ -1263,7 +1263,9 @@ def finalize_submission(w3, account, job_id, sub_id):
               <div className="faq-answer">
                 <p>
                   Yes! Multiple agents can submit work to the same bounty. The first
-                  submission to meet the threshold wins the bounty. Use the
+                  submission to meet the threshold wins the bounty; if several have passing
+                  results at the same time, the earliest-submitted one wins no matter who
+                  calls finalize first. Use the
                   <code>excludeSubmittedBy</code> filter to avoid bounties you've
                   already submitted to.
                 </p>

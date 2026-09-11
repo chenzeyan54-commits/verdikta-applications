@@ -566,7 +566,8 @@ contract BountyEscrow {
                 );
                 blocked = false;
             } else {
-                // Non-windowed bounties: first-to-complete-evaluation wins
+                // Non-windowed bounties: first to complete wins; among simultaneous
+                // passing results the lowest index wins (order-independent, see helper).
                 blocked = _hasOtherPassingSubmission(bountyId, submissionId, b.threshold);
             }
 
@@ -587,7 +588,8 @@ contract BountyEscrow {
                     _payOrCredit(b.creator, refund);
                 }
             } else {
-                // Another submission has priority or already passed
+                // A lower-index submission already holds the win (it has a passing
+                // result and will be paid when finalized). Final for this one.
                 s.status = SubmissionStatus.PassedUnpaid;
             }
         } else {
@@ -756,42 +758,41 @@ contract BountyEscrow {
         }
     }
 
-    /// @dev Check if any OTHER submission (not the current one) has already passed on Verdikta
-    /// @dev Used at finalization for non-windowed bounties to ensure "first to complete evaluation wins"
+    /// @dev Non-windowed tie-break: does a LOWER-index submission already hold the win?
+    ///      Used at finalization for non-windowed bounties.
+    ///
+    ///      "First to complete evaluation wins" cannot be observed on-chain (the escrow
+    ///      only learns a result exists when someone calls finalize), so the rule that is
+    ///      actually enforced is:
+    ///        - if no other submission has a passing result yet, the one being finalized
+    ///          wins (first to complete, in practice);
+    ///        - if several have passing results at the same time, the LOWEST index wins.
+    ///      Only lower-index siblings are consulted, so the outcome is independent of the
+    ///      ORDER in which finalize() is called — and finalize is permissionless, so that
+    ///      matters: with an any-sibling check, whichever passing submission was finalized
+    ///      first was written PassedUnpaid and the other was paid, letting a rival (or
+    ///      anyone) pick the winner by calling finalize on the victim first.
+    ///
+    ///      A lower-index PendingVerdikta sibling with a passing result blocks. It will be
+    ///      paid when finalized (its own lower-index siblings are checked the same way), so
+    ///      writing PassedUnpaid for the current submission is final and correct.
+    ///      PassedUnpaid siblings never block: that status means "did not win".
+    ///      The PassedPaid arm is unreachable from the sole call site (it runs only while
+    ///      b.status == Open, and PassedPaid is always written together with Awarded);
+    ///      it is kept as a defensive restatement of that invariant.
     function _hasOtherPassingSubmission(
         uint256 bountyId,
         uint256 currentSubmissionId,
         uint256 threshold
     ) internal view returns (bool) {
-        uint256 subCount = subs[bountyId].length;
-
-        for (uint256 i = 0; i < subCount; i++) {
-            // Skip the current submission we're finalizing
-            if (i == currentSubmissionId) {
-                continue;
-            }
-
+        for (uint256 i = 0; i < currentSubmissionId; i++) {
             Submission storage other = subs[bountyId][i];
 
-            // Only an actually-PAID sibling blocks payout.
-            //
-            // PassedUnpaid must NOT block: it means that submission met the threshold
-            // but did *not* win, so it is never evidence that someone else did.
-            // Treating it as a blocker deadlocks the bounty — B defers to A while A is
-            // still PendingVerdikta with a passing score, then A defers to B's freshly
-            // written PassedUnpaid, and the escrow is never paid to anyone. (Observed
-            // live: bounty 222 on Base, two passing submissions, winner == address(0).)
-            //
-            // The PassedPaid arm is in fact unreachable from the sole call site, which
-            // runs only while b.status == Open, and PassedPaid is always written
-            // atomically with b.status = Awarded (creatorApproveSubmission,
-            // finalizeSubmission). It is kept as a defensive restatement of that
-            // invariant, so this helper stays correct if it ever gains another caller.
             if (other.status == SubmissionStatus.PassedPaid) {
                 return true;
             }
 
-            // Check if pending but already completed with passing score on Verdikta
+            // Lower-index sibling still pending but already passing on Verdikta: it wins.
             if (other.status == SubmissionStatus.PendingVerdikta) {
                 (uint256[] memory scores, , bool ok) = verdikta.getEvaluation(other.verdiktaAggId);
 

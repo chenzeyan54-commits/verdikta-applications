@@ -99,7 +99,9 @@ function Blockchain() {
   "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, uint256 ethMaxBudget, string evaluationCid)",
   "event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, bytes32 verdiktaAggId)",
   "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, bool paid, uint256 acceptance, uint256 rejection, string justificationCids)",
-  "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)",
+  "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amountWei)",
+  "event BountyClosed(uint256 indexed bountyId, address indexed creator, uint256 amountReturned)",
+  "event EthRefunded(uint256 indexed bountyId, uint256 indexed submissionId, uint256 amount)",
   "event CreatorApproved(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, uint256 amountPaid)",
   "event CreatorRefunded(uint256 indexed bountyId, address indexed creator, uint256 amountRefunded)",
 
@@ -136,6 +138,8 @@ function Blockchain() {
   "function pendingSubmissionIds(uint256 bountyId) view returns (uint256[])", // ids currently in evaluation (list order, not submission order)
   "function getSubmissionsPage(uint256 bountyId, uint256 start, uint256 count) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])", // ≤ MAX_BATCH per call; served by the lens
   "function MAX_ACTIVE_EVALUATIONS() view returns (uint256)", // 256 — concurrent evaluations per bounty
+  "function MAX_BATCH() view returns (uint256)",              // 100 — page size cap of getBounties / getSubmissionsPage (lens)
+  "function lens() view returns (address)",                   // the BountyEscrowLens serving the read views (informational)
   "function withdrawable(address account) view returns (uint256)",
   "function MAX_SUBMISSIONS_PER_BOUNTY() view returns (uint256)", // 128 — prepared submissions, WINDOWED bounties only
   "function PAYOUT_GAS_LIMIT() view returns (uint256)",           // 120000
@@ -254,12 +258,14 @@ async function finalizeSubmission(bountyId, submissionId) {
   const tx = await escrow.finalizeSubmission(bountyId, submissionId);
   const receipt = await tx.wait();
 
-  // Check for PayoutSent event (means you won!)
+  // Check for PayoutSent event (means you won — the amount is OWED to you; it is delivered
+  // in the same tx unless the receipt also has PaymentDeferred(to = you), in which case
+  // claim it with withdraw())
   for (const log of receipt.logs) {
     const parsed = escrow.interface.parseLog(log);
     if (parsed?.name === 'PayoutSent') {
-      console.log('Congratulations! Received ' +
-        ethers.formatEther(parsed.args.amount) + ' ETH');
+      console.log('Congratulations! You are owed ' +
+        ethers.formatEther(parsed.args.amountWei) + ' ETH');
       return true;
     }
   }
@@ -795,7 +801,7 @@ submission-package.zip
                 If the window expires, anyone can call <code>startPreparedSubmission</code> to begin the
                 normal AI evaluation flow (steps 2-3) — but only before the bounty deadline. The window itself must
                 end before the deadline, so <code>prepareSubmission</code> reverts with <code>window would end after deadline</code>
-                once less than one window remains: the effective cutoff is <code>submissionDeadline − creatorAssessmentWindowSize</code>.
+                once less than one window (plus two seconds) remains: the effective cutoff is <code>submissionDeadline − creatorAssessmentWindowSize − 2</code>; read <code>prepareCutoff(bountyId)</code> rather than computing it.
               </p>
               <p style={{ margin: '0.5rem 0 0 0' }}>
                 <strong>Priority:</strong> an earlier submission blocks creator approval or payout of a later one only while it can
@@ -839,7 +845,7 @@ submission-package.zip
               </p>
               <div className="step-detail">
                 <ArrowRight size={16} />
-                <span>If you win: <code>PayoutSent</code> event with ETH amount</span>
+                <span>If you win: <code>PayoutSent</code> event with the ETH amount owed — delivered in the same tx unless a <code>PaymentDeferred</code> event names you, then claim with <code>withdraw()</code></span>
               </div>
             </div>
           </div>
@@ -1131,7 +1137,7 @@ submission-package.zip
               using <code>failTimedOutSubmission(bountyId, submissionId)</code>. It reverts with{' '}
               <code>evaluation not settled</code> while the round is still open and with{' '}
               <code>result available - use finalizeSubmission</code> if a result exists, so it can never discard a passing score.
-              On success it refunds the unspent ETH prepay to the hunter and frees up the bounty for other submissions.
+              On success it refunds the unspent ETH prepay to whoever funded the start (<code>funder</code> on the submission — the hunter unless someone else funded an expired-window start) and frees up the bounty for other submissions.
             </p>
           </div>
           <div className="info-card">

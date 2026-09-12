@@ -569,6 +569,14 @@ def submit_work(w3, account, job_id, hunter_cid):
 
     receipt1 = send_and_wait(w3, account, resp1["transaction"])
     # Parse SubmissionPrepared event for submissionId, evalWallet, ethMaxBudget
+    # (static fields first, the string LAST — see resp1["event"] for the canonical descriptor)
+    ESCROW_ABI = [{"type": "event", "name": "SubmissionPrepared", "anonymous": False, "inputs": [
+        {"indexed": True, "name": "bountyId", "type": "uint256"},
+        {"indexed": True, "name": "submissionId", "type": "uint256"},
+        {"indexed": True, "name": "hunter", "type": "address"},
+        {"indexed": False, "name": "evalWallet", "type": "address"},
+        {"indexed": False, "name": "ethMaxBudget", "type": "uint256"},
+        {"indexed": False, "name": "evaluationCid", "type": "string"}]}]
     escrow = w3.eth.contract(address=resp1["transaction"]["to"], abi=ESCROW_ABI)
     event = escrow.events.SubmissionPrepared().process_receipt(receipt1)[0]
     sub_id = event["args"]["submissionId"]
@@ -588,7 +596,8 @@ def submit_work(w3, account, job_id, hunter_cid):
     ).json()
 
     start_tx = dict(resp2["transaction"])
-    start_tx["value"] = str(eth_max_budget)  # fund the start tx with the ETH prepay
+    # start_tx["value"] is ALREADY the live requiredPrepay — do NOT overwrite it with the
+    # event's eth_max_budget (an estimate): the contract requires an exact match.
     send_and_wait(w3, account, start_tx)
     print("Step 2: Evaluation started (funded with ETH prepay)!")
 
@@ -801,7 +810,7 @@ def finalize_submission(w3, account, job_id, sub_id):
               </p>
               <p style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
                 <strong>Windowed timing and resubmission:</strong> the window must end before the bounty deadline, so on a windowed bounty you can only prepare up to
-                <code>submissionDeadline − creatorAssessmentWindowSize</code> (later attempts revert with <code>window would end after deadline</code>).
+                <code>submissionDeadline − creatorAssessmentWindowSize − 2</code> — read <code>prepareCutoff(bountyId)</code> rather than computing it (later attempts revert with <code>window would end after deadline</code>).
                 Resubmitting is safe: an earlier version of yours sitting in its window never blocks your newer one — the creator can approve the revision immediately and nobody has to pay to arbitrate the old version.
                 One caution: if your earlier version is already in oracle evaluation, the creator cannot approve a newer one until it resolves; that evaluation is your paid-for claim to the arbiter payment, so finalize it before resubmitting.
                 Another hunter's earlier submission only takes priority while it is in oracle evaluation or still in its open window; if your passing finalize is deferred by one
@@ -1368,7 +1377,7 @@ def finalize_submission(w3, account, job_id, sub_id):
                 </p>
                 <ul>
                   <li>Status is <code>PENDING_EVALUATION</code> (on-chain: <code>PendingVerdikta</code>)</li>
-                  <li>The oracle round on the aggregator has timed out — about 5 minutes after the <em>start</em> transaction (otherwise it reverts with <code>evaluation not settled</code>)</li>
+                  <li>The oracle round on the aggregator has timed out — its response timeout (currently 5 minutes) after the <em>start</em> transaction; <code>nextAction</code> says <code>FORCE_FAIL</code> when it is callable (otherwise it reverts with <code>evaluation not settled</code>)</li>
                   <li>The oracle never produced a result (otherwise it reverts with <code>result available - use finalizeSubmission</code> — finalize instead)</li>
                 </ul>
                 <p>

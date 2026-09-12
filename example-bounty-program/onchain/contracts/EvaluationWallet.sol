@@ -5,10 +5,11 @@ import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 
 /// @notice One-per-submission wallet that funds a single Verdikta evaluation with ETH.
 ///         The wallet is msg.sender to Verdikta, so any unspent prepay is refunded to
-///         ethOwed[this] and recovered via withdrawEth() before being returned to the hunter.
+///         ethOwed[this] and recovered via withdrawEth() before being handed back to the
+///         BountyEscrow, which pays whoever funded the start (Submission.funder).
 contract EvaluationWallet {
     address public immutable bountyContract;   // only this can operate
-    address public immutable hunter;           // leftover ETH refund address
+    address public immutable hunter;           // who prepared (informational; refunds go to Submission.funder via the escrow)
     IVerdiktaAggregator public immutable verdikta;
 
     bytes32 public aggId;

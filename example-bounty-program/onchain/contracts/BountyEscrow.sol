@@ -81,7 +81,7 @@ contract BountyEscrow {
         string  justificationCids;  // Verdikta result, if any
         uint256 submittedAt;
         uint256 finalizedAt;
-        uint256 ethMaxBudget;       // ETH wei prepay, = maxTotalFee(bounty.oracle.maxOracleFee) at prepare time
+        uint256 ethMaxBudget;       // ETH wei prepay: maxTotalFee(...) ESTIMATE at prepare; the amount actually prepaid once started
         uint64  creatorWindowEnd;   // Timestamp when creator window expires (0 if no window)
         address funder;             // who attached the prepay at start; receives the unspent refund
     }
@@ -139,8 +139,8 @@ contract BountyEscrow {
     /// @dev Windowed bounties order submissions by index and honour an earlier submission's
     ///      still-open creator window (_hasEarlierUnresolvedSubmission). Those in-window
     ///      entries are gas-only to create yet must be scanned, so on windowed bounties that
-    ///      scan is bounded the direct way: by capping prepares (~2.5k gas per never-started
-    ///      entry, measured — a few hundred k gas at the cap). On a TARGETED windowed bounty
+    ///      scan is bounded the direct way: by capping prepares (~7k gas per never-started
+    ///      entry, measured — three cold slots each; ~0.9M gas at the cap). On a TARGETED windowed bounty
     ///      only the target can prepare, so the cap can only ever be self-inflicted. On an
     ///      OPEN windowed bounty anyone can fill it for gas alone and shut other hunters out
     ///      until the deadline — a known, accepted weakness of that unusual configuration;
@@ -1138,7 +1138,8 @@ contract BountyEscrow {
         (bool ok, bytes memory ret) = address(this).staticcall(
             abi.encodeWithSelector(this.lensDelegate.selector, msg.data)
         );
-        assembly {
+        // memory-safe: only reads `ret` (Solidity-allocated) and terminates.
+        assembly ("memory-safe") {
             let p := add(ret, 32)
             let n := mload(ret)
             if iszero(ok) { revert(p, n) }
@@ -1153,7 +1154,9 @@ contract BountyEscrow {
     function lensDelegate(bytes calldata data) external {
         require(msg.sender == address(this), "self only");
         address target = address(lens);
-        assembly {
+        // memory-safe: scratch is placed at the free memory pointer and the block terminates
+        // (return/revert) without touching anything Solidity allocated.
+        assembly ("memory-safe") {
             let p := mload(0x40)
             calldatacopy(p, data.offset, data.length)
             let ok := delegatecall(gas(), target, p, data.length, 0, 0)

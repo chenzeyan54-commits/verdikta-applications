@@ -1363,65 +1363,206 @@ describe("BountyEscrow", function () {
     });
   });
 
-  describe("Submission cap (junk-flood lock prevention)", function () {
-    // Every per-bounty scan is bounded by MAX_SUBMISSIONS_PER_BOUNTY. Measured worst case
-    // at the cap (127 started siblings with results): finalize ≈ 5.6M gas, start ≈ 5.7M,
-    // far below the block limit, so a passing submission can always be finalized.
+  describe("Submission caps (junk-flood lock prevention)", function () {
+    // Two bounds, one per bounty kind:
+    //  - WINDOWED bounties cap PREPARED submissions (MAX_SUBMISSIONS_PER_BOUNTY = 128): the
+    //    priority scan must see in-window, never-started entries, so it walks the full array.
+    //  - NON-WINDOWED bounties have NO prepare cap. Their scans walk the PENDING LIST (in-flight
+    //    evaluations only), whose length is capped at start (MAX_ACTIVE_EVALUATIONS = 256).
+    // Measured against the mock: a passing finalize on a non-windowed bounty costs the same
+    // with 200 never-started junk siblings as with none; start / finalize with 255 in-flight
+    // siblings that all have results ≈ 5M gas.
     async function fillBounty(bountyEscrow, signer, bountyId, n) {
       for (let i = 0; i < n; i++) {
         await bountyEscrow.connect(signer).prepareSubmission(bountyId, EVAL_CID, mkCid(`junk${i}`));
       }
     }
+    const WINDOW = 3600;
 
-    it("Should expose the cap and reject the 129th submission", async function () {
+    it("exposes both caps", async function () {
+      const { bountyEscrow } = await loadFixture(deployBountyEscrowFixture);
+      expect(await bountyEscrow.MAX_SUBMISSIONS_PER_BOUNTY()).to.equal(128);
+      expect(await bountyEscrow.MAX_ACTIVE_EVALUATIONS()).to.equal(256);
+    });
+
+    it("windowed open bounty: rejects the 129th prepare", async function () {
       this.timeout(120000);
       const { bountyEscrow, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
-      const cap = Number(await bountyEscrow.MAX_SUBMISSIONS_PER_BOUNTY());
-      expect(cap).to.equal(128);
-      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
-      await fillBounty(bountyEscrow, other, bountyId, cap);
-      expect(await bountyEscrow.submissionCount(bountyId)).to.equal(cap);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, { windowSize: WINDOW });
+      await fillBounty(bountyEscrow, other, bountyId, 128);
+      expect(await bountyEscrow.submissionCount(bountyId)).to.equal(128);
       await expect(
         prepareDefaultSubmission(bountyEscrow, hunter, bountyId)
       ).to.be.revertedWith("submission limit reached");
     });
 
-    it("Should still resolve existing submissions and allow close when a bounty is full", async function () {
+    it("windowed targeted bounty: the cap applies too (only the target can fill it)", async function () {
+      this.timeout(120000);
+      const { bountyEscrow, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
+        windowSize: WINDOW, targetHunter: hunter.address,
+      });
+      await expect(
+        prepareDefaultSubmission(bountyEscrow, other, bountyId)
+      ).to.be.revertedWith("bounty is targeted");
+      await fillBounty(bountyEscrow, hunter, bountyId, 128);
+      await expect(
+        prepareDefaultSubmission(bountyEscrow, hunter, bountyId)
+      ).to.be.revertedWith("submission limit reached");
+    });
+
+    it("windowed bounty: a full bounty still resolves existing submissions and pays the winner", async function () {
       this.timeout(120000);
       const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
         await loadFixture(deployBountyEscrowFixture);
-      const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
-      // Real hunter first, then a griefer fills the rest of the cap
-      const { submissionId, aggId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, { windowSize: WINDOW });
+      // Real hunter first (index 0), then a griefer fills the rest of the cap
+      const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
       await fillBounty(bountyEscrow, other, bountyId, 127);
       await expect(
         prepareDefaultSubmission(bountyEscrow, other, bountyId)
       ).to.be.revertedWith("submission limit reached");
 
-      // The hunter's passing submission still finalizes and is paid
+      // Window over → anyone may start; the hunter does, and the passing result is paid
+      await time.increase(WINDOW + 1);
+      const startTx = await startSubmission(bountyEscrow, hunter, bountyId, submissionId, ethMaxBudget);
+      const rc = await startTx.wait();
+      const aggId = rc.logs.find((l) => l.fragment && l.fragment.name === "WorkSubmitted").args[2];
       await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
       await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
         .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter.address, BOUNTY_WEI);
     });
 
-    it("Should let the creator close a full bounty with only junk (never-started) submissions", async function () {
+    it("windowed bounty: the creator can close a full bounty holding only junk (never-started) submissions", async function () {
       this.timeout(120000);
       const { bountyEscrow, creator, other } = await loadFixture(deployBountyEscrowFixture);
-      const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
+      const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator, { windowSize: WINDOW });
       await fillBounty(bountyEscrow, other, bountyId, 128);
       await time.increaseTo(deadline);
       await expect(bountyEscrow.closeExpiredBounty(bountyId))
         .to.emit(bountyEscrow, "BountyClosed").withArgs(bountyId, creator.address, BOUNTY_WEI);
     });
 
-    it("Should apply the cap to targeted bounties too", async function () {
-      this.timeout(120000);
-      const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
-      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, { targetHunter: hunter.address });
-      await fillBounty(bountyEscrow, hunter, bountyId, 128);
+    it("non-windowed bounty: NO prepare cap — the 129th+ prepare succeeds, and junk never reaches the scans", async function () {
+      this.timeout(300000);
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
+        await loadFixture(deployBountyEscrowFixture);
+
+      // Baseline: a clean bounty, one submission, passing finalize
+      const clean = await createDefaultBounty(bountyEscrow, creator);
+      const c = await submitFull(bountyEscrow, verdiktaAggregator, hunter, clean.bountyId);
+      await verdiktaAggregator.setEvaluation(c.aggId, PASSING_SCORES, JUST_CIDS, true);
+      const cleanGas = (await (await bountyEscrow.finalizeSubmission(clean.bountyId, c.submissionId)).wait()).gasUsed;
+
+      // Flooded: 200 junk prepares by a griefer, then the real hunter (index 200)
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      await fillBounty(bountyEscrow, other, bountyId, 200);
+      expect(await bountyEscrow.submissionCount(bountyId)).to.equal(200);
+      const h = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      expect(h.submissionId).to.equal(200);
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(1);
+      expect(await bountyEscrow.pendingSubmissionIds(bountyId)).to.deep.equal([200n]);
+
+      await verdiktaAggregator.setEvaluation(h.aggId, PASSING_SCORES, JUST_CIDS, true);
+      const tx = await bountyEscrow.finalizeSubmission(bountyId, h.submissionId);
+      await expect(tx).to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter.address, BOUNTY_WEI);
+      const floodedGas = (await tx.wait()).gasUsed;
+      // The 200 never-started siblings are not on the pending list: same cost as the clean case.
+      expect(floodedGas).to.be.lessThanOrEqual(cleanGas + 2000n);
+    });
+
+    it("non-windowed bounty: start reverts at MAX_ACTIVE_EVALUATIONS and a slot frees when a round resolves", async function () {
+      this.timeout(600000);
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const cap = Number(await bountyEscrow.MAX_ACTIVE_EVALUATIONS());
+
+      // The griefer starts `cap` evaluations (each one prepays a real oracle round)
+      const started = [];
+      for (let i = 0; i < cap; i++) {
+        started.push(await submitFull(bountyEscrow, verdiktaAggregator, other, bountyId));
+      }
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(cap);
+      expect((await bountyEscrow.pendingSubmissionIds(bountyId)).length).to.equal(cap);
+
+      // Prepare still works (no prepare cap); start is what is bounded
+      const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
       await expect(
-        prepareDefaultSubmission(bountyEscrow, hunter, bountyId)
-      ).to.be.revertedWith("submission limit reached");
+        startSubmission(bountyEscrow, hunter, bountyId, submissionId, ethMaxBudget)
+      ).to.be.revertedWith("evaluation slots full - retry later");
+
+      // One junk round fails → its slot is free → the hunter starts
+      await verdiktaAggregator.setEvaluation(started[0].aggId, FAILING_SCORES, JUST_CIDS, true);
+      await bountyEscrow.finalizeSubmission(bountyId, started[0].submissionId);
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(cap - 1);
+      await expect(
+        startSubmission(bountyEscrow, hunter, bountyId, submissionId, ethMaxBudget)
+      ).to.emit(bountyEscrow, "WorkSubmitted");
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(cap);
+
+      // Worst-case scan: every in-flight sibling has a (failing) result, the hunter's passes
+      for (let i = 1; i < cap; i++) {
+        await verdiktaAggregator.setEvaluation(started[i].aggId, FAILING_SCORES, JUST_CIDS, true);
+      }
+      const sub = await bountyEscrow.getSubmission(bountyId, submissionId);
+      await verdiktaAggregator.setEvaluation(sub.verdiktaAggId, PASSING_SCORES, JUST_CIDS, true);
+      const tx = await bountyEscrow.finalizeSubmission(bountyId, submissionId);
+      await expect(tx).to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter.address, BOUNTY_WEI);
+      expect((await tx.wait()).gasUsed).to.be.lessThan(10_000_000n);
+    });
+
+    it("pending list: swap-removal keeps the id set exact across finalize and force-fail", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2, other } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const s0 = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      const s1 = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
+      const s2 = await submitFull(bountyEscrow, verdiktaAggregator, other, bountyId);
+      const ids = async () => (await bountyEscrow.pendingSubmissionIds(bountyId)).map(Number).sort();
+      expect(await ids()).to.deep.equal([0, 1, 2]);
+
+      // Remove the FIRST entry → the last one is swapped into its place
+      await verdiktaAggregator.setEvaluation(s0.aggId, FAILING_SCORES, JUST_CIDS, true);
+      await bountyEscrow.finalizeSubmission(bountyId, s0.submissionId);
+      expect(await bountyEscrow.pendingSubmissionIds(bountyId)).to.deep.equal([2n, 1n]);
+
+      // Force-fail the (now last) entry
+      await time.increase(601);
+      await bountyEscrow.failTimedOutSubmission(bountyId, s1.submissionId);
+      expect(await ids()).to.deep.equal([2]);
+
+      // A new start lands at the end; its position bookkeeping must be right for removal
+      const s3 = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      expect(await ids()).to.deep.equal([2, 3]);
+      await verdiktaAggregator.setEvaluation(s2.aggId, FAILING_SCORES, JUST_CIDS, true);
+      await bountyEscrow.finalizeSubmission(bountyId, s2.submissionId);
+      expect(await ids()).to.deep.equal([3]);
+      await verdiktaAggregator.setEvaluation(s3.aggId, PASSING_SCORES, JUST_CIDS, true);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, s3.submissionId))
+        .to.emit(bountyEscrow, "PayoutSent");
+      expect(await ids()).to.deep.equal([]);
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0);
+    });
+
+    it("non-windowed tie-break still consults only LOWER-index in-flight siblings via the pending list", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2, other } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const s0 = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      const s1 = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
+      const s2 = await submitFull(bountyEscrow, verdiktaAggregator, other, bountyId);
+      // Reorder the list: resolve s0 (failing) so s2 is swapped to the front of the list
+      await verdiktaAggregator.setEvaluation(s0.aggId, FAILING_SCORES, JUST_CIDS, true);
+      await bountyEscrow.finalizeSubmission(bountyId, s0.submissionId);
+      expect(await bountyEscrow.pendingSubmissionIds(bountyId)).to.deep.equal([2n, 1n]);
+      // Both remaining pass. s1 (lower index) must win regardless of list order or call order.
+      await verdiktaAggregator.setEvaluation(s1.aggId, PASSING_SCORES, JUST_CIDS, true);
+      await verdiktaAggregator.setEvaluation(s2.aggId, PASSING_SCORES, JUST_CIDS, true);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, s2.submissionId))
+        .to.emit(bountyEscrow, "SubmissionFinalized").withArgs(bountyId, s2.submissionId, true, false, 80, 20, JUST_CIDS);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, s1.submissionId))
+        .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter2.address, BOUNTY_WEI);
     });
   });
 
@@ -3867,6 +4008,25 @@ describe("BountyEscrow", function () {
       const after = await bountyEscrow.getBounty(bountyId);
       expect(after.status).to.equal(before.status);
       expect(after.payoutWei).to.equal(before.payoutWei);
+    });
+
+    it("getSubmissionsPage pages, clamps to the end, and reverts on a bad bountyId", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2, other } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+      await prepareDefaultSubmission(bountyEscrow, other, bountyId);
+      const p0 = await bountyEscrow.getSubmissionsPage(bountyId, 0, 2);
+      expect(p0.length).to.equal(2);
+      expect(p0[0].hunter).to.equal(hunter.address);
+      expect(p0[1].hunter).to.equal(hunter2.address);
+      const p1 = await bountyEscrow.getSubmissionsPage(bountyId, 2, 100);
+      expect(p1.length).to.equal(1);
+      expect(p1[0].hunter).to.equal(other.address);
+      expect((await bountyEscrow.getSubmissionsPage(bountyId, 3, 1)).length).to.equal(0);
+      expect((await bountyEscrow.getSubmissionsPage(bountyId, 0, 1000)).length).to.equal(3);
+      await expect(bountyEscrow.getSubmissionsPage(999, 0, 1)).to.be.revertedWith("bad bountyId");
     });
 
     it("lens views read through the escrow's getters (no storage-layout coupling): a state change is visible immediately", async function () {

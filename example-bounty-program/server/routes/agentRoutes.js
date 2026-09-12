@@ -405,9 +405,11 @@ GET /api/jobs/:id/submissions/:subId/evaluation
 Returns the full AI evaluation report — scores, criterion-by-criterion feedback,
 and the parsed justification content. The server fetches justification from IPFS
 for you, so you do not need direct IPFS access. Use this after a rejection to
-learn what to fix before resubmitting (the same address may resubmit; the only
-limit is the contract's cap of 128 submissions per bounty across all hunters —
-prepareSubmission reverts "submission limit reached" once a bounty is full).
+learn what to fix before resubmitting (the same address may resubmit; there is no
+cap on submissions to a non-windowed bounty — windowed bounties cap prepares at 128
+("submission limit reached") — and every bounty caps concurrent evaluations at 256:
+startPreparedSubmission reverts "evaluation slots full - retry later" while full;
+retry once any in-flight round resolves).
 
 ## Plain Text Bounty List (zero parsing)
 GET /api/jobs.txt
@@ -848,7 +850,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'POST',
         path: '/jobs/:id/submit/prepare',
-        description: 'Get encoded prepareSubmission calldata (step 1 of on-chain submission). On-chain cap: 128 submissions per bounty in total (all hunters) — prepareSubmission reverts "submission limit reached" once full.',
+        description: 'Get encoded prepareSubmission calldata (step 1 of on-chain submission). No cap on prepares for non-windowed bounties; windowed bounties cap prepares at 128 (prepareSubmission reverts "submission limit reached" once full).',
         contentType: 'application/json',
         fields: [
           'hunter: Ethereum address 0x... (required)',
@@ -867,7 +869,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'POST',
         path: '/jobs/:id/submissions/:subId/start',
-        description: 'Get encoded startPreparedSubmission calldata (step 2 — triggers oracle evaluation). Payable: attach the returned transaction.value as msg.value — the server reads requiredPrepay(bountyId) live (the contract checks msg.value against that; the prepare event\'s ethMaxBudget is only an estimate). No approval needed.',
+        description: 'Get encoded startPreparedSubmission calldata (step 2 — triggers oracle evaluation). Payable: attach the returned transaction.value as msg.value — the server reads requiredPrepay(bountyId) live (the contract checks msg.value against that; the prepare event\'s ethMaxBudget is only an estimate). No approval needed. Concurrency cap: the contract allows MAX_ACTIVE_EVALUATIONS = 256 evaluations in flight per bounty; while activeEvaluations(bountyId) is at the cap the start tx reverts "evaluation slots full - retry later" — a slot frees when any in-flight round resolves (finalize or force-fail, anyone may call), so retry rather than treating it as a failure.',
         contentType: 'application/json',
         fields: [
           'hunter: Ethereum address 0x... (required — must be original hunter for Prepared status; any caller for PendingCreatorApproval after window expiry — that caller funds the ETH by attaching msg.value)',
@@ -1057,7 +1059,7 @@ router.get('/api/docs', (req, res) => {
             'The hunter supplies ONLY their work CID (evaluationCid is a guard and must equal the bounty\'s). The oracle request is built from the bounty: evaluation package, class, the creator\'s oracle settings, and an always-empty addendum (constant ADDENDUM). Nothing the hunter passes reaches the aggregator except hunterCid',
             'ethMaxBudget = maxTotalFee(bounty.oracle.maxOracleFee) at prepare time — an ESTIMATE. startPreparedSubmission checks msg.value against the LIVE requiredPrepay(bountyId) (aggregator parameters can change), so read that view right before starting; the /start endpoint\'s transaction.value does this for you',
             'hunterCid must be a BARE CID: 46-100 alphanumeric characters (CIDv0 "Qm…" or base32 CIDv1 "b…"). Commas, colons, slashes, spaces or an "ipfs/" prefix revert "bad hunterCid" — the aggregator serializes the request as "1:<evalCid>,<hunterCid>:<addendum>", so a delimiter would smuggle an extra archive or an addendum',
-            'Cap: 128 submissions per bounty in total — reverts "submission limit reached" once full'
+            'Cap: WINDOWED bounties only — 128 prepared submissions in total, reverts "submission limit reached" once full. Non-windowed bounties have no prepare cap (their scans walk only the in-flight pending list; page reads with getSubmissionsPage). Concurrency is capped at start instead: MAX_ACTIVE_EVALUATIONS = 256 — startPreparedSubmission reverts "evaluation slots full - retry later" while activeEvaluations(bountyId) == 256; a slot frees when any in-flight round resolves (finalize/force-fail, anyone may call), so retry — it is not a failure'
           ]
         },
         creatorApproveSubmission: {

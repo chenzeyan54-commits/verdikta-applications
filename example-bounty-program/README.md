@@ -316,7 +316,7 @@ A: No cancellation is allowed. After the deadline passes, the escrowed ETH must 
 A: No. All submissions are stored on IPFS and can be viewed by anyone with the CID. The blockchain also records submission metadata publicly.
 
 **Q: Can a hunter submit multiple times?**  
-A: Yes! Hunters can submit multiple attempts for the same bounty, up to the contract's cap of 128 submissions per bounty in total (across all hunters; this bounds the on-chain scans so a flood of junk submissions can never lock a bounty). Each submission requires a separate ETH prepay (mostly refunded). The first submission to pass and be finalized wins; if several submissions have passing results at the same time, the one submitted earliest (lowest submission index) wins, regardless of the order in which they are finalized.
+A: Yes! Hunters can submit multiple attempts for the same bounty, without any cap on non-windowed bounties (windowed bounties cap prepared submissions at 128 across all hunters). What every bounty caps is concurrent oracle evaluations: at most 256 in flight at once, and a start that finds the slots full reverts `evaluation slots full - retry later` until any in-flight round resolves. Each submission requires a separate ETH prepay (mostly refunded). The first submission to pass and be finalized wins; if several submissions have passing results at the same time, the one submitted earliest (lowest submission index) wins, regardless of the order in which they are finalized.
 
 **Q: What are receipt pages?**  
 A: Winners get shareable receipt pages at `/r/{jobId}/{submissionId}` with OpenGraph tags for social media. Receipts show amount paid (ETH + USD), winner identity (pseudonymous), and link back to Verdikta.
@@ -375,7 +375,8 @@ Open issues and pull requests at [github.com/verdikta/verdikta-applications](htt
 - Deadline rule: prepare AND start must happen before the deadline; a creator window must end before the deadline (`window would end after deadline`)
 - Windowed priority: same-hunter resubmissions and expired never-started submissions no longer block; a same-hunter submission already under evaluation blocks creator approval; a blocked passing finalize reverts (retryable) instead of becoming terminal `PassedUnpaid`
 - Non-windowed tie-break is order-independent: among simultaneous passing results the earliest-submitted wins
-- `MAX_SUBMISSIONS_PER_BOUNTY = 128` — bounds every on-chain scan so a flood of junk submissions cannot lock a bounty
+- `MAX_ACTIVE_EVALUATIONS = 256` — cap on concurrent evaluations per bounty (the pending list); bounds the on-chain scans without letting gas-only junk prepares consume anything
+- `MAX_SUBMISSIONS_PER_BOUNTY = 128` — cap on prepared submissions, WINDOWED bounties only (their priority scan must see in-window entries)
 - CID validation: `evaluationCid` and `hunterCid` must be bare CIDs (46–100 alphanumeric characters) — `bad evaluationCid` / `bad hunterCid`
 - Payout gas cap: direct sends forward at most `PAYOUT_GAS_LIMIT = 120000` gas; recipients needing more are credited to the pull ledger (`withdrawable` / `withdraw()`)
 - Unspent oracle prepay is refunded to the address that funded the start (`funder`); recovery is best-effort inside resolution, gas-capped, with a permissionless retry `recoverLeftoverEth` (event `RefundDeferred`)

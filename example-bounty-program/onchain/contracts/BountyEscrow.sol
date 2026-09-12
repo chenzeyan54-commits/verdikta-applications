@@ -105,23 +105,48 @@ contract BountyEscrow {
     ///         revert on a hostile or incompatible recipient. Claim via withdraw().
     mapping(address => uint256) public withdrawable;
 
-    /// @notice Per-bounty count of submissions currently in PendingVerdikta. Lets
-    ///         closeExpiredBounty / canBeClosed check "no active evaluation" in O(1) instead
-    ///         of looping over every submission — an unbounded number of cheap
-    ///         prepareSubmission calls could otherwise grow the loop past the block gas limit
-    ///         and permanently lock the creator's escrow.
-    mapping(uint256 => uint256) public activeEvaluations;
+    /// @notice The PENDING LIST: per bounty, the ids of the submissions currently in
+    ///         evaluation (PendingVerdikta). Pushed at start, swap-removed at finalize and
+    ///         force-fail, so at every moment it holds exactly the PendingVerdikta
+    ///         submissions and nothing else. Every scan that must look at in-flight
+    ///         evaluations (_requireNoPassingSubmission at start, _hasOtherPassingSubmission
+    ///         at payout) iterates THIS list, never the full submissions array — so
+    ///         never-started, gas-only prepares cost those scans nothing, however many there
+    ///         are, and closeExpiredBounty checks "no active evaluation" in O(1) via its
+    ///         length. Bounded by MAX_ACTIVE_EVALUATIONS. Read via activeEvaluations() and
+    ///         pendingSubmissionIds().
+    mapping(uint256 => uint256[]) private _pending;
+    /// @dev bountyId => submissionId => index in _pending[bountyId]; meaningful only while
+    ///      that submission is pending.
+    mapping(uint256 => mapping(uint256 => uint256)) private _pendingPos;
 
-    /// @notice Hard cap on submissions (prepared, in any state) per bounty.
-    /// @dev Bounds every per-bounty scan (_requireNoPassingSubmission at start,
-    ///      _hasOtherPassingSubmission / _hasEarlierUnresolvedSubmission at finalize and
-    ///      creator approval). Without it, a flood of gas-only prepareSubmission calls
-    ///      (~2.5k gas per junk entry at finalize, measured) could push a PASSING
-    ///      submission's finalize past the block gas limit; force-fail refuses because a
-    ///      result exists, activeEvaluations stays pinned, and closeExpiredBounty is
-    ///      blocked forever — locking both the hunter's payout and the creator's escrow.
-    ///      At 128 the worst-case scan is a few million gas, far below any block limit.
-    ///      A full bounty only rejects NEW prepares; existing submissions still resolve
+    /// @notice Cap on CONCURRENT evaluations per bounty — the pending list's length.
+    /// @dev Bounds the two pending-list scans: each in-flight sibling costs one aggregator
+    ///      getEvaluation call (~20k gas, measured) at start and at a passing finalize, so
+    ///      the worst case at the cap is ~5M gas, far below the block limit. Unlike a cap
+    ///      on PREPARED submissions, a slot here is never free: starting an evaluation
+    ///      prepays the oracle round, whose per-arbiter base fees are consumed at dispatch
+    ///      and never refunded, and the slot is released as soon as the round resolves
+    ///      (result, or timeout + failTimedOutSubmission — both callable by anyone). Keeping
+    ///      a bounty full therefore costs real ETH every response-timeout period rather than
+    ///      a one-off few dollars of gas. startPreparedSubmission reverts
+    ///      "evaluation slots full - retry later" while the list is at the cap; nothing
+    ///      else is affected (prepare, finalize, force-fail and close all still work).
+    uint256 public constant MAX_ACTIVE_EVALUATIONS = 256;
+
+    /// @notice Cap on PREPARED submissions (in any state) per bounty — WINDOWED bounties ONLY.
+    /// @dev Windowed bounties order submissions by index and honour an earlier submission's
+    ///      still-open creator window (_hasEarlierUnresolvedSubmission). Those in-window
+    ///      entries are gas-only to create yet must be scanned, so on windowed bounties that
+    ///      scan is bounded the direct way: by capping prepares (~2.5k gas per never-started
+    ///      entry, measured — a few hundred k gas at the cap). On a TARGETED windowed bounty
+    ///      only the target can prepare, so the cap can only ever be self-inflicted. On an
+    ///      OPEN windowed bounty anyone can fill it for gas alone and shut other hunters out
+    ///      until the deadline — a known, accepted weakness of that unusual configuration;
+    ///      target the bounty or drop the window if it matters. NON-WINDOWED bounties have
+    ///      NO prepare cap: their scans use the pending list, so junk prepares cost them
+    ///      nothing on-chain (off-chain indexers should page with getSubmissionsPage). A full
+    ///      windowed bounty only rejects NEW prepares; existing submissions still resolve
     ///      and the creator can still close at the deadline.
     uint256 public constant MAX_SUBMISSIONS_PER_BOUNTY = 128;
 
@@ -364,8 +389,8 @@ contract BountyEscrow {
         require(b.status == BountyStatus.Open, "not open");
         require(block.timestamp >= b.submissionDeadline, "deadline not passed");
 
-        // No submissions may be actively being evaluated (O(1) — see activeEvaluations).
-        require(activeEvaluations[bountyId] == 0, "active evaluation - finalize first");
+        // No submissions may be actively being evaluated (O(1) — the pending list is empty).
+        require(_pending[bountyId].length == 0, "active evaluation - finalize first");
 
         // All clear - return funds to creator
         b.status = BountyStatus.Closed;
@@ -417,7 +442,11 @@ contract BountyEscrow {
         // covers the caller's copy. The work-product CID is hunter-supplied free text and
         // MUST be a bare CID (see _isValidCid).
         require(_isValidCid(hunterCid), "bad hunterCid");
-        require(subs[bountyId].length < MAX_SUBMISSIONS_PER_BOUNTY, "submission limit reached");
+        // Windowed bounties only — see MAX_SUBMISSIONS_PER_BOUNTY. Non-windowed bounties
+        // are unbounded here; their scans never touch never-started submissions.
+        if (b.creatorAssessmentWindowSize > 0) {
+            require(subs[bountyId].length < MAX_SUBMISSIONS_PER_BOUNTY, "submission limit reached");
+        }
 
         // Verify evaluationCid matches the bounty's stored evaluationCid
         require(
@@ -549,7 +578,10 @@ contract BountyEscrow {
 
         require(block.timestamp < b.submissionDeadline, "deadline passed");
 
-        // Check if any existing submission has already passed on Verdikta
+        // Bounded concurrency — see MAX_ACTIVE_EVALUATIONS. Slots free up as rounds resolve.
+        require(_pending[bountyId].length < MAX_ACTIVE_EVALUATIONS, "evaluation slots full - retry later");
+
+        // Check if any in-flight evaluation has already passed on Verdikta
         // This prevents wasting the prepay when someone else already won
         _requireNoPassingSubmission(bountyId, b.threshold);
 
@@ -590,7 +622,7 @@ contract BountyEscrow {
         s.funder = msg.sender;
         s.verdiktaAggId = aggId;
         s.status = SubmissionStatus.PendingVerdikta;
-        activeEvaluations[bountyId] += 1;
+        _addPending(bountyId, submissionId);
 
         emit WorkSubmitted(bountyId, submissionId, aggId);
     }
@@ -616,13 +648,13 @@ contract BountyEscrow {
         require(ok, "Verdikta not ready");
 
         // Leaving PendingVerdikta (every branch below sets a terminal status).
-        activeEvaluations[bountyId] -= 1;
+        _removePending(bountyId, submissionId);
 
         // A malformed score vector (anything other than the expected [DONT_FUND, FUND]
         // pair) is treated as a failed evaluation rather than a revert. Reverting here
         // would leave the submission stuck in PendingVerdikta forever: finalize can never
         // succeed, and failTimedOutSubmission refuses because a result exists. That would
-        // pin activeEvaluations above zero, so the creator could never close the bounty
+        // leave the pending list non-empty, so the creator could never close the bounty
         // and the escrow would be locked. Failing it keeps the bounty usable and refunds
         // the hunter's leftover prepay.
         (, bool passed, uint256 acceptance, uint256 rejection) = _scoreVector(scores, b.threshold);
@@ -733,7 +765,7 @@ contract BountyEscrow {
         require(settled, "evaluation not settled");
 
         // Leaving PendingVerdikta (status set to Failed below).
-        activeEvaluations[bountyId] -= 1;
+        _removePending(bountyId, submissionId);
 
         // Mark as failed
         s.status = SubmissionStatus.Failed;
@@ -784,6 +816,18 @@ contract BountyEscrow {
         return _mustSubmission(bountyId, submissionId);
     }
 
+    /// @notice Number of submissions currently in evaluation (PendingVerdikta) for a bounty:
+    ///         the pending list's length, O(1). closeExpiredBounty requires 0.
+    function activeEvaluations(uint256 bountyId) external view returns (uint256) {
+        return _pending[bountyId].length;
+    }
+
+    /// @notice The submission ids currently in evaluation (PendingVerdikta), in LIST order —
+    ///         not submission order; swap-removal reorders it. At most MAX_ACTIVE_EVALUATIONS.
+    function pendingSubmissionIds(uint256 bountyId) external view returns (uint256[] memory) {
+        return _pending[bountyId];
+    }
+
     /// @notice The ETH (wei) a funder must attach to startPreparedSubmission for this bounty
     ///         RIGHT NOW: the aggregator's maxTotalFee for the bounty's oracle fee. Identical
     ///         for every submission to the bounty. The ethMaxBudget in SubmissionPrepared is
@@ -821,21 +865,38 @@ contract BountyEscrow {
 
     // ------------- Internals -------------
 
-    /// @dev Check that no existing submission has already passed evaluation on Verdikta
-    /// @dev This queries Verdikta directly since scores aren't stored until finalization
+    /// @dev Pending-list maintenance (see _pending). O(1) each; the list holds exactly the
+    ///      PendingVerdikta submissions of the bounty.
+    function _addPending(uint256 bountyId, uint256 submissionId) private {
+        _pendingPos[bountyId][submissionId] = _pending[bountyId].length;
+        _pending[bountyId].push(submissionId);
+    }
+
+    function _removePending(uint256 bountyId, uint256 submissionId) private {
+        uint256[] storage list = _pending[bountyId];
+        uint256 i = _pendingPos[bountyId][submissionId];
+        uint256 last = list.length - 1;
+        if (i != last) {
+            uint256 moved = list[last];
+            list[i] = moved;
+            _pendingPos[bountyId][moved] = i;
+        }
+        list.pop();
+        delete _pendingPos[bountyId][submissionId];
+    }
+
+    /// @dev Check that no in-flight evaluation has already passed on Verdikta (first to pass
+    ///      wins; starting another would only waste its prepay). Scans the PENDING LIST —
+    ///      every entry is PendingVerdikta by construction — and queries Verdikta for each,
+    ///      since scores aren't stored until finalization. Never-started submissions are
+    ///      not on the list and cost nothing here.
     function _requireNoPassingSubmission(uint256 bountyId, uint256 threshold) internal view {
-        uint256 subCount = subs[bountyId].length;
+        uint256[] storage pending = _pending[bountyId];
+        uint256 n = pending.length;
 
-        for (uint256 i = 0; i < subCount; i++) {
-            Submission storage existing = subs[bountyId][i];
-
-            // Skip non-pending submissions (already finalized or just prepared)
-            if (existing.status != SubmissionStatus.PendingVerdikta) {
-                continue;
-            }
-
-            // Query Verdikta for this submission's evaluation result
-            (uint256[] memory scores, , bool ok) = verdikta.getEvaluation(existing.verdiktaAggId);
+        for (uint256 i = 0; i < n; i++) {
+            (uint256[] memory scores, , bool ok) =
+                verdikta.getEvaluation(subs[bountyId][pending[i]].verdiktaAggId);
 
             // If evaluation is complete with a VALID passing result, block. An invalid
             // vector is never "passing" (it will finalize as Failed), so it never blocks.
@@ -866,30 +927,29 @@ contract BountyEscrow {
     ///      A lower-index PendingVerdikta sibling with a passing result blocks. It will be
     ///      paid when finalized (its own lower-index siblings are checked the same way), so
     ///      writing PassedUnpaid for the current submission is final and correct.
-    ///      PassedUnpaid siblings never block: that status means "did not win".
-    ///      The PassedPaid arm is unreachable from the sole call site (it runs only while
-    ///      b.status == Open, and PassedPaid is always written together with Awarded);
-    ///      it is kept as a defensive restatement of that invariant.
+    ///      Scans the PENDING LIST (see _pending): terminal siblings are not on it, and
+    ///      never-started ones never were, so neither costs anything here. PassedUnpaid
+    ///      siblings never block anyway ("did not win"), and a PassedPaid sibling is
+    ///      unreachable from the sole call site (it runs only while b.status == Open, and
+    ///      PassedPaid is always written together with Awarded).
     function _hasOtherPassingSubmission(
         uint256 bountyId,
         uint256 currentSubmissionId,
         uint256 threshold
     ) internal view returns (bool) {
-        for (uint256 i = 0; i < currentSubmissionId; i++) {
-            Submission storage other = subs[bountyId][i];
+        uint256[] storage pending = _pending[bountyId];
+        uint256 n = pending.length;
 
-            if (other.status == SubmissionStatus.PassedPaid) {
-                return true;
-            }
+        for (uint256 i = 0; i < n; i++) {
+            uint256 id = pending[i];
+            if (id >= currentSubmissionId) continue; // only LOWER-index siblings can win
 
             // Lower-index sibling still pending but already passing on Verdikta: it wins.
-            if (other.status == SubmissionStatus.PendingVerdikta) {
-                (uint256[] memory scores, , bool ok) = verdikta.getEvaluation(other.verdiktaAggId);
-
-                if (ok) {
-                    (, bool passed, , ) = _scoreVector(scores, threshold);
-                    if (passed) return true;
-                }
+            (uint256[] memory scores, , bool ok) =
+                verdikta.getEvaluation(subs[bountyId][id].verdiktaAggId);
+            if (ok) {
+                (, bool passed, , ) = _scoreVector(scores, threshold);
+                if (passed) return true;
             }
         }
 
@@ -898,6 +958,9 @@ contract BountyEscrow {
 
     /// @dev Check if any earlier submission (lower index) still holds priority over
     ///      `submissionId`. Used for windowed bounties (creator approval + payment time).
+    ///      Scans the FULL submissions array (it must see in-window, never-started
+    ///      entries), which is why windowed bounties keep a cap on prepared submissions
+    ///      (MAX_SUBMISSIONS_PER_BOUNTY).
     ///      An earlier submission blocks only while it can still win:
     ///        - PendingVerdikta: an oracle evaluation is in flight. Temporary — it always
     ///          resolves (result, or timeout + failTimedOutSubmission).

@@ -104,7 +104,11 @@ contract BountyEscrowLens {
     // and a plain RPC: batch reads instead of one call per item, the oracle result without
     // the aggregator's ABI, and a single "what should I do now" answer per submission.
 
-    /// @notice Every submission of a bounty in one call (bounded by MAX_SUBMISSIONS_PER_BOUNTY).
+    /// @notice Every submission of a bounty in one call. Bounded by MAX_SUBMISSIONS_PER_BOUNTY
+    ///         on windowed bounties only; a non-windowed bounty has no prepare cap, so an
+    ///         indexer should prefer getSubmissionsPage there (this call is fine for the
+    ///         ordinary handful of submissions, but a junk-flooded bounty can exceed an RPC
+    ///         provider's eth_call gas allowance).
     function getSubmissions(uint256 bountyId)
         external view returns (BountyEscrow.Submission[] memory out)
     {
@@ -112,6 +116,22 @@ contract BountyEscrowLens {
         uint256 n = escrow.submissionCount(bountyId);
         out = new BountyEscrow.Submission[](n);
         for (uint256 i = 0; i < n; i++) out[i] = escrow.getSubmission(bountyId, i);
+    }
+
+    /// @notice Up to MAX_BATCH submissions of a bounty starting at `start` (clamped to what
+    ///         exists). An empty array means `start` is past the end. Page with
+    ///         start += result.length; submission id == start + index.
+    function getSubmissionsPage(uint256 bountyId, uint256 start, uint256 count)
+        external view returns (BountyEscrow.Submission[] memory out)
+    {
+        escrow.getBounty(bountyId); // "bad bountyId" if it does not exist
+        uint256 n = escrow.submissionCount(bountyId);
+        if (start >= n) return new BountyEscrow.Submission[](0);
+        if (count > MAX_BATCH) count = MAX_BATCH;
+        uint256 end = start + count;
+        if (end > n) end = n;
+        out = new BountyEscrow.Submission[](end - start);
+        for (uint256 i = start; i < end; i++) out[i - start] = escrow.getSubmission(bountyId, i);
     }
 
     /// @notice Up to MAX_BATCH bounties starting at `start` (clamped to what exists). An

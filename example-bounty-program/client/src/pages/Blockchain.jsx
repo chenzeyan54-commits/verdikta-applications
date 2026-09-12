@@ -132,9 +132,12 @@ function Blockchain() {
   "function getOracleResult(uint256 bountyId, uint256 submissionId) view returns (bool started, bool hasResult, bool settled, bool failed, uint256[] scores, string justificationCids, uint256 startTimestamp)",
   "function nextAction(uint256 bountyId, uint256 submissionId) view returns (string)", // START | AWAIT_CREATOR | AWAIT_ORACLE | FINALIZE | FORCE_FAIL | RECOVER_REFUND | DONE | DEAD
   "function prepareCutoff(uint256 bountyId) view returns (uint256)",                    // last unix second prepareSubmission can succeed
-  "function activeEvaluations(uint256 bountyId) view returns (uint256)",
+  "function activeEvaluations(uint256 bountyId) view returns (uint256)",   // in-flight evaluations (pending list length)
+  "function pendingSubmissionIds(uint256 bountyId) view returns (uint256[])", // ids currently in evaluation (list order, not submission order)
+  "function getSubmissionsPage(uint256 bountyId, uint256 start, uint256 count) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])", // ≤ MAX_BATCH per call; served by the lens
+  "function MAX_ACTIVE_EVALUATIONS() view returns (uint256)", // 256 — concurrent evaluations per bounty
   "function withdrawable(address account) view returns (uint256)",
-  "function MAX_SUBMISSIONS_PER_BOUNTY() view returns (uint256)", // 128
+  "function MAX_SUBMISSIONS_PER_BOUNTY() view returns (uint256)", // 128 — prepared submissions, WINDOWED bounties only
   "function PAYOUT_GAS_LIMIT() view returns (uint256)",           // 120000
   "function INLINE_REFUND_GAS_LIMIT() view returns (uint256)",    // 200000 — cap on the inline prepay recovery
   "function MIN_CID_LENGTH() view returns (uint256)",             // 46
@@ -773,8 +776,10 @@ submission-package.zip
                 the evaluation or the jury. The prepay (<code>ethMaxBudget</code>) is the same for every submission to a
                 bounty. Read the bounty's settings before you submit; the website's validate check warns if they look rigged.
                 A <code>hunterCid</code> containing anything but letters and digits (a comma, colon, slash or space)
-                reverts with <code>bad hunterCid</code>, and each bounty accepts at most 128 submissions in total
-                (<code>submission limit reached</code>).
+                reverts with <code>bad hunterCid</code>. Non-windowed bounties accept any number of submissions;
+                windowed bounties accept at most 128 (<code>submission limit reached</code>). Every bounty allows at most
+                256 evaluations in flight at once — <code>startPreparedSubmission</code> reverts
+                <code>evaluation slots full - retry later</code> while full, and a slot frees when any round resolves.
               </p>
             </div>
           </div>

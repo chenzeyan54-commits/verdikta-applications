@@ -3770,7 +3770,8 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
 
       // ---- 6. prior_submissions (informational only — resubmission is allowed) ----
       // The contract permits any address to submit repeatedly to the same bounty, including
-      // after a prior rejection (bounded only by MAX_SUBMISSIONS_PER_BOUNTY = 128 in total). We surface prior submissions as a warning so the
+      // after a prior rejection (no prepare cap on non-windowed bounties; windowed bounties cap prepares at
+      // MAX_SUBMISSIONS_PER_BOUNTY = 128; every bounty caps concurrent evaluations at 256). We surface prior submissions as a warning so the
       // hunter is aware (and to discourage redundant evaluation costs while a prior submission
       // is still pending), but we never block the dry-run on this.
       if (job && hunter && /^0x[a-fA-F0-9]{40}$/.test(hunter)) {

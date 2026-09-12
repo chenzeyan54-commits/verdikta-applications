@@ -1037,6 +1037,7 @@ router.get('/api/docs', (req, res) => {
       network: config.networkName || null,
       chainId: config.chainId || null,
       readWarning: 'Use getBounty(uint256) to read bounty data. Do NOT use the auto-generated bounties(uint256) getter — it skips the string evaluationCid field and shifts all subsequent field positions.',
+      abiNote: 'The read-only views getSubmissions, getBounties, getOracleResult, nextAction, prepareCutoff, canBeClosed, isAcceptingSubmissions and getEffectiveBountyStatus are implemented in a companion contract (BountyEscrowLens, see lens()) and answered AT THE ESCROW ADDRESS by its fallback via a STATICCALL-guarded delegatecall — same calls, same return values, same revert reasons; no state change is possible and the lens address is an immutable with no setter (not a proxy; the escrow has no owner). An ABI taken from the escrow\'s verified source or compiled artifact will NOT list them: use the signatures documented here. lensDelegate(bytes) is fallback plumbing and reverts "self only". A mistyped function name reverts "unknown function".',
       functions: {
         createBounty: {
           signature: 'createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle) p) payable returns (uint256 bountyId)',

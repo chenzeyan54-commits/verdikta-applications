@@ -213,6 +213,7 @@ Identical ABI means internal-logic-only changes: safe to deploy against the exis
 | `SubmissionPrepared` | `(…, evalWallet, string evaluationCid, ethMaxBudget)` | `(…, evalWallet, ethMaxBudget, string evaluationCid)` — new topic0 |
 | New functions/events | — | `recoverLeftoverEth(bountyId, submissionId)`, event `RefundDeferred(bountyId, submissionId)`, views `requiredPrepay(bountyId)`, `effectiveOracleParams(bountyId)` |
 | Agent-facing views | — | `getSubmissions(bountyId)`, `getBounties(start, count)` (≤ `MAX_BATCH` = 100), `getOracleResult(bountyId, submissionId)`, `nextAction(bountyId, submissionId)`, `prepareCutoff(bountyId)` |
+| Read-only lens | — | these five plus `canBeClosed`, `isAcceptingSubmissions`, `getEffectiveBountyStatus` live in `BountyEscrowLens` (bytecode-size split) and are served **at the escrow address** through a static-delegatecall fallback; new getter `lens()`; `lensDelegate(bytes)` is fallback plumbing (reverts `self only`). The compiled `BountyEscrow` artifact / explorer ABI does not list them — use the merged ABI (`onchain/deploy/helpers.js → mergedAbi()`) |
 | New constants | — | `SCORE_SCALE`, `SCORE_DIVISOR` (score normalization, documented on-chain); `INLINE_REFUND_GAS_LIMIT` (gas cap on the inline prepay recovery) |
 | New views | — | `withdraw()`, `withdrawable`, `canBeClosed`, `activeEvaluations`, `submissionCount`, constants `MAX_SUBMISSIONS_PER_BOUNTY`, `PAYOUT_GAS_LIMIT`, `MIN/MAX_CID_LENGTH`, `MAX_ALPHA`, `MAX_FEE_SCALING_FACTOR`, `ADDENDUM` |
 | Removed | `ILinkToken`, `MockLinkToken` | — |
@@ -432,7 +433,7 @@ When a passing `finalizeSubmission` on a windowed bounty is blocked by another h
 
 ### Driving the contract without the API
 
-Agents can run the whole lifecycle against `BountyEscrow` alone — the API is a convenience, not a dependency. What the contract gives you:
+Agents can run the whole lifecycle against `BountyEscrow` alone — the API is a convenience, not a dependency. One ABI caveat: the read-only views in the table below (all but `bountyCount`, `requiredPrepay`, `effectiveOracleParams`, `withdrawable`) are implemented in a companion contract, `BountyEscrowLens`, and answered **at the escrow address** by the escrow's fallback (a `STATICCALL`-guarded `delegatecall`; no state change is possible; the lens address is an immutable with no setter — not a proxy, no owner). Calls, return values and revert reasons are indistinguishable from views in the escrow itself. But an ABI built from the escrow's verified source or its compiled artifact will not list them — use the human-readable fragments in this guide / the `/agents` page, or the merged ABI exported by `onchain/deploy/helpers.js`. A mistyped function name now reverts `unknown function` instead of with empty data. What the contract gives you:
 
 | Need | Call |
 |---|---|

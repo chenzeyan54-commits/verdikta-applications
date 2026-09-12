@@ -34,8 +34,12 @@ async function main() {
   const escrow = await Escrow.deploy(verdikta);
   await escrow.waitForDeployment();
   const escrowAddr = await escrow.getAddress();
+  // The escrow's constructor creates its read-only lens; record it so it can be verified
+  // and found on explorers. Callers never need it: lens views answer at the escrow address.
+  const lensAddr = await escrow.lens();
 
   console.log(`\nBountyEscrow deployed at: ${escrowAddr}`);
+  console.log(`BountyEscrowLens (created by the escrow): ${lensAddr}`);
 
   // Save deployment JSON
   saveDeployment(network, chainId, {
@@ -44,11 +48,12 @@ async function main() {
     deployedAt: new Date().toISOString(),
     contracts: {
       BountyEscrow: escrowAddr,
+      BountyEscrowLens: lensAddr,
       VerdiktaAggregator: verdikta
     }
   });
 
-  // Export ABI for your front end
+  // Export the MERGED ABI (escrow + lens views) for your front end
   copyAbiToFrontend("BountyEscrow");
 
 // Optional: verify automatically if API key is present
@@ -65,6 +70,20 @@ if (process.env.BASESCAN_API_KEY) {
         constructorArguments: [verdikta]
       });
       console.log("Verified successfully!");
+      // The lens has the same constructor argument. Verifying it separately lets the
+      // explorer's read tab show the views the escrow's own source does not list.
+      try {
+        await hre.run("verify:verify", {
+          address: lensAddr,
+          contract: "contracts/BountyEscrowLens.sol:BountyEscrowLens",
+          constructorArguments: [verdikta]
+        });
+        console.log("Lens verified successfully!");
+      } catch (lensErr) {
+        const m = lensErr.message || lensErr.toString();
+        if (m.includes("Already Verified")) console.log("Lens already verified!");
+        else console.log(`Lens verify failed (verify manually later): ${m}`);
+      }
       break; // Success! Exit the loop
     } catch (err) {
       const errorMsg = err.message || err.toString();
@@ -82,6 +101,7 @@ if (process.env.BASESCAN_API_KEY) {
         if (attempt === maxAttempts) {
           console.log("Try verifying manually later with:");
           console.log(`  npx hardhat verify --network ${network} ${escrowAddr} "${verdikta}"`);
+          console.log(`  npx hardhat verify --network ${network} --contract contracts/BountyEscrowLens.sol:BountyEscrowLens ${lensAddr} "${verdikta}"`);
         } else {
           await new Promise(resolve => setTimeout(resolve, delayMs));
         }

@@ -123,7 +123,10 @@ function Blockchain() {
   "function canBeClosed(uint256 bountyId) view returns (bool)",
   "function requiredPrepay(uint256 bountyId) view returns (uint256)", // live prepay to attach at start
   "function effectiveOracleParams(uint256 bountyId) view returns (tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling))", // settings as clamped to the live ceiling
-  // Agent-facing views: drive the whole lifecycle with only this ABI
+  // Agent-facing views: drive the whole lifecycle with only this ABI.
+  // These (and canBeClosed / isAcceptingSubmissions / getEffectiveBountyStatus) are implemented in
+  // BountyEscrowLens and served AT THE ESCROW ADDRESS through its static-delegatecall fallback —
+  // the escrow's verified source / compiled artifact ABI does not list them; this list does.
   "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
   "function getBounties(uint256 start, uint256 count) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle)[])", // count capped at MAX_BATCH = 100
   "function getOracleResult(uint256 bountyId, uint256 submissionId) view returns (bool started, bool hasResult, bool settled, bool failed, uint256[] scores, string justificationCids, uint256 startTimestamp)",

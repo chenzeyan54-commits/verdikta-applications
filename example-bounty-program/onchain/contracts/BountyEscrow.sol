@@ -3,6 +3,7 @@ pragma solidity ^0.8.23;
 
 import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 import "./EvaluationWallet.sol";
+import {BountyEscrowLens} from "./BountyEscrowLens.sol";
 
 /// @title BountyEscrow
 /// @notice Bounty escrow with four effective states: OPEN, EXPIRED, AWARDED, CLOSED
@@ -86,6 +87,15 @@ contract BountyEscrow {
     }
 
     IVerdiktaAggregator public immutable verdikta;
+
+    /// @notice The read-only extension of this contract (see BountyEscrowLens): the
+    ///         convenience views that no longer fit in this bytecode — getSubmissions,
+    ///         getBounties, getOracleResult, nextAction, prepareCutoff, canBeClosed,
+    ///         isAcceptingSubmissions, getEffectiveBountyStatus. They are still callable AT
+    ///         THIS ADDRESS with the merged ABI (see fallback); this getter only exists so a
+    ///         block explorer or a curious caller can find the verified lens source.
+    ///         Created once, in the constructor. No setter, no owner, no upgrade path.
+    BountyEscrowLens public immutable lens;
 
     Bounty[] public bounties;
     mapping(uint256 => Submission[]) public subs;
@@ -268,6 +278,9 @@ contract BountyEscrow {
     constructor(IVerdiktaAggregator _verdikta) {
         require(address(_verdikta) != address(0), "zero addr");
         verdikta = _verdikta;
+        // The lens's creation code lives in THIS contract's initcode (its own, larger,
+        // EIP-3860 budget), not in the runtime bytecode that EIP-170 caps.
+        lens = new BountyEscrowLens(_verdikta);
     }
 
     modifier nonReentrant() {
@@ -771,36 +784,6 @@ contract BountyEscrow {
         return _mustSubmission(bountyId, submissionId);
     }
 
-    /// @notice Get the effective status of a bounty for frontend display
-    /// @dev Returns: "OPEN", "EXPIRED", "AWARDED", or "CLOSED"
-    /// @return status One of four status strings
-    function getEffectiveBountyStatus(uint256 bountyId)
-        external view returns (string memory)
-    {
-        Bounty storage b = _mustBounty(bountyId);
-
-        // Terminal states first
-        if (b.status == BountyStatus.Awarded) return "AWARDED";
-        if (b.status == BountyStatus.Closed) return "CLOSED";
-
-        // Open enum, but check if deadline passed
-        if (b.status == BountyStatus.Open) {
-            if (block.timestamp >= b.submissionDeadline) {
-                return "EXPIRED"; // Deadline passed, awaiting closeExpiredBounty
-            }
-            return "OPEN"; // Active, accepting submissions
-        }
-
-        return "UNKNOWN"; // Should never happen
-    }
-
-    /// @notice Check if a bounty is accepting NEW submissions
-    /// @dev Returns true only if Open status AND before deadline
-    function isAcceptingSubmissions(uint256 bountyId) external view returns (bool) {
-        Bounty storage b = _mustBounty(bountyId);
-        return b.status == BountyStatus.Open && block.timestamp < b.submissionDeadline;
-    }
-
     /// @notice The ETH (wei) a funder must attach to startPreparedSubmission for this bounty
     ///         RIGHT NOW: the aggregator's maxTotalFee for the bounty's oracle fee. Identical
     ///         for every submission to the bounty. The ethMaxBudget in SubmissionPrepared is
@@ -834,121 +817,6 @@ contract BountyEscrow {
         if (o.estimatedBaseCost >= o.maxOracleFee) {
             o.estimatedBaseCost = o.maxOracleFee > 0 ? o.maxOracleFee - 1 : 0;
         }
-    }
-
-    // ------------- Agent-facing views (additive; no state) -------------
-    // These exist so an agent can drive the whole lifecycle with ONLY this contract's ABI
-    // and a plain RPC: batch reads instead of one call per item, the oracle result without
-    // the aggregator's ABI, and a single "what should I do now" answer per submission.
-
-    /// @notice Every submission of a bounty in one call (bounded by MAX_SUBMISSIONS_PER_BOUNTY).
-    function getSubmissions(uint256 bountyId) external view returns (Submission[] memory) {
-        _mustBounty(bountyId);
-        return subs[bountyId];
-    }
-
-    /// @notice Up to MAX_BATCH bounties starting at `start` (clamped to what exists). An
-    ///         empty array means `start` is past the end. Page with start += result.length.
-    uint256 public constant MAX_BATCH = 100;
-    function getBounties(uint256 start, uint256 count) external view returns (Bounty[] memory out) {
-        uint256 n = bounties.length;
-        if (start >= n) return new Bounty[](0);
-        if (count > MAX_BATCH) count = MAX_BATCH;
-        uint256 end = start + count;
-        if (end > n) end = n;
-        out = new Bounty[](end - start);
-        for (uint256 i = start; i < end; i++) out[i - start] = bounties[i];
-    }
-
-    /// @notice The oracle's view of a submission, proxied so callers need no aggregator ABI.
-    /// @return started    the evaluation has been started (an aggregation id exists)
-    /// @return hasResult  a valid result exists (finalizeSubmission will succeed)
-    /// @return settled    the aggregator round is complete (fulfilled, or timed out and finalized)
-    /// @return failed     the round timed out without a result (failTimedOutSubmission will succeed)
-    /// @return scores     raw likelihoods (see SCORE_SCALE), empty if no result
-    /// @return justificationCids  the result's justification CIDs, empty if no result
-    /// @return startTimestamp     when the round was started on the aggregator (0 if not started)
-    function getOracleResult(uint256 bountyId, uint256 submissionId)
-        external view
-        returns (
-            bool started, bool hasResult, bool settled, bool failed,
-            uint256[] memory scores, string memory justificationCids, uint256 startTimestamp
-        )
-    {
-        _mustBounty(bountyId);
-        Submission storage s = _mustSubmission(bountyId, submissionId);
-        if (s.verdiktaAggId == bytes32(0)) {
-            return (false, false, false, false, new uint256[](0), "", 0);
-        }
-        started = true;
-        (scores, justificationCids, hasResult) = verdikta.getEvaluation(s.verdiktaAggId);
-        (settled, failed, , , , , , , , startTimestamp) = verdikta.getAggregationStatus(s.verdiktaAggId);
-    }
-
-    /// @notice What can be done with a submission RIGHT NOW — the on-chain "diagnose".
-    /// @dev Returns one of:
-    ///   "START"          — startPreparedSubmission is callable (Prepared: by the hunter;
-    ///                      expired-window PendingCreatorApproval: by anyone) — attach requiredPrepay()
-    ///   "AWAIT_CREATOR"  — in its creator window; only the creator can act (creatorApproveSubmission)
-    ///   "AWAIT_ORACLE"   — evaluation in flight, no result yet, round not timed out: wait
-    ///   "FINALIZE"       — a result exists: call finalizeSubmission (may say "retry" on windowed
-    ///                      bounties while an earlier submission is still in evaluation)
-    ///   "FORCE_FAIL"     — round settled with no result: call failTimedOutSubmission
-    ///   "RECOVER_REFUND" — resolved, but unspent prepay is still recoverable: recoverLeftoverEth
-    ///   "DONE"           — resolved, nothing left to do
-    ///   "DEAD"           — never started and can no longer be (deadline passed or bounty not open)
-    function nextAction(uint256 bountyId, uint256 submissionId) external view returns (string memory) {
-        Bounty storage b = _mustBounty(bountyId);
-        Submission storage s = _mustSubmission(bountyId, submissionId);
-        SubmissionStatus st = s.status;
-
-        if (st == SubmissionStatus.Prepared || st == SubmissionStatus.PendingCreatorApproval) {
-            if (st == SubmissionStatus.PendingCreatorApproval && block.timestamp <= s.creatorWindowEnd) {
-                return b.status == BountyStatus.Open ? "AWAIT_CREATOR" : "DEAD";
-            }
-            if (b.status != BountyStatus.Open || block.timestamp >= b.submissionDeadline) return "DEAD";
-            return "START";
-        }
-        if (st == SubmissionStatus.PendingVerdikta) {
-            (, , bool ok) = verdikta.getEvaluation(s.verdiktaAggId);
-            if (ok) return "FINALIZE";
-            (bool settled, , , , , , , , , uint256 startTs) = verdikta.getAggregationStatus(s.verdiktaAggId);
-            if (settled) return "FORCE_FAIL";
-            // Not yet settled on-chain, but past the response timeout: failTimedOutSubmission
-            // settles it itself, so it is already callable.
-            if (block.timestamp >= startTs + verdikta.responseTimeoutSeconds()) return "FORCE_FAIL";
-            return "AWAIT_ORACLE";
-        }
-        // Resolved: Failed / PassedPaid / PassedUnpaid
-        if (s.funder != address(0) &&
-            (verdikta.ethOwed(s.evalWallet) > 0 || s.evalWallet.balance > 0)) {
-            return "RECOVER_REFUND";
-        }
-        return "DONE";
-    }
-
-    /// @notice The last timestamp at which prepareSubmission can succeed for this bounty:
-    ///         deadline - 1 for plain bounties; on windowed bounties the creator window must
-    ///         end at least two seconds before the deadline (one second to start), so it is
-    ///         deadline - window - 2. May already be in the past. 0 if the bounty is not Open.
-    function prepareCutoff(uint256 bountyId) external view returns (uint256) {
-        Bounty storage b = _mustBounty(bountyId);
-        if (b.status != BountyStatus.Open) return 0;
-        uint256 d = b.submissionDeadline;
-        uint256 w = b.creatorAssessmentWindowSize;
-        if (w == 0) return d - 1;
-        return d > w + 2 ? d - w - 2 : 0;
-    }
-
-    /// @notice Check if a bounty can be closed (deadline passed, no active evals)
-    function canBeClosed(uint256 bountyId) external view returns (bool) {
-        Bounty storage b = _mustBounty(bountyId);
-
-        if (b.status != BountyStatus.Open) return false;
-        if (block.timestamp < b.submissionDeadline) return false;
-
-        // No active evaluations (O(1) — see activeEvaluations).
-        return activeEvaluations[bountyId] == 0;
     }
 
     // ------------- Internals -------------
@@ -1205,6 +1073,47 @@ contract BountyEscrow {
 
     function _max(uint256 a, uint256 b) internal pure returns (uint256) {
         return a > b ? a : b;
+    }
+
+    // ------------- Read-only extension (lens) -------------
+
+    /// @dev Any selector this contract does not implement is answered by the lens AT THIS
+    ///      ADDRESS, so callers keep one address and one (merged) ABI and cannot tell the two
+    ///      contracts apart. Mechanism: a STATICCALL into lensDelegate(), which delegatecalls
+    ///      the lens. The STATICCALL frame makes the EVM itself reject any state change
+    ///      (SSTORE, LOG, CALL with value, CREATE, SELFDESTRUCT) inside the lens, so this can
+    ///      never become a write path — the lens is trusted for nothing. Return data and
+    ///      revert data are copied back verbatim, so a lens view reverting "bad bountyId"
+    ///      surfaces exactly as if this contract had reverted. This is NOT a proxy: `lens` is
+    ///      an immutable with no setter, and this contract has no owner. Non-payable: ETH
+    ///      sent with unknown calldata reverts (plain transfers still land in receive()).
+    fallback() external {
+        (bool ok, bytes memory ret) = address(this).staticcall(
+            abi.encodeWithSelector(this.lensDelegate.selector, msg.data)
+        );
+        assembly {
+            let p := add(ret, 32)
+            let n := mload(ret)
+            if iszero(ok) { revert(p, n) }
+            return(p, n)
+        }
+    }
+
+    /// @notice Plumbing for the fallback above — NOT for external use. Reverts "self only"
+    ///         for every caller but this contract. It is in the ABI only because the
+    ///         STATICCALL guard needs an external entry point; it is reachable solely inside
+    ///         a static frame, so despite its non-view signature it cannot change state.
+    function lensDelegate(bytes calldata data) external {
+        require(msg.sender == address(this), "self only");
+        address target = address(lens);
+        assembly {
+            let p := mload(0x40)
+            calldatacopy(p, data.offset, data.length)
+            let ok := delegatecall(gas(), target, p, data.length, 0, 0)
+            returndatacopy(p, 0, returndatasize())
+            if iszero(ok) { revert(p, returndatasize()) }
+            return(p, returndatasize())
+        }
     }
 
     receive() external payable {}

@@ -1,6 +1,7 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { loadFixture, time } = require("@nomicfoundation/hardhat-network-helpers");
+const { mergedAbi } = require("../deploy/helpers");
 
 describe("BountyEscrow", function () {
   // Realistic CIDv0 strings (46 base58 chars, "Qm…"): the contract validates CID shape.
@@ -38,9 +39,13 @@ describe("BountyEscrow", function () {
     const verdiktaAggregator = await MockAgg.deploy();
 
     const BountyEscrow = await ethers.getContractFactory("BountyEscrow");
-    const bountyEscrow = await BountyEscrow.deploy(
+    const deployed = await BountyEscrow.deploy(
       await verdiktaAggregator.getAddress()
     );
+    // Attach the MERGED ABI (escrow + lens views): the read-only views live in
+    // BountyEscrowLens and are served at the escrow address through its fallback, so the
+    // compiled BountyEscrow artifact's ABI alone does not list them.
+    const bountyEscrow = new ethers.Contract(await deployed.getAddress(), mergedAbi(), owner);
 
     return {
       bountyEscrow,
@@ -3757,6 +3762,123 @@ describe("BountyEscrow", function () {
         const bounty = await bountyEscrow.getBounty(bountyId);
         expect(bounty.status).to.equal(1); // Awarded
       });
+    });
+  });
+  // =========================================================================
+  describe("Lens (read-only extension via delegating fallback)", function () {
+    // The eight convenience views live in BountyEscrowLens, created by the escrow's
+    // constructor. The escrow's fallback forwards unknown selectors to it through a
+    // STATICCALL-guarded delegatecall, so they answer AT THE ESCROW ADDRESS.
+
+    const EIP170_LIMIT = 24576;
+
+    it("keeps the escrow's runtime bytecode under the EIP-170 limit (with margin)", async function () {
+      const { bountyEscrow } = await loadFixture(deployBountyEscrowFixture);
+      const code = await ethers.provider.getCode(await bountyEscrow.getAddress());
+      const size = (code.length - 2) / 2;
+      expect(size).to.be.lessThan(EIP170_LIMIT);
+      // Room for the next contract change without another size exercise.
+      expect(EIP170_LIMIT - size).to.be.greaterThan(2000);
+    });
+
+    it("creates the lens in the constructor, pointing back at the escrow and the aggregator", async function () {
+      const { bountyEscrow, verdiktaAggregator } = await loadFixture(deployBountyEscrowFixture);
+      const lensAddr = await bountyEscrow.lens();
+      expect(lensAddr).to.not.equal(ethers.ZeroAddress);
+      const lens = await ethers.getContractAt("BountyEscrowLens", lensAddr);
+      expect(await lens.escrow()).to.equal(await bountyEscrow.getAddress());
+      expect(await lens.verdikta()).to.equal(await verdiktaAggregator.getAddress());
+    });
+
+    it("answers the lens views at the escrow address, identically to a direct lens call", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } =
+        await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, aggId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      const lens = await ethers.getContractAt("BountyEscrowLens", await bountyEscrow.lens());
+
+      expect(await bountyEscrow.getEffectiveBountyStatus(bountyId)).to.equal("OPEN");
+      expect(await bountyEscrow.isAcceptingSubmissions(bountyId)).to.equal(true);
+      expect(await bountyEscrow.canBeClosed(bountyId)).to.equal(false);
+      expect(await bountyEscrow.nextAction(bountyId, submissionId)).to.equal("AWAIT_ORACLE");
+      expect(await bountyEscrow.MAX_BATCH()).to.equal(100);
+
+      const viaEscrow = await bountyEscrow.getSubmissions(bountyId);
+      const viaLens = await lens.getSubmissions(bountyId);
+      expect(viaEscrow.length).to.equal(1);
+      expect(viaEscrow[0].hunter).to.equal(hunter.address);
+      expect(viaEscrow[0].verdiktaAggId).to.equal(aggId);
+      expect(viaLens[0].verdiktaAggId).to.equal(aggId);
+      expect(await lens.nextAction(bountyId, submissionId)).to.equal("AWAIT_ORACLE");
+      expect(await lens.prepareCutoff(bountyId)).to.equal(await bountyEscrow.prepareCutoff(bountyId));
+
+      const r = await bountyEscrow.getOracleResult(bountyId, submissionId);
+      expect(r.started).to.equal(true);
+      expect(r.hasResult).to.equal(false);
+    });
+
+    it("bubbles a lens view's revert reason verbatim", async function () {
+      const { bountyEscrow, creator } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      await expect(bountyEscrow.nextAction(999, 0)).to.be.revertedWith("bad bountyId");
+      await expect(bountyEscrow.getSubmissions(999)).to.be.revertedWith("bad bountyId");
+      await expect(bountyEscrow.getOracleResult(bountyId, 7)).to.be.revertedWith("bad submissionId");
+      await expect(bountyEscrow.prepareCutoff(999)).to.be.revertedWith("bad bountyId");
+    });
+
+    it("reverts an unknown selector with a readable reason instead of empty data", async function () {
+      const { bountyEscrow, other } = await loadFixture(deployBountyEscrowFixture);
+      const to = await bountyEscrow.getAddress();
+      await expect(
+        other.sendTransaction({ to, data: "0xdeadbeef" })
+      ).to.be.revertedWith("unknown function");
+      // Truncated calldata (no full selector) takes the same path.
+      await expect(
+        other.sendTransaction({ to, data: "0x01" })
+      ).to.be.revertedWith("unknown function");
+    });
+
+    it("rejects external calls to the self-only delegate entry point", async function () {
+      const { bountyEscrow, other } = await loadFixture(deployBountyEscrowFixture);
+      const iface = bountyEscrow.interface;
+      const data = iface.encodeFunctionData("bountyCount", []);
+      await expect(bountyEscrow.connect(other).lensDelegate(data)).to.be.revertedWith("self only");
+    });
+
+    it("is non-payable for unknown calldata but still accepts plain ETH transfers", async function () {
+      const { bountyEscrow, other } = await loadFixture(deployBountyEscrowFixture);
+      const to = await bountyEscrow.getAddress();
+      const data = bountyEscrow.interface.encodeFunctionData("isAcceptingSubmissions", [0]);
+      await expect(
+        other.sendTransaction({ to, data, value: 1n })
+      ).to.be.reverted;
+      // receive() — the EvaluationWallet repatriation path — is unaffected.
+      await expect(other.sendTransaction({ to, value: 1n })).to.not.be.reverted;
+      expect(await ethers.provider.getBalance(to)).to.equal(1n);
+    });
+
+    it("serves a lens view in a real transaction (not only eth_call) without touching state", async function () {
+      const { bountyEscrow, creator, other } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const to = await bountyEscrow.getAddress();
+      const data = bountyEscrow.interface.encodeFunctionData("getEffectiveBountyStatus", [bountyId]);
+      const before = await bountyEscrow.getBounty(bountyId);
+      await expect(other.sendTransaction({ to, data })).to.not.be.reverted;
+      const after = await bountyEscrow.getBounty(bountyId);
+      expect(after.status).to.equal(before.status);
+      expect(after.payoutWei).to.equal(before.payoutWei);
+    });
+
+    it("lens views read through the escrow's getters (no storage-layout coupling): a state change is visible immediately", async function () {
+      const { bountyEscrow, creator } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
+      expect(await bountyEscrow.canBeClosed(bountyId)).to.equal(false);
+      await time.increaseTo(deadline);
+      expect(await bountyEscrow.getEffectiveBountyStatus(bountyId)).to.equal("EXPIRED");
+      expect(await bountyEscrow.canBeClosed(bountyId)).to.equal(true);
+      await bountyEscrow.closeExpiredBounty(bountyId);
+      expect(await bountyEscrow.getEffectiveBountyStatus(bountyId)).to.equal("CLOSED");
+      expect(await bountyEscrow.prepareCutoff(bountyId)).to.equal(0);
     });
   });
 });

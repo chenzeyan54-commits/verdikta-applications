@@ -803,8 +803,11 @@ submission-package.zip
                 window never blocks their newer one (resubmissions supersede it), but their own earlier version already in oracle
                 evaluation does block <em>creator approval</em> of the newer one (it is that hunter's paid-for claim to the arbiter
                 rate) — not the hunter's own finalize. Any earlier submission stops blocking once its window expires
-                with no arbitration started. A passing <code>finalizeSubmission</code> blocked by another hunter's in-flight evaluation
-                reverts with <code>earlier submission pending - retry after it resolves</code> instead of becoming <code>PassedUnpaid</code>; retry later.
+                with no arbitration started. On <em>every</em> bounty, payout priority is by submission index among submissions in
+                evaluation: a passing <code>finalizeSubmission</code> whose lower-index sibling by another hunter is still in flight
+                reverts with <code>earlier submission pending - retry after it resolves</code> (retry later; the result is kept), and if
+                that earlier one passes it takes the bounty. This protects an original against a later copy of its public work CID —
+                only submissions already in evaluation hold priority, so start promptly after preparing.
               </p>
             </div>
           </div>

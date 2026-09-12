@@ -109,7 +109,7 @@ contract BountyEscrow {
     ///         evaluation (PendingVerdikta). Pushed at start, swap-removed at finalize and
     ///         force-fail, so at every moment it holds exactly the PendingVerdikta
     ///         submissions and nothing else. Every scan that must look at in-flight
-    ///         evaluations (_requireNoPassingSubmission at start, _hasOtherPassingSubmission
+    ///         evaluations (_requireNoPassingSubmission at start, _hasEarlierPendingByOther
     ///         at payout) iterates THIS list, never the full submissions array — so
     ///         never-started, gas-only prepares cost those scans nothing, however many there
     ///         are, and closeExpiredBounty checks "no active evaluation" in O(1) via its
@@ -121,9 +121,10 @@ contract BountyEscrow {
     mapping(uint256 => mapping(uint256 => uint256)) private _pendingPos;
 
     /// @notice Cap on CONCURRENT evaluations per bounty — the pending list's length.
-    /// @dev Bounds the two pending-list scans: each in-flight sibling costs one aggregator
-    ///      getEvaluation call (~20k gas, measured) at start and at a passing finalize, so
-    ///      the worst case at the cap is ~5M gas, far below the block limit. Unlike a cap
+    /// @dev Bounds the two pending-list scans: at start each in-flight sibling costs one
+    ///      aggregator getEvaluation call (~20k gas, measured), so the worst case at the cap
+    ///      is ~5M gas, far below the block limit; the payout-priority scan at finalize only
+    ///      reads each sibling's hunter (~2k gas each). Unlike a cap
     ///      on PREPARED submissions, a slot here is never free: starting an evaluation
     ///      prepays the oracle round, whose per-arbiter base fees are consumed at dispatch
     ///      and never refunded, and the slot is released as soon as the round resolves
@@ -527,7 +528,7 @@ contract BountyEscrow {
         require(s.status == SubmissionStatus.PendingCreatorApproval, "not pending creator approval");
         require(block.timestamp <= s.creatorWindowEnd, "window expired");
         require(
-            !_hasEarlierUnresolvedSubmission(bountyId, submissionId, true),
+            !_hasEarlierUnresolvedSubmission(bountyId, submissionId),
             "earlier submission unresolved"
         );
 
@@ -559,7 +560,8 @@ contract BountyEscrow {
     ///      (prepare, wait out any creator window, start) happens before the deadline, so at
     ///      the deadline every submission is either paid, in evaluation, or dead. That is
     ///      what makes closeExpiredBounty's deadline check sufficient.
-    /// @dev Reverts if any existing submission has already passed evaluation (first-to-pass wins)
+    /// @dev Reverts if any in-flight submission has already passed evaluation (it, or an
+    ///      earlier one, will be paid — see _hasEarlierPendingByOther)
     function startPreparedSubmission(uint256 bountyId, uint256 submissionId) external payable nonReentrant {
         Bounty storage b = _mustBounty(bountyId);
         Submission storage s = _mustSubmission(bountyId, submissionId);
@@ -629,7 +631,11 @@ contract BountyEscrow {
 
     /// @notice Finalize a submission by reading Verdikta results
     /// @dev If accepted and bounty still open, pay arbiterDeterminationPayment and refund excess to creator
-    /// @dev For windowed bounties, payment blocked if earlier submission is unresolved
+    /// @dev PAYOUT PRIORITY (both bounty kinds): by submission index among submissions IN
+    ///      EVALUATION. A passing submission is paid only once every lower-index submission by
+    ///      another hunter has left evaluation; until then this call reverts
+    ///      "earlier submission pending - retry after it resolves" (a retry, not a failure —
+    ///      the result is kept). See _hasEarlierPendingByOther for why.
     /// @dev Can be called even after deadline (for submissions made before deadline)
     function finalizeSubmission(uint256 bountyId, uint256 submissionId) external nonReentrant {
         Bounty storage b = _mustBounty(bountyId);
@@ -670,52 +676,39 @@ contract BountyEscrow {
             return;
         }
 
-        // Passed evaluation. Pay if bounty is still Open AND submission has priority.
+        // Passed evaluation. Pay if the bounty is still Open AND this submission holds
+        // priority. Priority is by submission index among the submissions still in
+        // evaluation: if a lower-index submission by another hunter is still being
+        // evaluated, REVERT rather than writing a terminal status. This submission stays
+        // PendingVerdikta (the _removePending above is rolled back with the revert) and
+        // finalize is simply retried once the earlier one resolves. The earlier one always
+        // resolves (oracle result, or timeout + failTimedOutSubmission, both permissionless),
+        // so the wait is bounded by the aggregator's response timeout. Writing PassedUnpaid
+        // here instead would discard a passing result for good — and if the earlier
+        // submission then failed, nobody would ever be paid.
         bool paid = false;
         if (b.status == BountyStatus.Open) {
-            bool blocked;
-            if (b.creatorAssessmentWindowSize > 0) {
-                // Windowed bounties: priority ordering by submission index. If an earlier
-                // submission (by another hunter) is still being evaluated, REVERT rather
-                // than writing the terminal PassedUnpaid: this submission stays
-                // PendingVerdikta and finalize is simply retried once the earlier one
-                // resolves. The earlier one always resolves (oracle result, or timeout +
-                // failTimedOutSubmission), so the wait is bounded. Writing PassedUnpaid
-                // here instead would discard a passing result for good — and if the
-                // earlier submission then failed, nobody would ever be paid.
-                require(
-                    !_hasEarlierUnresolvedSubmission(bountyId, submissionId, false),
-                    "earlier submission pending - retry after it resolves"
-                );
-                blocked = false;
-            } else {
-                // Non-windowed bounties: first to complete wins; among simultaneous
-                // passing results the lowest index wins (order-independent, see helper).
-                blocked = _hasOtherPassingSubmission(bountyId, submissionId, b.threshold);
-            }
+            require(
+                !_hasEarlierPendingByOther(bountyId, submissionId),
+                "earlier submission pending - retry after it resolves"
+            );
 
-            if (!blocked) {
-                uint256 pay = b.arbiterDeterminationPayment;
-                uint256 refund = b.payoutWei - pay;
+            uint256 pay = b.arbiterDeterminationPayment;
+            uint256 refund = b.payoutWei - pay;
 
-                b.payoutWei = 0;
-                b.status = BountyStatus.Awarded;
-                b.winner = s.hunter;
-                s.status = SubmissionStatus.PassedPaid;
-                paid = true;
+            b.payoutWei = 0;
+            b.status = BountyStatus.Awarded;
+            b.winner = s.hunter;
+            s.status = SubmissionStatus.PassedPaid;
+            paid = true;
 
-                emit SubmissionFinalized(bountyId, submissionId, true, true, acceptance, rejection, justCids);
-                emit PayoutSent(bountyId, s.hunter, pay);
-                _payOrCredit(s.hunter, pay);
+            emit SubmissionFinalized(bountyId, submissionId, true, true, acceptance, rejection, justCids);
+            emit PayoutSent(bountyId, s.hunter, pay);
+            _payOrCredit(s.hunter, pay);
 
-                if (refund > 0) {
-                    emit CreatorRefunded(bountyId, b.creator, refund);
-                    _payOrCredit(b.creator, refund);
-                }
-            } else {
-                // A lower-index submission already holds the win (it has a passing
-                // result and will be paid when finalized). Final for this one.
-                s.status = SubmissionStatus.PassedUnpaid;
+            if (refund > 0) {
+                emit CreatorRefunded(bountyId, b.creator, refund);
+                _payOrCredit(b.creator, refund);
             }
         } else {
             // Bounty already awarded or closed
@@ -885,8 +878,9 @@ contract BountyEscrow {
         delete _pendingPos[bountyId][submissionId];
     }
 
-    /// @dev Check that no in-flight evaluation has already passed on Verdikta (first to pass
-    ///      wins; starting another would only waste its prepay). Scans the PENDING LIST —
+    /// @dev Check that no in-flight evaluation has already passed on Verdikta: that one (or
+    ///      an even earlier one) will be paid, so a new, higher-index start could never win
+    ///      and would only waste its prepay. Scans the PENDING LIST —
     ///      every entry is PendingVerdikta by construction — and queries Verdikta for each,
     ///      since scores aren't stored until finalization. Never-started submissions are
     ///      not on the list and cost nothing here.
@@ -909,98 +903,81 @@ contract BountyEscrow {
         }
     }
 
-    /// @dev Non-windowed tie-break: does a LOWER-index submission already hold the win?
-    ///      Used at finalization for non-windowed bounties.
+    /// @dev PAYOUT PRIORITY, both bounty kinds: is a LOWER-index submission by ANOTHER hunter
+    ///      still in evaluation? Walks the pending list (see _pending); no aggregator call.
     ///
-    ///      "First to complete evaluation wins" cannot be observed on-chain (the escrow
-    ///      only learns a result exists when someone calls finalize), so the rule that is
-    ///      actually enforced is:
-    ///        - if no other submission has a passing result yet, the one being finalized
-    ///          wins (first to complete, in practice);
-    ///        - if several have passing results at the same time, the LOWEST index wins.
-    ///      Only lower-index siblings are consulted, so the outcome is independent of the
-    ///      ORDER in which finalize() is called — and finalize is permissionless, so that
-    ///      matters: with an any-sibling check, whichever passing submission was finalized
-    ///      first was written PassedUnpaid and the other was paid, letting a rival (or
-    ///      anyone) pick the winner by calling finalize on the victim first.
+    ///      Why index, not "first to complete": the work CID is public from the moment
+    ///      prepareSubmission lands, so on an open bounty anyone can prepare + start a copy
+    ///      of it at a higher index. Two oracle rounds over identical content complete in
+    ///      random order; "first to complete wins" would hand the copier the bounty about
+    ///      half the time (more, with several copies). Index priority makes the earlier
+    ///      submitter win whenever their own round passes: a later passing submission waits
+    ///      (finalize reverts, retryable) until every earlier in-flight submission by someone
+    ///      else has resolved, and if one of those passes it takes the bounty first. The
+    ///      wait is bounded by the aggregator's response timeout (anyone may force-fail a
+    ///      dead round), and no NEW earlier round can appear: starts happen in index order
+    ///      and _requireNoPassingSubmission refuses a start once any round is passing.
     ///
-    ///      A lower-index PendingVerdikta sibling with a passing result blocks. It will be
-    ///      paid when finalized (its own lower-index siblings are checked the same way), so
-    ///      writing PassedUnpaid for the current submission is final and correct.
-    ///      Scans the PENDING LIST (see _pending): terminal siblings are not on it, and
-    ///      never-started ones never were, so neither costs anything here. PassedUnpaid
-    ///      siblings never block anyway ("did not win"), and a PassedPaid sibling is
-    ///      unreachable from the sole call site (it runs only while b.status == Open, and
-    ///      PassedPaid is always written together with Awarded).
-    function _hasOtherPassingSubmission(
-        uint256 bountyId,
-        uint256 currentSubmissionId,
-        uint256 threshold
-    ) internal view returns (bool) {
+    ///      Only submissions IN EVALUATION hold priority. A prepared-but-unstarted
+    ///      submission holds none (it may never be funded), so a hunter must start promptly
+    ///      after preparing — the website / bundle flow does both back to back. Residual
+    ///      exposure: if the original's own round fails or times out, a copy can still win.
+    ///
+    ///      Same-hunter earlier siblings never block (both would pay the same address at the
+    ///      same rate, so paying the later one first harms nobody), and resolved siblings
+    ///      are not on the list. Order-independent: whoever calls finalize, and in whatever
+    ///      order, the same submission is paid.
+    function _hasEarlierPendingByOther(uint256 bountyId, uint256 submissionId)
+        internal view returns (bool)
+    {
         uint256[] storage pending = _pending[bountyId];
+        address hunter = subs[bountyId][submissionId].hunter;
         uint256 n = pending.length;
 
         for (uint256 i = 0; i < n; i++) {
             uint256 id = pending[i];
-            if (id >= currentSubmissionId) continue; // only LOWER-index siblings can win
-
-            // Lower-index sibling still pending but already passing on Verdikta: it wins.
-            (uint256[] memory scores, , bool ok) =
-                verdikta.getEvaluation(subs[bountyId][id].verdiktaAggId);
-            if (ok) {
-                (, bool passed, , ) = _scoreVector(scores, threshold);
-                if (passed) return true;
-            }
+            if (id < submissionId && subs[bountyId][id].hunter != hunter) return true;
         }
-
         return false;
     }
 
-    /// @dev Check if any earlier submission (lower index) still holds priority over
-    ///      `submissionId`. Used for windowed bounties (creator approval + payment time).
-    ///      Scans the FULL submissions array (it must see in-window, never-started
+    /// @dev CREATOR-APPROVAL priority (windowed bounties): does any earlier submission (lower
+    ///      index) still hold a claim that approving `submissionId` at the creator rate would
+    ///      extinguish? Scans the FULL submissions array (it must see in-window, never-started
     ///      entries), which is why windowed bounties keep a cap on prepared submissions
-    ///      (MAX_SUBMISSIONS_PER_BOUNTY).
-    ///      An earlier submission blocks only while it can still win:
-    ///        - PendingVerdikta: an oracle evaluation is in flight. Temporary — it always
-    ///          resolves (result, or timeout + failTimedOutSubmission).
-    ///        - PendingCreatorApproval with its window still OPEN: the creator may still
-    ///          approve it. Bounded by the window length.
+    ///      (MAX_SUBMISSIONS_PER_BOUNTY). Payout priority at finalize uses the pending-list
+    ///      rule in _hasEarlierPendingByOther instead — at finalize time no earlier window
+    ///      can still be open (windows end in index order and a submission can only start
+    ///      after its own window ends), so the rules below apply to creator approval only.
+    ///      An earlier submission blocks approval while it can still win:
+    ///        - PendingVerdikta, ANY hunter: an oracle evaluation is in flight. For another
+    ///          hunter that is their live claim; for the SAME hunter it is their live,
+    ///          paid-for claim to the arbiter rate — possibly already passing on the
+    ///          aggregator — and letting the creator approve a newer version for the
+    ///          (possibly far smaller) creator rate would extinguish it: the bounty becomes
+    ///          Awarded and the earlier version finalizes to PassedUnpaid. The creator may
+    ///          approve the newer version once the earlier one has resolved (if it failed).
+    ///          Temporary either way — evaluations always resolve.
+    ///        - PendingCreatorApproval by ANOTHER hunter with its window still OPEN: the
+    ///          creator may still approve it. Bounded by the window length.
     ///      It does NOT block when:
     ///        - Its window expired and nobody started arbitration. Preparing costs only gas
     ///          and nobody is obliged to fund it, so such a submission would otherwise stay
     ///          "unresolved" forever and lock out every later submission for free.
-    ///        - It belongs to the SAME hunter and is sitting in its window
-    ///          (PendingCreatorApproval). A hunter who resubmits is choosing the later
-    ///          version; the usual windowed flow is a targeted bounty where every
-    ///          submission is theirs, and the creator must be able to approve the revision
-    ///          without anyone paying to arbitrate the stale one.
-    ///        - It belongs to the SAME hunter, is in evaluation (PendingVerdikta), and the
-    ///          caller is finalizeSubmission (`forCreatorApproval == false`): both versions
-    ///          pay the same hunter at the same arbiter rate, so paying the later one first
-    ///          harms nobody.
-    ///      A same-hunter PendingVerdikta sibling DOES block creator approval
-    ///      (`forCreatorApproval == true`). That sibling is the hunter's live, paid-for
-    ///      claim to the arbiter rate — possibly already passing on the aggregator. Letting
-    ///      the creator approve a newer version for the (possibly far smaller) creator rate
-    ///      would extinguish that claim: the bounty becomes Awarded, and the earlier
-    ///      version finalizes to PassedUnpaid. The creator may approve the newer version
-    ///      once the earlier one has resolved (if it failed) — no prepay is forced on anyone.
-    function _hasEarlierUnresolvedSubmission(
-        uint256 bountyId,
-        uint256 submissionId,
-        bool forCreatorApproval
-    ) internal view returns (bool) {
+    ///        - It belongs to the SAME hunter and is sitting in its window. A hunter who
+    ///          resubmits is choosing the later version; the usual windowed flow is a
+    ///          targeted bounty where every submission is theirs, and the creator must be
+    ///          able to approve the revision without anyone paying to arbitrate the stale one.
+    function _hasEarlierUnresolvedSubmission(uint256 bountyId, uint256 submissionId)
+        internal view returns (bool)
+    {
         address hunter = subs[bountyId][submissionId].hunter;
         for (uint256 i = 0; i < submissionId; i++) {
             Submission storage e = subs[bountyId][i];
-            bool sameHunter = e.hunter == hunter;
-            if (e.status == SubmissionStatus.PendingVerdikta) {
-                if (!sameHunter || forCreatorApproval) return true;
-                continue;
-            }
-            if (sameHunter) continue;
-            if (e.status == SubmissionStatus.PendingCreatorApproval &&
+            SubmissionStatus st = e.status;
+            if (st == SubmissionStatus.PendingVerdikta) return true;
+            if (e.hunter == hunter) continue;
+            if (st == SubmissionStatus.PendingCreatorApproval &&
                 block.timestamp <= e.creatorWindowEnd) {
                 return true;
             }
@@ -1108,9 +1085,8 @@ contract BountyEscrow {
     }
 
     /// @dev THE score interpreter. Used by finalizeSubmission (to decide Failed vs passed and
-    ///      what to record) and by both sibling scans (_requireNoPassingSubmission at start,
-    ///      _hasOtherPassingSubmission at payout), so eligibility and payout decisions can
-    ///      never disagree about what a result means.
+    ///      what to record) and by the start-time sibling scan (_requireNoPassingSubmission),
+    ///      so eligibility and payout decisions can never disagree about what a result means.
     ///
     ///      Vector layout: scores[0] = DONT_FUND (rejection), scores[1] = FUND (acceptance),
     ///      each 0..SCORE_SCALE (they sum to SCORE_SCALE; the sum is NOT checked so

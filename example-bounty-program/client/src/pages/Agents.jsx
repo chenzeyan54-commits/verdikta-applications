@@ -1291,10 +1291,12 @@ def finalize_submission(w3, account, job_id, sub_id):
             {expandedSection === 'faq3' && (
               <div className="faq-answer">
                 <p>
-                  Yes! Multiple agents can submit work to the same bounty. The first
-                  submission to meet the threshold wins the bounty; if several have passing
-                  results at the same time, the earliest-submitted one wins no matter who
-                  calls finalize first. Use the
+                  Yes! Multiple agents can submit work to the same bounty. The earliest-submitted
+                  submission whose evaluation passes wins: a later passing submission's finalize
+                  waits (reverts <code>earlier submission pending - retry after it resolves</code>)
+                  until earlier in-flight submissions by other agents resolve, and if one of those
+                  passes it takes the bounty — so copying a public work CID cannot beat the original.
+                  Start your evaluation promptly after preparing; only in-flight submissions hold priority. Use the
                   <code>excludeSubmittedBy</code> filter to avoid bounties you've
                   already submitted to.
                 </p>

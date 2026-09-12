@@ -1220,6 +1220,45 @@ describe("BountyEscrow", function () {
       expect((await ethers.provider.getBalance(hunter.address)) - before).to.equal(late);
     });
 
+    it("Inline refund is gas-capped: an aggregator withdraw that burns all gas cannot revert or inflate the resolution", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      expect(await bountyEscrow.INLINE_REFUND_GAS_LIMIT()).to.equal(200000);
+      const { bountyId, submissionId, ethMaxBudget, aggId } =
+        await startedWithRefund(bountyEscrow, verdiktaAggregator, creator, hunter);
+      await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+      await verdiktaAggregator.setWithdrawBurnsGas(true);
+      // Without the cap this would need ~64x the remaining work or revert outright.
+      const gas = await bountyEscrow.finalizeSubmission.estimateGas(bountyId, submissionId);
+      expect(gas).to.be.lt(700000n); // normal finalize + at most the 200k cap burned
+      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId, { gasLimit: 700000 }))
+        .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter.address, BOUNTY_WEI)
+        .and.to.emit(bountyEscrow, "RefundDeferred").withArgs(bountyId, submissionId);
+      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(3);
+      // Retry later with full gas once the aggregator behaves
+      await verdiktaAggregator.setWithdrawBurnsGas(false);
+      await expect(bountyEscrow.recoverLeftoverEth(bountyId, submissionId))
+        .to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, ethMaxBudget);
+    });
+
+    it("Inline refund path costs far less than the cap (guard against the cap becoming too tight)", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      // A: no refund credit
+      const a = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      await verdiktaAggregator.setEvaluation(a.aggId, FAILING_SCORES, JUST_CIDS, true);
+      const gasNoRefund = await bountyEscrow.finalizeSubmission.estimateGas(bountyId, a.submissionId);
+      // B: full refund credit
+      const p = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+      await verdiktaAggregator.setRefundAmount(p.ethMaxBudget);
+      await bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, p.submissionId, { value: p.ethMaxBudget });
+      const bAgg = (await bountyEscrow.getSubmission(bountyId, p.submissionId)).verdiktaAggId;
+      await verdiktaAggregator.setEvaluation(bAgg, FAILING_SCORES, JUST_CIDS, true);
+      const gasWithRefund = await bountyEscrow.finalizeSubmission.estimateGas(bountyId, p.submissionId);
+      const delta = gasWithRefund - gasNoRefund;
+      const cap = await bountyEscrow.INLINE_REFUND_GAS_LIMIT();
+      expect(delta).to.be.lt(cap / 2n);
+    });
+
     it("Normal path unchanged: inline refund in the resolving transaction, no RefundDeferred", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
       const { bountyId, submissionId, ethMaxBudget, aggId } =

@@ -154,6 +154,19 @@ contract BountyEscrow {
     ///      that rejects ETH is today. Deliberately a constant: this contract has no owner.
     uint256 public constant PAYOUT_GAS_LIMIT = 120_000;
 
+    /// @notice Gas forwarded to the EvaluationWallet for the INLINE prepay recovery at the end
+    ///         of finalizeSubmission / failTimedOutSubmission (wallet → aggregator withdrawEth →
+    ///         wallet → escrow). Measured cost of that path is ~30k against the mock and well
+    ///         under 100k against the live aggregator; 200k leaves ample headroom.
+    /// @dev Why cap a call into our own wallet: the wallet forwards into the aggregator, and
+    ///      the inline recovery is wrapped in try/catch precisely so resolution never depends
+    ///      on that path. Without a cap, an aggregator withdraw that burned gas would leave
+    ///      the transaction only 1/64 of its budget after the catch (EIP-150) — possibly not
+    ///      enough to emit RefundDeferred and return — so the whole resolution would revert
+    ///      anyway. With the cap, the worst case is a bounded amount of wasted gas and a
+    ///      deferred refund. The retry path, recoverLeftoverEth(), forwards full gas.
+    uint256 public constant INLINE_REFUND_GAS_LIMIT = 200_000;
+
     // Non-reentrancy guard (1 = unlocked, 2 = locked).
     uint256 private _lock = 1;
 
@@ -1068,7 +1081,7 @@ contract BountyEscrow {
     ///      in the same transaction, exactly as before.
     function _refundLeftoverEth(uint256 bountyId, uint256 submissionId) private {
         Submission storage s = subs[bountyId][submissionId];
-        try EvaluationWallet(payable(s.evalWallet)).refundLeftoverEth() returns (uint256 refunded) {
+        try EvaluationWallet(payable(s.evalWallet)).refundLeftoverEth{gas: INLINE_REFUND_GAS_LIMIT}() returns (uint256 refunded) {
             emit EthRefunded(bountyId, submissionId, refunded);
             _payOrCredit(s.funder, refunded);
         } catch {

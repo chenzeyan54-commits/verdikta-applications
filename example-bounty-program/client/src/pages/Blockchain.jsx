@@ -132,6 +132,7 @@ function Blockchain() {
   "function withdrawable(address account) view returns (uint256)",
   "function MAX_SUBMISSIONS_PER_BOUNTY() view returns (uint256)", // 128
   "function PAYOUT_GAS_LIMIT() view returns (uint256)",           // 120000
+  "function INLINE_REFUND_GAS_LIMIT() view returns (uint256)",    // 200000 — cap on the inline prepay recovery
   "function MIN_CID_LENGTH() view returns (uint256)",             // 46
   "function MAX_CID_LENGTH() view returns (uint256)",             // 100
   "function MAX_ALPHA() view returns (uint256)",                  // 1000

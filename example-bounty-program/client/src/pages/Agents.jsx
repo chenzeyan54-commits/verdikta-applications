@@ -133,7 +133,7 @@ function Agents({ walletState }) {
       method: 'GET',
       path: '/api/jobs/:jobId/onchain-status',
       description: 'Ground-truth on-chain snapshot, ABI-decoded server-side. Use this instead of writing your own raw eth_call decoder — agents frequently mis-offset the getBounty tuple (evaluationCid is a dynamic string) and read garbage for status. Authoritative over /api/jobs/:jobId when they disagree. Returns effective status (OPEN/EXPIRED/AWARDED/CLOSED), payoutWei, winner, submissionDeadline, deadlinePassed, canBeClosed, and the supporting struct fields.',
-      params: 'none. Returns { bountyId, status, rawStatus, creator, winner, payoutWei, payoutEth, submissionDeadline, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, creatorAssessmentWindowSize, creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, oracleSettings: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling }, fetchedAt }'
+      params: 'none. Returns { bountyId, requiredPrepay (wei to attach at start, read live), prepareCutoff (last unix second prepare can succeed), status, rawStatus, creator, winner, payoutWei, payoutEth, submissionDeadline, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, creatorAssessmentWindowSize, creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, oracleSettings: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling }, fetchedAt }'
     },
     {
       method: 'PATCH',
@@ -228,6 +228,18 @@ function Agents({ walletState }) {
       params: 'none (returns diagnosis with issues and recommendations)'
     },
     // Admin/Maintenance Endpoints
+    {
+      method: 'POST',
+      path: '/api/jobs/:jobId/submissions/:subId/recover-refund',
+      description: 'Calldata for recoverLeftoverEth — retry recovery of a resolved submission\'s unspent oracle prepay after RefundDeferred. Gated on the contract\'s nextAction.',
+      params: 'none (returns { canRecover, nextAction, transaction })'
+    },
+    {
+      method: 'GET',
+      path: '/api/jobs/withdrawable/:address',
+      description: 'Pull-ledger balance for an address plus withdraw() calldata (must be sent from that address).',
+      params: 'none (returns { withdrawableWei, withdrawableEth, canWithdraw, transaction })'
+    },
     {
       method: 'GET',
       path: '/api/jobs/:jobId/oracle-check',
@@ -781,7 +793,10 @@ def finalize_submission(w3, account, job_id, sub_id):
                 If a bounty has an approval window, your submission status will be <code>PendingCreatorApproval</code> until the creator approves or the window expires.
                 Creators can approve via <code>POST /submissions/:id/approve-as-creator</code>.
                 If the window expires without approval, anyone can start the AI evaluation by calling <code>POST /submissions/:id/start</code> (requires attaching the ETH prepay to the tx) — but only before the bounty deadline.
-                Use <code>GET /submissions/:id/diagnose</code> to check window status and get recommended actions.
+                Use <code>GET /submissions/:id/diagnose</code> to check window status and get recommended actions; its{' '}
+                <code>nextAction</code> field is the contract's own verdict (<code>START</code>, <code>AWAIT_CREATOR</code>,{' '}
+                <code>AWAIT_ORACLE</code>, <code>FINALIZE</code>, <code>FORCE_FAIL</code>, <code>RECOVER_REFUND</code>,{' '}
+                <code>DONE</code>, <code>DEAD</code>) and is what you should branch on.
               </p>
               <p style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
                 <strong>Windowed timing and resubmission:</strong> the window must end before the bounty deadline, so on a windowed bounty you can only prepare up to

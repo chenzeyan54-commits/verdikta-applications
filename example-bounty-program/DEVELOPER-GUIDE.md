@@ -212,6 +212,7 @@ Identical ABI means internal-logic-only changes: safe to deploy against the exis
 | `SubmissionFinalized` | `(…, bool passed, acceptance, rejection, justification)` | `(…, bool passed, bool paid, acceptance, rejection, justification)` |
 | `SubmissionPrepared` | `(…, evalWallet, string evaluationCid, ethMaxBudget)` | `(…, evalWallet, ethMaxBudget, string evaluationCid)` — new topic0 |
 | New functions/events | — | `recoverLeftoverEth(bountyId, submissionId)`, event `RefundDeferred(bountyId, submissionId)`, view `requiredPrepay(bountyId)` |
+| Agent-facing views | — | `getSubmissions(bountyId)`, `getBounties(start, count)` (≤ `MAX_BATCH` = 100), `getOracleResult(bountyId, submissionId)`, `nextAction(bountyId, submissionId)`, `prepareCutoff(bountyId)` |
 | New constants | — | `SCORE_SCALE`, `SCORE_DIVISOR` (score normalization, documented on-chain) |
 | New views | — | `withdraw()`, `withdrawable`, `canBeClosed`, `activeEvaluations`, `submissionCount`, constants `MAX_SUBMISSIONS_PER_BOUNTY`, `PAYOUT_GAS_LIMIT`, `MIN/MAX_CID_LENGTH`, `MAX_ALPHA`, `MAX_FEE_SCALING_FACTOR`, `ADDENDUM` |
 | Removed | `ILinkToken`, `MockLinkToken` | — |
@@ -428,6 +429,30 @@ When a passing `finalizeSubmission` on a windowed bounty is blocked by another h
 **Force-fail** (`failTimedOutSubmission`). No timer. Requires `PendingVerdikta`, then: try `finalizeEvaluationTimeout` on the aggregator (ignored if it reverts), require `getEvaluation(aggId).exists == false` (`result available - use finalizeSubmission`), require `getAggregationStatus(aggId).isComplete == true` (`evaluation not settled`). On success: `Failed`, `activeEvaluations` decremented, unspent prepay refunded to the hunter. The aggregator's `responseTimeoutSeconds` is 300 on both networks, so the practical rule is "at least 5 minutes after the start tx and the oracle never responded".
 
 **Score semantics** (`_scoreVector`, `SCORE_SCALE = 1_000_000`, `SCORE_DIVISOR = 10_000`). One interpreter serves `finalizeSubmission` and both sibling scans (`_requireNoPassingSubmission` at start, `_hasOtherPassingSubmission` at payout), so eligibility and payout can never disagree about what a result means. A vector is valid only if it has exactly two entries (`[DONT_FUND, FUND]`) and each is at most `SCORE_SCALE`; scores are normalized to 0–100 by `SCORE_DIVISOR` and compared to the bounty threshold (`>=` passes). The sum is deliberately not checked (aggregator rounding). An invalid vector never reverts: finalize records it as `Failed` with `acceptance = rejection = 0` and refunds the prepay (`SubmissionFinalized` carries `passed = false`), and the scans treat it as not passing so a corrupt sibling result never blocks a start or a payout. Out-of-range entries are rejected rather than clamped — clamping would have turned a corrupt `[0, 2_000_000]` into a 100% pass and a payout.
+
+### Driving the contract without the API
+
+Agents can run the whole lifecycle against `BountyEscrow` alone — the API is a convenience, not a dependency. What the contract gives you:
+
+| Need | Call |
+|---|---|
+| List bounties | `bountyCount()`, `getBounties(start, count)` (≤ 100 per call; page with `start += result.length`) — each `Bounty` carries the creator's `oracle` settings |
+| Read a bounty's submissions | `getSubmissions(bountyId)` (≤ 128) |
+| Can I still prepare? | `prepareCutoff(bountyId)` — last unix second `prepareSubmission` succeeds (windowed: `deadline − window − 2`); `isAcceptingSubmissions(bountyId)` |
+| How much to attach at start | `requiredPrepay(bountyId)` — read right before sending |
+| Is the oracle done? | `getOracleResult(bountyId, submissionId)` → `started, hasResult, settled, failed, scores, justificationCids, startTimestamp` — no aggregator ABI needed |
+| What should I do now? | `nextAction(bountyId, submissionId)` → `START` \| `AWAIT_CREATOR` \| `AWAIT_ORACLE` \| `FINALIZE` \| `FORCE_FAIL` \| `RECOVER_REFUND` \| `DONE` \| `DEAD` (the on-chain equivalent of `/diagnose`) |
+| Bounty state | `getEffectiveBountyStatus(bountyId)` → `OPEN` \| `EXPIRED` \| `AWARDED` \| `CLOSED`; `canBeClosed(bountyId)` |
+| Money owed to me | `withdrawable(address)` → `withdraw()`; deferred prepay → `recoverLeftoverEth` |
+
+What the contract cannot give you, and the API otherwise does:
+
+- **IPFS pinning.** Evaluation packages and work archives must be pinned by you (Pinata, web3.storage, a local node).
+- **The evaluation package format** (creator side): a ZIP with `manifest.json`, `primary_query.json` and the rubric, where the query template must match what the oracle nodes parse — deviations fail silently. `server/utils/archiveGenerator.js` is the reference builder; `POST /api/jobs/validate` checks a CID without side effects.
+- **The work archive format** (hunter side): a ZIP with `manifest.json` (`additional[]` listing the files), `primary_query.json` (`{ query: <narrative>, references: [...] }`) and the files under `submission/`. `createHunterSubmissionCIDArchive` in the same file is the reference.
+- **Human metadata** (title, description, USD estimates) — the API stores it off-chain; on-chain there is only the package CID.
+
+Revert reasons are plain strings (listed above under the breaking-release notes); decode them from the receipt, not from ethers' formatted error.
 
 ## Debugging
 

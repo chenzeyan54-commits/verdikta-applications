@@ -724,7 +724,7 @@ router.get('/api/docs', (req, res) => {
         method: 'GET',
         path: '/jobs/:id/onchain-status',
         description: 'Authoritative on-chain snapshot, ABI-decoded server-side. Use when the cached /jobs/:id view may be stale, or to diagnose ID drift via the "linkage" field. IMPORTANT: :id is the on-chain bountyId, not the API jobId — they only match for linked jobs. Use /api/jobs/lookup first if you are not sure.',
-        returns: '{ success, bountyId, status, rawStatus, creator, winner, payoutWei, payoutEth, submissionDeadline, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, linkage: { state, onChain, syncedFromBlockchain, detail, fix?, mismatch?, correctJobId?, idDriftWarning? }, fetchedAt, note }. linkage.state ∈ { linked | patched-not-synced | not-on-chain | mismatch | untracked }. 404 responses for missing on-chain bounties include localJobExists/localJobLinked flags and a fix pointing at /api/jobs/lookup.'
+        returns: '{ success, bountyId, requiredPrepay (wei to attach at start, read live), prepareCutoff (last unix second prepare can succeed), status, rawStatus, creator, winner, payoutWei, payoutEth, submissionDeadline, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, linkage: { state, onChain, syncedFromBlockchain, detail, fix?, mismatch?, correctJobId?, idDriftWarning? }, fetchedAt, note }. linkage.state ∈ { linked | patched-not-synced | not-on-chain | mismatch | untracked }. 404 responses for missing on-chain bounties include localJobExists/localJobLinked flags and a fix pointing at /api/jobs/lookup.'
       },
       {
         method: 'GET',
@@ -929,6 +929,21 @@ router.get('/api/docs', (req, res) => {
       },
       // Admin endpoints
       {
+        method: 'POST',
+        path: '/jobs/:id/submissions/:subId/recover-refund',
+        description: 'Calldata for recoverLeftoverEth(bountyId, submissionId) — retry recovery of a resolved submission\'s unspent oracle prepay after the resolving tx emitted RefundDeferred. Gated on the contract\'s nextAction === "RECOVER_REFUND"; otherwise 400 with { canRecover:false, nextAction, error, hint }. Anyone may broadcast; the funder is paid.',
+        contentType: 'application/json',
+        fields: [],
+        returns: '{ success, canRecover, nextAction, transaction: { to, data, value, chainId, gasLimit }, contractCall, note }'
+      },
+      {
+        method: 'GET',
+        path: '/jobs/withdrawable/:address',
+        description: 'Pull-ledger balance for an address (a payout / refund / close credited instead of delivered — see PaymentDeferred) plus calldata for withdraw(), which must be sent FROM that address.',
+        params: ['address (0x...)'],
+        returns: '{ success, address, withdrawableWei, withdrawableEth, canWithdraw, transaction | null, contractCall, note }'
+      },
+      {
         method: 'GET',
         path: '/jobs/:id/oracle-check',
         description: 'Sanity-check a bounty\'s oracle settings against the live arbiter registry for its class. Returns { available, eligibleCount (active arbiters priced <= the bounty\'s maxOracleFee), totalInClass, distinctOwnersEligible, priceBoostEnabled, alphaExtreme, warnings: [] } — plain-English warnings when the eligible pool is small (< 6), one operator owns half or more of it, the price boost is on, or alpha is extreme. Hunters: run this before preparing; a rigged jury shows up here. available:false means the registry could not be read.',
@@ -1093,6 +1108,29 @@ router.get('/api/docs', (req, res) => {
           notes: [
             'The ETH (wei) to attach as msg.value on startPreparedSubmission RIGHT NOW: the aggregator\'s maxTotalFee for the bounty\'s oracle fee. Identical for every submission to the bounty. Authoritative — the SubmissionPrepared ethMaxBudget is the same figure at prepare time and may be stale.'
           ]
+        },
+        nextAction: {
+          signature: 'nextAction(uint256 bountyId, uint256 submissionId) view returns (string)',
+          notes: [
+            'The on-chain /diagnose: START (call startPreparedSubmission with requiredPrepay), AWAIT_CREATOR (in its window; only the creator can act), AWAIT_ORACLE (wait), FINALIZE (a result exists), FORCE_FAIL (round settled/timed out with no result), RECOVER_REFUND (resolved but unspent prepay still recoverable), DONE, DEAD (never started and no longer can be).',
+            'Also exposed as diagnosis.nextAction on GET /jobs/:id/submissions/:subId/diagnose.'
+          ]
+        },
+        getOracleResult: {
+          signature: 'getOracleResult(uint256 bountyId, uint256 submissionId) view returns (bool started, bool hasResult, bool settled, bool failed, uint256[] scores, string justificationCids, uint256 startTimestamp)',
+          notes: ['The oracle\'s view of a submission proxied through the escrow — poll this instead of the aggregator. hasResult → finalizeSubmission works; failed → failTimedOutSubmission works.']
+        },
+        getSubmissions: {
+          signature: 'getSubmissions(uint256 bountyId) view returns (Submission[])',
+          notes: ['All submissions of a bounty in one call (max 128).']
+        },
+        getBounties: {
+          signature: 'getBounties(uint256 start, uint256 count) view returns (Bounty[])',
+          notes: ['Up to MAX_BATCH (100) bounties from `start`, clamped to what exists; empty array past the end. Each Bounty includes the creator\'s oracle settings.']
+        },
+        prepareCutoff: {
+          signature: 'prepareCutoff(uint256 bountyId) view returns (uint256)',
+          notes: ['Last unix second at which prepareSubmission can succeed (windowed bounties: deadline - window - 2). 0 if the bounty is not Open.']
         },
         withdraw: {
           signature: 'withdraw()',

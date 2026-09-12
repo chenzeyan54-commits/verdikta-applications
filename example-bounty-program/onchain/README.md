@@ -9,7 +9,7 @@ Solidity contracts for the Verdikta AI-Powered Bounty Program, built with Hardha
 - **`interfaces/IVerdiktaAggregator.sol`** — interface to the ETH-funded AI oracle aggregator (payable `requestAIEvaluationWithApproval`, `ethOwed`/`withdrawEth`).
 - **`mocks/`** — test stubs: `MockVerdiktaAggregator` (round lifecycle, refund credit, fee ceiling, records forwarded request params, switchable broken withdraw), `MockRejectingHunter` (rejects ETH), `MockGasHungryRecipient` (burns gas on receive).
 
-The contract's behavioral rules (deadline, creator window, priority, submission cap, fixed oracle parameters, CID validation, payout gas cap, force-fail gate) are documented in [../DEVELOPER-GUIDE.md → Submission timing and priority rules](../DEVELOPER-GUIDE.md#submission-timing-and-priority-rules). The contract has no owner and no upgrade path; every rule is a constant.
+The contract's behavioral rules (deadline, creator window, priority, submission cap, creator-owned oracle settings, CID validation, payout gas cap, force-fail gate, refund recovery) and its agent-facing views (`nextAction`, `getOracleResult`, `getSubmissions`, `getBounties`, `prepareCutoff`, `requiredPrepay`) are documented in [../DEVELOPER-GUIDE.md → Submission timing and priority rules](../DEVELOPER-GUIDE.md#submission-timing-and-priority-rules). The contract has no owner and no upgrade path; every rule is a constant.
 
 ## Quick start
 

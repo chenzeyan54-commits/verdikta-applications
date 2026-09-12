@@ -122,6 +122,12 @@ function Blockchain() {
   "function submissionCount(uint256 bountyId) view returns (uint256)",
   "function canBeClosed(uint256 bountyId) view returns (bool)",
   "function requiredPrepay(uint256 bountyId) view returns (uint256)", // live prepay to attach at start
+  // Agent-facing views: drive the whole lifecycle with only this ABI
+  "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
+  "function getBounties(uint256 start, uint256 count) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle)[])", // count capped at MAX_BATCH = 100
+  "function getOracleResult(uint256 bountyId, uint256 submissionId) view returns (bool started, bool hasResult, bool settled, bool failed, uint256[] scores, string justificationCids, uint256 startTimestamp)",
+  "function nextAction(uint256 bountyId, uint256 submissionId) view returns (string)", // START | AWAIT_CREATOR | AWAIT_ORACLE | FINALIZE | FORCE_FAIL | RECOVER_REFUND | DONE | DEAD
+  "function prepareCutoff(uint256 bountyId) view returns (uint256)",                    // last unix second prepareSubmission can succeed
   "function activeEvaluations(uint256 bountyId) view returns (uint256)",
   "function withdrawable(address account) view returns (uint256)",
   "function MAX_SUBMISSIONS_PER_BOUNTY() view returns (uint256)", // 128
@@ -1065,6 +1071,23 @@ submission-package.zip
             <div className="info-icon">
               <DollarSign size={20} />
             </div>
+            <h3>Driving the contract without the API</h3>
+            <p>
+              Everything an agent needs is readable from this contract alone. Discover bounties with{' '}
+              <code>getBounties(start, count)</code> (the rubric and description live in the evaluation package at{' '}
+              <code>evaluationCid</code>). Read a bounty's submissions with <code>getSubmissions(bountyId)</code>. Before
+              preparing, check <code>prepareCutoff(bountyId)</code>; before starting, read <code>requiredPrepay(bountyId)</code>.
+              Poll the oracle with <code>getOracleResult(bountyId, submissionId)</code> — no aggregator ABI needed — and ask{' '}
+              <code>nextAction(bountyId, submissionId)</code> what to do: <code>START</code>, <code>AWAIT_CREATOR</code>,{' '}
+              <code>AWAIT_ORACLE</code>, <code>FINALIZE</code>, <code>FORCE_FAIL</code>, <code>RECOVER_REFUND</code>,{' '}
+              <code>DONE</code> or <code>DEAD</code>. You still need your own IPFS pinning and the evaluation-package /
+              work-archive formats (see the developer guide), which is what the API otherwise does for you.
+            </p>
+          </div>
+          <div className="info-card">
+            <div className="info-icon">
+              <DollarSign size={20} />
+            </div>
             <h3>Deferred Payouts (Pull Ledger)</h3>
             <p>
               Payouts, refunds and bounty closes are sent directly with a <code>PAYOUT_GAS_LIMIT</code> of
@@ -1076,7 +1099,10 @@ submission-package.zip
               blocked, or made expensive, by a recipient. Likewise the unspent oracle prepay is recovered
               inline but best-effort: if that path fails the resolving transaction emits{' '}
               <code>RefundDeferred</code> and anyone can retry with{' '}
-              <code>recoverLeftoverEth(bountyId, submissionId)</code> once the submission is resolved.
+              <code>recoverLeftoverEth(bountyId, submissionId)</code> once the submission is resolved
+              (<code>nextAction</code> says <code>RECOVER_REFUND</code> while that is the case). Via the API:{' '}
+              <code>GET /api/jobs/withdrawable/:address</code> and{' '}
+              <code>POST /api/jobs/:id/submissions/:subId/recover-refund</code> return the calldata.
             </p>
           </div>
           <div className="info-card">

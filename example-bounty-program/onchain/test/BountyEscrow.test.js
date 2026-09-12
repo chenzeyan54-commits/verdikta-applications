@@ -823,6 +823,166 @@ describe("BountyEscrow", function () {
     });
   });
 
+  describe("Agent-facing views", function () {
+    describe("getSubmissions / getBounties", function () {
+      it("getSubmissions returns every submission of a bounty in order", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        expect(await bountyEscrow.getSubmissions(bountyId)).to.have.length(0);
+        const a = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        const b = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
+        const all = await bountyEscrow.getSubmissions(bountyId);
+        expect(all).to.have.length(2);
+        expect(all[0].hunter).to.equal(hunter.address);
+        expect(all[0].evalWallet).to.equal(a.evalWallet);
+        expect(all[1].hunter).to.equal(hunter2.address);
+        expect(all[1].status).to.equal(1); // PendingVerdikta
+        expect(all[1].verdiktaAggId).to.equal(b.aggId);
+        await expect(bountyEscrow.getSubmissions(999)).to.be.revertedWith("bad bountyId");
+      });
+
+      it("getBounties pages, clamps to the end, caps at MAX_BATCH, and includes oracle settings", async function () {
+        const { bountyEscrow, creator } = await loadFixture(deployBountyEscrowFixture);
+        expect(await bountyEscrow.MAX_BATCH()).to.equal(100);
+        for (let i = 0; i < 5; i++) await createDefaultBounty(bountyEscrow, creator, { threshold: 50 + i });
+        const page = await bountyEscrow.getBounties(1, 3);
+        expect(page).to.have.length(3);
+        expect(page[0].threshold).to.equal(51);
+        expect(page[2].threshold).to.equal(53);
+        expect(page[0].oracle.maxOracleFee).to.equal(MAX_ORACLE_FEE);
+        const tail = await bountyEscrow.getBounties(3, 1000);
+        expect(tail).to.have.length(2); // clamped to what exists (and count capped at 100)
+        expect(await bountyEscrow.getBounties(5, 10)).to.have.length(0);
+        expect(await bountyEscrow.getBounties(0, 0)).to.have.length(0);
+      });
+    });
+
+    describe("getOracleResult", function () {
+      it("reports not started, then in flight, then a result, then a timed-out round — with no aggregator ABI", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        const p = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        let r = await bountyEscrow.getOracleResult(bountyId, p.submissionId);
+        expect(r.started).to.equal(false); expect(r.hasResult).to.equal(false); expect(r.scores).to.have.length(0);
+
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, p.submissionId, { value: p.ethMaxBudget });
+        r = await bountyEscrow.getOracleResult(bountyId, p.submissionId);
+        expect(r.started).to.equal(true); expect(r.hasResult).to.equal(false); expect(r.settled).to.equal(false);
+        expect(r.startTimestamp).to.be.gt(0);
+
+        const aggId = (await bountyEscrow.getSubmission(bountyId, p.submissionId)).verdiktaAggId;
+        // (a FAILING result, so the second submission below is still allowed to start)
+        await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
+        r = await bountyEscrow.getOracleResult(bountyId, p.submissionId);
+        expect(r.hasResult).to.equal(true); expect(r.settled).to.equal(true); expect(r.failed).to.equal(false);
+        expect(r.scores.map(Number)).to.deep.equal(FAILING_SCORES.map(Number));
+        expect(r.justificationCids).to.equal(JUST_CIDS);
+
+        // a second submission whose round times out
+        const q = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);
+        await time.increase(Number(await verdiktaAggregator.responseTimeoutSeconds()) + 1);
+        await verdiktaAggregator.finalizeEvaluationTimeout(q.aggId);
+        r = await bountyEscrow.getOracleResult(bountyId, q.submissionId);
+        expect(r.hasResult).to.equal(false); expect(r.settled).to.equal(true); expect(r.failed).to.equal(true);
+      });
+    });
+
+    describe("nextAction", function () {
+      const act = (e, b, s) => e.nextAction(b, s);
+
+      it("Prepared: START before the deadline, DEAD after", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId, deadline } = await createDefaultBounty(bountyEscrow, creator);
+        const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("START");
+        await time.increaseTo(deadline);
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("DEAD");
+      });
+
+      it("Windowed: AWAIT_CREATOR during the window, START after it, DEAD once the bounty is awarded", async function () {
+        const { bountyEscrow, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
+          creatorPay: BOUNTY_WEI, arbiterPay: BOUNTY_WEI, windowSize: 3600,
+        });
+        const a = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        expect(await act(bountyEscrow, bountyId, a.submissionId)).to.equal("AWAIT_CREATOR");
+        await time.increase(3601);
+        expect(await act(bountyEscrow, bountyId, a.submissionId)).to.equal("START");
+        // creator approves a later submission by another hunter → a is DEAD
+        const b = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+        await bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, b.submissionId);
+        expect(await act(bountyEscrow, bountyId, a.submissionId)).to.equal("DEAD");
+        expect(await act(bountyEscrow, bountyId, b.submissionId)).to.equal("DONE");
+      });
+
+      it("In flight: AWAIT_ORACLE, then FINALIZE once a result exists, then DONE", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        const { submissionId, aggId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("AWAIT_ORACLE");
+        await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("FINALIZE");
+        await bountyEscrow.finalizeSubmission(bountyId, submissionId);
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("DONE");
+      });
+
+      it("In flight with no result: FORCE_FAIL once the aggregator timeout has elapsed (even before anyone settled it)", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        const { submissionId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+        await time.increase(Number(await verdiktaAggregator.responseTimeoutSeconds()) - 5);
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("AWAIT_ORACLE");
+        await time.increase(6);
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("FORCE_FAIL");
+        await bountyEscrow.failTimedOutSubmission(bountyId, submissionId); // and it really is callable
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("DONE");
+      });
+
+      it("Resolved with a deferred refund: RECOVER_REFUND until recovered", async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await verdiktaAggregator.setRefundAmount(ethMaxBudget);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
+        const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
+        await verdiktaAggregator.setEvaluation(aggId, FAILING_SCORES, JUST_CIDS, true);
+        await verdiktaAggregator.setWithdrawBroken(true);
+        await bountyEscrow.finalizeSubmission(bountyId, submissionId);
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("RECOVER_REFUND");
+        await verdiktaAggregator.setWithdrawBroken(false);
+        await bountyEscrow.recoverLeftoverEth(bountyId, submissionId);
+        expect(await act(bountyEscrow, bountyId, submissionId)).to.equal("DONE");
+      });
+
+      it("reverts for unknown ids", async function () {
+        const { bountyEscrow, creator } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        await expect(bountyEscrow.nextAction(bountyId, 0)).to.be.revertedWith("bad submissionId");
+        await expect(bountyEscrow.nextAction(99, 0)).to.be.revertedWith("bad bountyId");
+      });
+    });
+
+    describe("prepareCutoff", function () {
+      it("is deadline-1 for plain bounties and deadline-window-2 for windowed ones; 0 once not Open", async function () {
+        const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const plain = await createDefaultBounty(bountyEscrow, creator);
+        expect(await bountyEscrow.prepareCutoff(plain.bountyId)).to.equal(plain.deadline - 1);
+        const win = await createDefaultBounty(bountyEscrow, creator, { creatorPay: BOUNTY_WEI, arbiterPay: BOUNTY_WEI, windowSize: 3600 });
+        const cutoff = Number(await bountyEscrow.prepareCutoff(win.bountyId));
+        expect(cutoff).to.equal(win.deadline - 3600 - 2);
+        // it is exact: prepare at the cutoff works, one second later it does not
+        await time.setNextBlockTimestamp(cutoff);
+        await expect(prepareDefaultSubmission(bountyEscrow, hunter, win.bountyId)).to.not.be.reverted;
+        await time.setNextBlockTimestamp(cutoff + 1);
+        await expect(prepareDefaultSubmission(bountyEscrow, hunter, win.bountyId)).to.be.revertedWith("window would end after deadline");
+        // closed bounty → 0
+        await time.increaseTo(plain.deadline);
+        await bountyEscrow.closeExpiredBounty(plain.bountyId);
+        expect(await bountyEscrow.prepareCutoff(plain.bountyId)).to.equal(0);
+      });
+    });
+  });
+
   describe("Funding requirement is refreshed at start", function () {
     // The aggregator's maxTotalFee can change between prepare and start (owner-settable
     // parameters). Start checks msg.value against the LIVE requirement for the bounty's

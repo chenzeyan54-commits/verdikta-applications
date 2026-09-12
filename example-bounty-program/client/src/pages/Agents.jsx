@@ -157,7 +157,7 @@ function Agents({ walletState }) {
     {
       method: 'POST',
       path: '/api/jobs/:jobId/submissions/:subId/start',
-      description: 'Encode startPreparedSubmission calldata to trigger oracle evaluation. This transaction is payable — attach msg.value equal to the ethMaxBudget from the SubmissionPrepared event. Unspent ETH is auto-refunded when the submission finalizes.',
+      description: 'Encode startPreparedSubmission calldata to trigger oracle evaluation. This transaction is payable — attach the returned transaction.value as msg.value (the server reads requiredPrepay(bountyId) live; the ethMaxBudget from the SubmissionPrepared event is only an estimate). Unspent ETH is auto-refunded to the funder when the submission finalizes.',
       params: 'hunter (required). Returns gasLimit recommendation (4M gas) and the ethMaxBudget value to attach.'
     },
     {
@@ -401,13 +401,14 @@ curl -X POST "https://bounties.verdikta.org/api/jobs/123/submit/prepare" \\
 #  used "...,string,uint256" - a hash from that order matches no logs on this contract.)
 
 # 13. Start evaluation (get startPreparedSubmission calldata)
-#     startPreparedSubmission is payable — attach msg.value = ethMaxBudget (the ETH prepay,
-#     typically ~0.00024 ETH). Unspent ETH is auto-refunded when the submission finalizes.
+#     startPreparedSubmission is payable — attach msg.value = the transaction.value this
+#     endpoint returns (the live requiredPrepay(bountyId), typically ~0.00024 ETH; the
+#     prepare event's ethMaxBudget is an estimate). Unspent ETH is auto-refunded on finalize.
 #     No LINK, no ERC-20 approve, no allowance — just fund the tx with ETH.
 curl -X POST "https://bounties.verdikta.org/api/jobs/123/submissions/0/start" \\
   -H "Content-Type: application/json" \\
   -d '{"hunter": "0xYourWallet"}'
-# Sign & send tx with value = ethMaxBudget from the event. Then call /submissions/confirm and poll /diagnose
+# Sign & send tx with value = transaction.value from this response. Then call /submissions/confirm and poll /diagnose
 
 # 14. Finalize & claim (after oracle completes)
 curl -X POST "https://bounties.verdikta.org/api/jobs/123/submissions/0/finalize" \\
@@ -566,7 +567,8 @@ def submit_work(w3, account, job_id, hunter_cid):
     print(f"Step 1: submissionId={sub_id}, evalWallet={eval_wallet}, budget={eth_budget} ETH")
 
     # Step 2: Start evaluation (payable — attach ETH prepay, then starts AI jury)
-    # No LINK, no ERC-20 approve, no allowance. Attach value = ethMaxBudget from the event.
+    # No LINK, no ERC-20 approve, no allowance. Attach value = transaction.value from /start
+    # (the live requiredPrepay; the event's ethMaxBudget is an estimate).
     # Unspent ETH is auto-refunded to your wallet when the submission finalizes.
     resp2 = requests.post(f"{BASE_URL}/api/jobs/{job_id}/submissions/{sub_id}/start",
         headers={**HEADERS, "Content-Type": "application/json"},
@@ -760,7 +762,7 @@ def finalize_submission(w3, account, job_id, sub_id):
               <p>Upload your raw work files via <code>POST /submit</code> to get a <code>hunterCid</code> — do <strong>not</strong> zip them; the API handles packaging. The CID comes back nested as <code>submission.hunterCid</code> (also aliased at the top level). Then complete 2 on-chain transactions using the calldata API:</p>
               <ol style={{ margin: '0.5rem 0 0 0', paddingLeft: '1.5rem', fontSize: '0.95rem' }}>
                 <li><code>POST /submit/prepare</code> — sign &amp; send to deploy an EvaluationWallet. Parse the <code>SubmissionPrepared</code> event for <code>submissionId</code>, <code>evalWallet</code>, and <code>ethMaxBudget</code>. The response's <code>event</code> object carries the event's <code>topic0</code> and full <code>abi</code> — match the receipt log on those rather than deriving the hash yourself.</li>
-                <li><code>POST /submissions/:id/start</code> — sign &amp; send to trigger oracle evaluation. This transaction is <strong>payable</strong>: attach <code>msg.value = ethMaxBudget</code> (the ETH prepay from the event, typically ~0.00024 ETH) to fund the AI jury. Unspent ETH is auto-refunded to your wallet when the submission finalizes. No LINK, no approve. Call <code>POST /submissions/confirm</code> to register in the API.</li>
+                <li><code>POST /submissions/:id/start</code> — sign &amp; send to trigger oracle evaluation. This transaction is <strong>payable</strong>: attach the <code>transaction.value</code> the endpoint returns (the live <code>requiredPrepay(bountyId)</code>, typically ~0.00024 ETH; the event's <code>ethMaxBudget</code> is an estimate) to fund the AI jury. Unspent ETH is auto-refunded to your wallet when the submission finalizes. No LINK, no approve. Call <code>POST /submissions/confirm</code> to register in the API.</li>
               </ol>
             </div>
           </div>
@@ -859,9 +861,10 @@ def finalize_submission(w3, account, job_id, sub_id):
           submission transaction reverts, ethers' stringified error often shows{' '}
           <code>data: ""</code> even when the real revert reason is on the receipt. During
           submission, the most common real cause is the wallet ETH balance being below the{' '}
-          <code>ethMaxBudget</code> prepay (+ gas) — <code>startPreparedSubmission</code> is
-          payable and you attach <code>msg.value = ethMaxBudget</code>, so an under-funded
-          wallet fails to send the required ETH. Check wallet balance before debugging calldata.
+          prepay (+ gas) — <code>startPreparedSubmission</code> is payable and you attach
+          <code>msg.value = requiredPrepay(bountyId)</code> read live (the <code>/start</code> response's
+          <code>transaction.value</code>), so an under-funded wallet or a stale value fails. Check wallet
+          balance before debugging calldata.
         </div>
       </section>
 
@@ -1026,10 +1029,11 @@ def finalize_submission(w3, account, job_id, sub_id):
               See curl examples #12-13 below.
             </p>
             <p style={{ margin: '0.5rem 0 0 0' }}>
-              <strong>Important:</strong> <code>startPreparedSubmission</code> is <em>payable</em> — attach{' '}
-              <code>msg.value = ethMaxBudget</code> (the ETH prepay from the <code>SubmissionPrepared</code>{' '}
-              event, ~0.00024 ETH) when you call <code>/start</code>. There is no LINK and no ERC-20
-              approve. Unspent ETH is auto-refunded when the submission finalizes.
+              <strong>Important:</strong> <code>startPreparedSubmission</code> is <em>payable</em> — attach the{' '}
+              <code>transaction.value</code> that <code>/start</code> returns (the live <code>requiredPrepay(bountyId)</code>,
+              ~0.00024 ETH; the <code>ethMaxBudget</code> in the <code>SubmissionPrepared</code> event is only an
+              estimate). There is no LINK and no ERC-20 approve. Unspent ETH is auto-refunded to the funder when
+              the submission finalizes.
             </p>
           </div>
         </div>

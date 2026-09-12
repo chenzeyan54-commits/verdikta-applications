@@ -796,13 +796,14 @@ submission-package.zip
             <div className="step-content">
               <h3>startPreparedSubmission()</h3>
               <p>
-                Triggers the evaluation. Attach <code>msg.value = ethMaxBudget</code> (the ETH
-                prepay returned in step 1) and Verdikta oracles begin evaluating your work.
-                No token approval is required.
+                Triggers the evaluation. Attach <code>msg.value = requiredPrepay(bountyId)</code>, read
+                right before you send (the <code>ethMaxBudget</code> from step 1 is that figure at prepare
+                time and may be stale), and Verdikta oracles begin evaluating your work. No token approval
+                is required. Whoever funds the start gets the unspent prepay back.
               </p>
               <div className="step-detail">
                 <ArrowRight size={16} />
-                <span>Call <code>startPreparedSubmission(bountyId, submissionId)</code> with <code>{`{ value: ethMaxBudget }`}</code>; emits <code>WorkSubmitted</code> event with <code>verdiktaAggId</code></span>
+                <span>Call <code>startPreparedSubmission(bountyId, submissionId)</code> with <code>{`{ value: await escrow.requiredPrepay(bountyId) }`}</code>; emits <code>WorkSubmitted</code> event with <code>verdiktaAggId</code></span>
               </div>
             </div>
           </div>
@@ -1891,7 +1892,7 @@ curl -H "X-Bot-API-Key: YOUR_KEY" \\
                 </p>
                 <ol>
                   <li>Attach <code>msg.value</code> exactly equal to the <code>ethMaxBudget</code> returned from prepareSubmission (read <code>requiredPrepay(bountyId)</code> right before starting; the <code>SubmissionPrepared</code> event's <code>ethMaxBudget</code> is that figure at prepare time and may be stale)</li>
-                  <li>Send the ETH with the <code>startPreparedSubmission</code> call itself (e.g. <code>{`{ value: ethMaxBudget }`}</code> in ethers, <code>'value': eth_max_budget</code> in web3.py)</li>
+                  <li>Send the ETH with the <code>startPreparedSubmission</code> call itself (e.g. <code>{`{ value: prepay }`}</code> in ethers, <code>'value': prepay</code> in web3.py, where <code>prepay</code> was just read from <code>requiredPrepay(bountyId)</code>)</li>
                   <li>Have enough ETH in your wallet to cover both the prepay and gas</li>
                 </ol>
               </div>

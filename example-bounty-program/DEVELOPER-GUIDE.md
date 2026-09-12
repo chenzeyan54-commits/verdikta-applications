@@ -209,7 +209,7 @@ Identical ABI means internal-logic-only changes: safe to deploy against the exis
 | `getSubmission` tuple | 18 fields | 13 fields: `evaluationCid`, `maxOracleFee`, `alpha`, `estimatedBaseCost`, `maxFeeBasedScaling`, `addendum` removed; `funder` added last |
 | `SubmissionFinalized` | `(…, bool passed, acceptance, rejection, justification)` | `(…, bool passed, bool paid, acceptance, rejection, justification)` |
 | `SubmissionPrepared` | `(…, evalWallet, string evaluationCid, ethMaxBudget)` | `(…, evalWallet, ethMaxBudget, string evaluationCid)` — new topic0 |
-| New functions/events | — | `recoverLeftoverEth(bountyId, submissionId)`, event `RefundDeferred(bountyId, submissionId)` |
+| New functions/events | — | `recoverLeftoverEth(bountyId, submissionId)`, event `RefundDeferred(bountyId, submissionId)`, view `requiredPrepay(bountyId)` |
 | New views | — | `withdraw()`, `withdrawable`, `canBeClosed`, `activeEvaluations`, `submissionCount`, constants `MAX_SUBMISSIONS_PER_BOUNTY`, `PAYOUT_GAS_LIMIT`, `MIN/MAX_CID_LENGTH`, `MAX_ALPHA`, `MAX_FEE_SCALING_FACTOR`, `ADDENDUM` |
 | Removed | `ILinkToken`, `MockLinkToken` | — |
 
@@ -348,7 +348,7 @@ Response shape:
 }
 ```
 
-`timeoutEligible` mirrors the contract's own gate: the server reads the aggregator and reports `true` only when the round has no result AND is settled (or its 300-second response timeout has elapsed since the start transaction). When the round has a result the entry carries `needsFinalize: true` instead — call `/finalize` for it. It's safe to poll this endpoint — it's read-only and small.
+`timeoutEligible` mirrors the contract's own gate: the server reads the aggregator and reports `true` only when the round has no result AND is settled (or its 300-second response timeout has elapsed since the start transaction). When the round has a result the entry carries `hasResult: true` instead — call `/finalize` for it. It's safe to poll this endpoint — it's read-only and small.
 
 For a system-wide view (all creators) use `GET /api/jobs/admin/expired` instead.
 
@@ -367,7 +367,7 @@ On-chain, `failTimedOutSubmission` has **no timer**. It first tries to settle th
 - `result available - use finalizeSubmission` — the oracle did respond (possibly late). Call `/finalize` instead. A passing score can never be discarded by force-fail.
 - `evaluation not settled` — the round is still open on the aggregator. Its response timeout is 300 seconds from `startPreparedSubmission`, so wait at least 5 minutes after the *start* transaction and retry.
 
-The endpoint's own pre-check (`canTimeout`) applies the same aggregator-based rule before returning calldata: `canTimeout:false` with `reason: "evaluation not settled"` (and `settlesAt`) while the round is open, or `reason: "result available"` with a pointer to `/finalize` when the oracle responded. Either way nothing is lost — wait and retry, or finalize.
+The endpoint's own pre-check (`canTimeout`) applies the same aggregator-based rule before returning calldata: `canTimeout:false` with `error: "Evaluation not settled"` (the `hint` gives the unix time the aggregator's timeout elapses) while the round is open, or `canTimeout:false, canFinalize:true` with `error: "Oracle result available - use finalizeSubmission"` when the oracle responded. The `forceFail` object in the response carries the raw gate (`hasResult`, `eligible`, `reason`, `secondsUntilTimeout`). Either way nothing is lost — wait and retry, or finalize.
 
 #### 3. Close the bounty
 
@@ -415,6 +415,8 @@ When a passing `finalizeSubmission` on a windowed bounty is blocked by another h
 **Non-windowed tie-break.** `_hasOtherPassingSubmission` consults only lower-index siblings. If no other submission has a passing result yet, the one being finalized wins (first to complete in practice). If several have passing results at the same time, the lowest index wins regardless of the order finalize is called in, so a rival cannot knock out a passing submission by finalizing it first. A submission deferred this way is written `PassedUnpaid` (final): the lower-index one is guaranteed to be paid when finalized.
 
 **Oracle settings belong to the creator** (`Bounty.oracle`, set in `createBounty`, validated by `MAX_ALPHA = 1000`, `MAX_FEE_SCALING_FACTOR = 1000`, fee ≤ `verdikta.maxOracleFee()`, base cost < fee, scaling ≥ 1). They are used verbatim for every evaluation of the bounty; `prepareSubmission` takes only the two CIDs and the addendum forwarded to the aggregator is the constant `ADDENDUM = ""`. Why the creator and not the hunter: the aggregator's keeper treats `maxOracleFee` as an eligibility filter (an arbiter is selectable only if its fee ≤ the request's ceiling), and `estimatedBaseCost` / `maxFeeBasedScaling` weight selection by price — whoever sets them can shrink or tilt the jury toward nodes they run. A hunter can see a bounty's settings before committing work and walk away (the website's validate check warns on a small eligible pool, a dominant operator, an enabled price boost or an extreme alpha); a creator cannot inspect a hunter. Why the addendum is empty for everyone: it is appended to the query the arbiters see, and the creator's evaluation package is the whole query. `ethMaxBudget = maxTotalFee(bounty.oracle.maxOracleFee)` is identical for every submission to a bounty. The residual lever is the class itself (a class served by one operator is that operator's private jury) — visible on the bounty.
+
+**Prepay refreshed at start** (`requiredPrepay`). The prepay is `verdikta.maxTotalFee(bounty.oracle.maxOracleFee)`, which depends on aggregator parameters the aggregator owner can change (fee ceiling, arbiters polled, bonus multiplier, cluster size). `prepareSubmission` records it as an estimate; `startPreparedSubmission` recomputes it, requires `msg.value` to match the live figure, and stores what was actually prepaid. Without this, a rise between prepare and start would make the aggregator reject the start and force a re-prepare (new index; on a windowed bounty a restarted window that may no longer fit before the deadline).
 
 **Funder refund** (`Submission.funder`). `startPreparedSubmission` records `msg.sender` as the funder; `_refundLeftoverEth` (from finalize and force-fail) returns the unspent prepay to the funder, which is the hunter in the common case and the creator or a third party for an expired-window start.
 
@@ -478,9 +480,9 @@ The `linkage` field is a structured verdict — `state` is one of:
 **3. Do NOT compensate by spending more on-chain.** Creating an additional bounty to "fix" the alignment makes it worse, not better. The fix is always either the lookup endpoint (find the right jobId) or the PATCH endpoint (link the existing one).
 
 ### ETH prepay errors at startPreparedSubmission
-- `startPreparedSubmission(uint256 bountyId, uint256 submissionId)` is **payable** — the funder attaches `ethMaxBudget` as `msg.value`. There is no LINK token, ERC-20 approval, or allowance step.
+- `startPreparedSubmission(uint256 bountyId, uint256 submissionId)` is **payable** — the funder attaches `requiredPrepay(bountyId)` as `msg.value`, read live from the escrow. There is no LINK token, ERC-20 approval, or allowance step.
 - Attach exactly the `ethMaxBudget` (raw wei) from the `SubmissionPrepared` event as `msg.value`. Too little ETH and the call reverts; any unspent prepay is automatically refunded when the submission finalizes (or on `failTimedOutSubmission`).
-- **Decoding note:** `ethMaxBudget` is the second data word, before the dynamic `string evaluationCid`, so even a naive `(address,uint256)` decode reads it correctly. Decode with the full event ABI anyway, or use the value the API hands back (`/submit/bundle/complete` → `parsed.ethMaxBudget`, or the `/start` calldata endpoint's `transaction.value`), which the server reads straight from chain. `ethMaxBudget` is the same for every submission to a bounty (it derives from the bounty's `oracle.maxOracleFee`), so `getBounty` + the aggregator's `maxTotalFee` also give it.
+- **The event value is an estimate.** `ethMaxBudget` in `SubmissionPrepared` (second data word, before the dynamic `string evaluationCid`) is the aggregator's `maxTotalFee` for the bounty's fee *at prepare time*. `startPreparedSubmission` recomputes it live and requires `msg.value` to equal that (`wrong eth amount` otherwise), so a change in aggregator parameters between prepare and start never strands a prepared submission. Read `requiredPrepay(bountyId)` right before starting — the `/start` calldata endpoint's `transaction.value` and the website do exactly that. It is the same for every submission to a bounty at any given moment.
 - The per-oracle fee is the bounty's `oracle.maxOracleFee` (API default 0.00002 ETH; on-chain ceiling 0.0004 ETH); the worst-case prepay (`ethMaxBudget` = maxTotalFee) is 12× that, ~0.00024 ETH at the default.
 
 ### Finding the SubmissionPrepared log (topic0)

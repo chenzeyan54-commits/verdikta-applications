@@ -121,6 +121,7 @@ function Blockchain() {
   "function bountyCount() view returns (uint256)",
   "function submissionCount(uint256 bountyId) view returns (uint256)",
   "function canBeClosed(uint256 bountyId) view returns (bool)",
+  "function requiredPrepay(uint256 bountyId) view returns (uint256)", // live prepay to attach at start
   "function activeEvaluations(uint256 bountyId) view returns (uint256)",
   "function withdrawable(address account) view returns (uint256)",
   "function MAX_SUBMISSIONS_PER_BOUNTY() view returns (uint256)", // 128
@@ -220,8 +221,11 @@ async function submitWork(bountyId, hunterCid) {
   console.log(\`Submission #\${submissionId} prepared, prepay \${ethers.formatEther(ethMaxBudget)} ETH (unspent amount is refunded on finalize)\`);
 
   // Step 2: Start evaluation — attach the ETH prepay as msg.value (no approval needed)
+  // Read the LIVE requirement right before starting: the ethMaxBudget from the prepare
+  // event is an estimate and aggregator parameters may have changed since.
+  const prepay = await escrow.requiredPrepay(bountyId);
   const startTx = await escrow.startPreparedSubmission(bountyId, submissionId, {
-    value: ethMaxBudget
+    value: prepay
   });
   await startTx.wait();
   console.log('Evaluation started!');
@@ -430,9 +434,11 @@ def submit_work(bounty_id, hunter_cid):
           f'(unspent amount refunded on finalize)')
 
     # Step 2: startPreparedSubmission — attach the ETH prepay as value (no approval needed)
+    # Read the live requirement right before starting (the prepare-time value is an estimate)
+    prepay = escrow.functions.requiredPrepay(bounty_id).call()
     start_tx = escrow.functions.startPreparedSubmission(bounty_id, submission_id).build_transaction({
         'from': account.address,
-        'value': eth_max_budget,
+        'value': prepay,
         'nonce': w3.eth.get_transaction_count(account.address),
         'gas': 500000,
     })
@@ -1884,7 +1890,7 @@ curl -H "X-Bot-API-Key: YOUR_KEY" \\
                   (there is no token approval). Make sure you:
                 </p>
                 <ol>
-                  <li>Attach <code>msg.value</code> exactly equal to the <code>ethMaxBudget</code> returned from prepareSubmission (the <code>SubmissionPrepared</code> event's <code>ethMaxBudget</code> field — the same for every submission to a bounty)</li>
+                  <li>Attach <code>msg.value</code> exactly equal to the <code>ethMaxBudget</code> returned from prepareSubmission (read <code>requiredPrepay(bountyId)</code> right before starting; the <code>SubmissionPrepared</code> event's <code>ethMaxBudget</code> is that figure at prepare time and may be stale)</li>
                   <li>Send the ETH with the <code>startPreparedSubmission</code> call itself (e.g. <code>{`{ value: ethMaxBudget }`}</code> in ethers, <code>'value': eth_max_budget</code> in web3.py)</li>
                   <li>Have enough ETH in your wallet to cover both the prepay and gas</li>
                 </ol>

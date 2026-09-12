@@ -735,6 +735,66 @@ describe("BountyEscrow", function () {
     });
   });
 
+  describe("Funding requirement is refreshed at start", function () {
+    // The aggregator's maxTotalFee can change between prepare and start (owner-settable
+    // parameters). Start checks msg.value against the LIVE requirement for the bounty's
+    // fee, so a change never strands a prepared submission. requiredPrepay() exposes it.
+    it("requiredPrepay() matches the prepare-time estimate when nothing changed", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      expect(await bountyEscrow.requiredPrepay(bountyId)).to.equal(ethMaxBudget);
+      expect(ethMaxBudget).to.equal(await verdiktaAggregator.maxTotalFee(MAX_ORACLE_FEE));
+    });
+
+    it("Requirement RISES after prepare: the old estimate is rejected, the live value works, and it is recorded", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, ethMaxBudget: estimate } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await verdiktaAggregator.setFeeMultiplier(5); // was 3
+      const live = await bountyEscrow.requiredPrepay(bountyId);
+      expect(live).to.be.gt(estimate);
+      await expect(bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: estimate }))
+        .to.be.revertedWith("wrong eth amount");
+      await expect(bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: live }))
+        .to.emit(bountyEscrow, "WorkSubmitted");
+      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).ethMaxBudget).to.equal(live);
+    });
+
+    it("Requirement FALLS after prepare: the smaller live value is what must be attached", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId, ethMaxBudget: estimate } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await verdiktaAggregator.setFeeMultiplier(2);
+      const live = await bountyEscrow.requiredPrepay(bountyId);
+      expect(live).to.be.lt(estimate);
+      await expect(bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: estimate }))
+        .to.be.revertedWith("wrong eth amount");
+      await expect(bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: live }))
+        .to.emit(bountyEscrow, "WorkSubmitted");
+      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).ethMaxBudget).to.equal(live);
+    });
+
+    it("A windowed submission prepared before a parameter change can still be started (no re-prepare needed)", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
+        creatorPay: BOUNTY_WEI, arbiterPay: BOUNTY_WEI, windowSize: 3600,
+      });
+      const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await verdiktaAggregator.setFeeMultiplier(7);
+      await time.increase(3601);
+      const live = await bountyEscrow.requiredPrepay(bountyId);
+      await expect(bountyEscrow.connect(other).startPreparedSubmission(bountyId, submissionId, { value: live }))
+        .to.emit(bountyEscrow, "WorkSubmitted");
+      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).funder).to.equal(other.address);
+    });
+
+    it("requiredPrepay reverts for an unknown bounty", async function () {
+      const { bountyEscrow } = await loadFixture(deployBountyEscrowFixture);
+      await expect(bountyEscrow.requiredPrepay(999)).to.be.revertedWith("bad bountyId");
+    });
+  });
+
   describe("Leftover prepay goes to the funder", function () {
     it("Hunter-funded start: refund to the hunter (funder == hunter)", async function () {
       const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);

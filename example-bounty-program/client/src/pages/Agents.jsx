@@ -238,7 +238,7 @@ function Agents({ walletState }) {
       method: 'GET',
       path: '/api/jobs/admin/stuck',
       description: 'List all stuck submissions across all bounties',
-      params: 'none (returns pending submissions whose aggregator round is settled/timed out with no result, plus needsFinalize ones whose oracle responded)'
+      params: 'none (returns pending submissions older than 10 minutes with their aggregator gate: canTimeout, or canFinalize when the oracle responded)'
     },
     {
       method: 'GET',
@@ -1351,8 +1351,8 @@ def finalize_submission(w3, account, job_id, sub_id):
                 </ul>
                 <p>
                   There is no fixed timer in the contract, and the API's <code>/timeout</code> endpoint applies the same
-                  aggregator-based rule before returning calldata (it reports <code>canTimeout:false</code> with the
-                  reason, and points you to <code>/finalize</code> when the oracle did respond).
+                  aggregator-based rule before returning calldata (it reports <code>canTimeout:false</code> with an
+                  <code>error</code> and <code>hint</code>, and sets <code>canFinalize:true</code> when the oracle did respond).
                 </p>
                 <p>
                   <strong>Important:</strong> If the status is <code>EVALUATED_PASSED</code> or{' '}
@@ -1387,7 +1387,7 @@ def finalize_submission(w3, account, job_id, sub_id):
                     call <code>finalizeSubmission(bountyId, submissionId)</code> on the BountyEscrow contract to pull
                     oracle results and release/refund funds</li>
                   <li><strong>Timeout stuck submissions:</strong> Use <code>GET /api/jobs/admin/stuck</code>
-                    to find submissions in <code>PENDING_EVALUATION</code> whose aggregator round is settled with no result, then timeout them (it also lists <code>needsFinalize</code> ones whose oracle responded)</li>
+                    to find submissions in <code>PENDING_EVALUATION</code> with their aggregator gate, then timeout the <code>canTimeout</code> ones and finalize the <code>canFinalize</code> ones</li>
                   <li><strong>Close expired bounties:</strong> Use <code>GET /api/jobs/admin/expired</code>
                     to find bounties past deadline with no pending evaluations, then close to refund creators</li>
                 </ul>

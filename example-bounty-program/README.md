@@ -135,13 +135,13 @@ The submission process is split into two on-chain transactions for better UX, fo
 1. **Prepare Submission** (`prepareSubmission(bountyId, evaluationCid, hunterCid)`)
    - Deploys EvaluationWallet contract
    - Records the submission. The hunter supplies only their work CID (plus the bounty's evaluation CID as a guard that they are submitting against the package they think they are). Everything in the oracle request comes from the **bounty**: the evaluation package, the class, and the creator's oracle settings (`maxOracleFee`, `alpha`, `estimatedBaseCost`, `maxFeeBasedScaling`, chosen at `createBounty` and visible on the bounty), plus an always-empty addendum. The judged party cannot append text to the arbiters' query, steer arbiter selection, or shrink the eligible-arbiter pool by lowering the fee ceiling.
-   - `ethMaxBudget` (the prepay to attach at start) is `maxTotalFee(bounty.oracle.maxOracleFee)` — identical for every submission to a bounty.
+   - `ethMaxBudget` is `maxTotalFee(bounty.oracle.maxOracleFee)` at prepare time — an estimate of the prepay; `requiredPrepay(bountyId)` gives the live value to attach at start. It is identical for every submission to a bounty at any given moment.
    - `hunterCid` must be a bare CID (46–100 alphanumeric characters: CIDv0 `Qm…` or base32 CIDv1 `b…`); anything containing delimiters, a path prefix, or whitespace reverts with `bad hunterCid`. The same rule applies to `evaluationCid` at bounty creation (`bad evaluationCid`). The aggregator serializes the request as `1:<evaluationCid>,<hunterCid>:<addendum>` for the oracle nodes, so a stray comma or colon would smuggle an extra archive or an addendum into the evaluation.
    - Emits `SubmissionPrepared(bountyId, submissionId, hunter, evalWallet, ethMaxBudget, evaluationCid)` — `ethMaxBudget` is the worst-case ETH prepay (wei); it comes **before** the dynamic `string evaluationCid`, so even a naive `(address,uint256)` decode of the data reads it correctly. Simplest: use the `transaction.value` returned by the `/start` calldata endpoint, or `parsed.ethMaxBudget` from `/submit/bundle/complete`.
    - Its `topic0` is `0x147341637c0b8d941e61a743cd410afff8526bec154904bb54f857b8f59cd6ca` = `keccak256("SubmissionPrepared(uint256,uint256,address,address,uint256,string)")`. Don't hand-write it: `/submit/prepare` and `/submit/bundle` both return an `event` descriptor with the signature, topic0 and full ABI.
 
 2. **Start Evaluation** (`startPreparedSubmission`, **payable**)
-   - The funder attaches `ethMaxBudget` (from step 1 event) as `msg.value`
+   - The funder attaches `requiredPrepay(bountyId)` as `msg.value` — the aggregator's current maximum total fee for the bounty's oracle fee, read live from the escrow. The `ethMaxBudget` in the step-1 event is that same figure at prepare time and is only an estimate: aggregator parameters can change in between, and the contract checks against the live value so a prepared submission can never be stranded by such a change. The `/start` calldata endpoint and the website read the live value for you.
    - Funds the EvaluationWallet with ETH for the oracle fees
    - Approves Verdikta Aggregator
    - Triggers AI evaluation
@@ -378,6 +378,7 @@ Open issues and pull requests at [github.com/verdikta/verdikta-applications](htt
 - CID validation: `evaluationCid` and `hunterCid` must be bare CIDs (46–100 alphanumeric characters) — `bad evaluationCid` / `bad hunterCid`
 - Payout gas cap: direct sends forward at most `PAYOUT_GAS_LIMIT = 120000` gas; recipients needing more are credited to the pull ledger (`withdrawable` / `withdraw()`)
 - Unspent oracle prepay is refunded to the address that funded the start (`funder`); recovery is best-effort inside resolution with a permissionless retry `recoverLeftoverEth` (event `RefundDeferred`)
+- Start checks `msg.value` against the live `requiredPrepay(bountyId)` (aggregator parameters can change after prepare); the prepare-time `ethMaxBudget` is an estimate
 - Website: oracle settings on the create wizard (advanced, defaulted) and an oracle-settings check on validate; force-fail gating follows the aggregator; new revert reasons mapped
 - See [Submission timing rules](#submission-timing-rules) and DEVELOPER-GUIDE → "Submission timing and priority rules"
 

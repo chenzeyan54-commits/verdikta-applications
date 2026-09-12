@@ -345,9 +345,10 @@ contract BountyEscrow {
     // ------------- Submissions & Verdikta -------------
 
     /// @notice STEP 1: Prepare a submission. Deploys an EvaluationWallet and records the work.
-    /// @dev The ethMaxBudget is emitted so the funder knows how much ETH to attach when starting.
-    ///      It is derived from the BOUNTY's oracle fee (maxTotalFee(bounty.oracle.maxOracleFee)),
-    ///      so every submission to a bounty prepays the same amount.
+    /// @dev The emitted ethMaxBudget is the aggregator's maxTotalFee for the BOUNTY's oracle fee
+    ///      at prepare time — an ESTIMATE of what to attach at start. startPreparedSubmission
+    ///      recomputes it live (see requiredPrepay()); every submission to a bounty prepays the
+    ///      same amount at any given moment.
     /// @dev If the bounty has a creator assessment window, status starts as PendingCreatorApproval.
     ///      Otherwise, status starts as Prepared (classic behavior).
     /// @dev Can only be called before the submission deadline. On windowed bounties the
@@ -519,7 +520,17 @@ contract BountyEscrow {
         _requireNoPassingSubmission(bountyId, b.threshold);
 
         // Funder attaches the worst-case prepay as ETH (no ERC20 approval needed).
-        require(msg.value == s.ethMaxBudget, "wrong eth amount");
+        // The requirement is recomputed HERE from the bounty's fee policy: the aggregator's
+        // maxTotalFee depends on owner-settable parameters (fee ceiling, arbiters polled,
+        // bonus multiplier, cluster size), so the figure recorded at prepare is only an
+        // estimate. Checking against the live value means a parameter change between
+        // prepare and start can never strand a prepared submission (which would otherwise
+        // have to be re-prepared — a new index, and on windowed bounties a restarted
+        // window that may no longer fit before the deadline). Read it via requiredPrepay().
+        uint256 required = verdikta.maxTotalFee(b.oracle.maxOracleFee);
+        require(required > 0, "bad budget");
+        require(msg.value == required, "wrong eth amount");
+        s.ethMaxBudget = required; // record what was actually prepaid
 
         EvaluationWallet wallet = EvaluationWallet(payable(s.evalWallet));
 
@@ -769,6 +780,15 @@ contract BountyEscrow {
     function isAcceptingSubmissions(uint256 bountyId) external view returns (bool) {
         Bounty storage b = _mustBounty(bountyId);
         return b.status == BountyStatus.Open && block.timestamp < b.submissionDeadline;
+    }
+
+    /// @notice The ETH (wei) a funder must attach to startPreparedSubmission for this bounty
+    ///         RIGHT NOW: the aggregator's maxTotalFee for the bounty's oracle fee. Identical
+    ///         for every submission to the bounty. The ethMaxBudget in SubmissionPrepared is
+    ///         the same figure at prepare time — an estimate; this view is authoritative.
+    function requiredPrepay(uint256 bountyId) external view returns (uint256) {
+        Bounty storage b = _mustBounty(bountyId);
+        return verdikta.maxTotalFee(b.oracle.maxOracleFee);
     }
 
     /// @notice Check if a bounty can be closed (deadline passed, no active evals)

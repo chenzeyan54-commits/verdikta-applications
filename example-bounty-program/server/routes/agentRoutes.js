@@ -563,10 +563,13 @@ do NOT call contract functions directly unless you know the ABI.
 
 4. PENDING_EVALUATION and the oracle never responded:
    POST /api/jobs/:id/submissions/:subId/timeout
-   - Returns { canTimeout: bool, ... }. If false, read "reason": "evaluation not
-     settled" (round still open; "settlesAt" says when the aggregator's 300 s timeout
-     elapses) or "result available" (the oracle responded — use /finalize instead).
-     The server applies the contract's own aggregator-based rule, not a timer.
+   - Returns { canTimeout: bool, ... }. If false, read "error" + "hint":
+     "Evaluation not settled" (round still open; the hint gives the unix time the
+     aggregator's 300 s timeout elapses) or "Oracle result available - use
+     finalizeSubmission" (then canFinalize: true — use /finalize instead). The
+     response's "forceFail" object carries the raw gate { hasResult, eligible,
+     reason, secondsUntilTimeout }. The server applies the contract's own
+     aggregator-based rule, not a timer.
    - If true, sign and broadcast the returned transaction — refunds the unspent
      ETH prepay to the hunter. Anyone may call; hunter address not required for this endpoint.
    - On-chain, failTimedOutSubmission has NO timer. It tries to settle the oracle
@@ -609,7 +612,7 @@ the discovery endpoint and drive the close flow themselves.
    contract refuses to force-fail a submission that has a result. Both paths
    settle the aggregator and return the unspent ETH prepay to the hunter.
    timeoutEligible mirrors the on-chain gate (aggregator round settled or timed out,
-   no result). Entries whose oracle DID respond carry needsFinalize: true instead —
+   no result). Entries whose oracle DID respond carry hasResult: true instead —
    call /finalize for those. If a tx still reverts "evaluation not settled", wait and
    retry; "result available - use finalizeSubmission" means finalize instead.
 
@@ -927,7 +930,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'GET',
         path: '/jobs/admin/stuck',
-        description: 'List submissions in PENDING_EVALUATION whose aggregator round is settled/timed out with no result (timeout candidates), plus those whose oracle responded but nobody finalized (needsFinalize)'
+        description: 'List submissions in PENDING_EVALUATION older than 10 minutes with their aggregator gate: canTimeout (round settled/timed out with no result) or canFinalize (oracle responded, nobody finalized)'
       },
       {
         method: 'GET',
@@ -1024,7 +1027,7 @@ router.get('/api/docs', (req, res) => {
           signature: 'prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)',
           notes: [
             'The hunter supplies ONLY their work CID (evaluationCid is a guard and must equal the bounty\'s). The oracle request is built from the bounty: evaluation package, class, the creator\'s oracle settings, and an always-empty addendum (constant ADDENDUM). Nothing the hunter passes reaches the aggregator except hunterCid',
-            'ethMaxBudget = maxTotalFee(bounty.oracle.maxOracleFee) — the same for every submission to a bounty; attach it as msg.value at startPreparedSubmission',
+            'ethMaxBudget = maxTotalFee(bounty.oracle.maxOracleFee) at prepare time — an ESTIMATE. startPreparedSubmission checks msg.value against the LIVE requiredPrepay(bountyId) (aggregator parameters can change), so read that view right before starting; the /start endpoint\'s transaction.value does this for you',
             'hunterCid must be a BARE CID: 46-100 alphanumeric characters (CIDv0 "Qm…" or base32 CIDv1 "b…"). Commas, colons, slashes, spaces or an "ipfs/" prefix revert "bad hunterCid" — the aggregator serializes the request as "1:<evalCid>,<hunterCid>:<addendum>", so a delimiter would smuggle an extra archive or an addendum',
             'Cap: 128 submissions per bounty in total — reverts "submission limit reached" once full'
           ]
@@ -1076,6 +1079,12 @@ router.get('/api/docs', (req, res) => {
             'Retry recovery of a RESOLVED submission\'s unspent oracle prepay (Failed / PassedPaid / PassedUnpaid) and pay it to the address that funded the start. Anyone may call.',
             'Only needed when the resolving tx emitted RefundDeferred(bountyId, submissionId) instead of EthRefunded — i.e. the wallet -> aggregator withdraw chain failed. Resolution itself never depends on it.',
             'Reverts "not resolved" while the submission is still pending, "nothing to recover" if there is no leftover, or with the aggregator\'s own reason if the retry still fails.'
+          ]
+        },
+        requiredPrepay: {
+          signature: 'requiredPrepay(uint256 bountyId) view returns (uint256)',
+          notes: [
+            'The ETH (wei) to attach as msg.value on startPreparedSubmission RIGHT NOW: the aggregator\'s maxTotalFee for the bounty\'s oracle fee. Identical for every submission to the bounty. Authoritative — the SubmissionPrepared ethMaxBudget is the same figure at prepare time and may be stale.'
           ]
         },
         withdraw: {

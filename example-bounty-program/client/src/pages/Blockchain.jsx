@@ -129,17 +129,18 @@ function Blockchain() {
   // These (and canBeClosed / isAcceptingSubmissions / getEffectiveBountyStatus) are implemented in
   // BountyEscrowLens and served AT THE ESCROW ADDRESS through its static-delegatecall fallback —
   // the escrow's verified source / compiled artifact ABI does not list them; this list does.
-  "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
+  "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
   "function getBounties(uint256 start, uint256 count) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle)[])", // count capped at MAX_BATCH = 100
   "function getOracleResult(uint256 bountyId, uint256 submissionId) view returns (bool started, bool hasResult, bool settled, bool failed, uint256[] scores, string justificationCids, uint256 startTimestamp)",
   "function nextAction(uint256 bountyId, uint256 submissionId) view returns (string)", // START | AWAIT_SLOT | AWAIT_CREATOR | AWAIT_ORACLE | AWAIT_EARLIER | FINALIZE | FORCE_FAIL | RECOVER_REFUND | DONE | DEAD
   "function prepareCutoff(uint256 bountyId) view returns (uint256)",                    // last unix second prepareSubmission can succeed
   "function activeEvaluations(uint256 bountyId) view returns (uint256)",   // in-flight evaluations (pending list length)
   "function pendingSubmissionIds(uint256 bountyId) view returns (uint256[])", // ids currently in evaluation (list order, not submission order)
-  "function getSubmissionsPage(uint256 bountyId, uint256 start, uint256 count) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])", // ≤ MAX_BATCH per call; served by the lens
+  "function getSubmissionsPage(uint256 bountyId, uint256 start, uint256 count) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])", // ≤ MAX_BATCH per call; served by the lens
   "function MAX_ACTIVE_EVALUATIONS() view returns (uint256)", // 256 — concurrent evaluations per bounty
   "function MAX_BATCH() view returns (uint256)",              // 100 — page size cap of getBounties / getSubmissionsPage (lens)
   "function lens() view returns (address)",                   // the BountyEscrowLens serving the read views (informational)
+  "function walletImplementation() view returns (address)",   // every submission's evalWallet is an EIP-1167 clone of this (informational)
   "function withdrawable(address account) view returns (uint256)",
   "function MAX_SUBMISSIONS_PER_BOUNTY() view returns (uint256)", // 128 — prepared submissions, WINDOWED bounties only
   "function PAYOUT_GAS_LIMIT() view returns (uint256)",           // 120000
@@ -152,7 +153,7 @@ function Blockchain() {
   "function SCORE_SCALE() view returns (uint256)",                // 1000000 — max per score entry
   "function SCORE_DIVISOR() view returns (uint256)",              // 10000 — score / divisor = 0..100
   "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))",
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
   "function verdikta() view returns (address)"

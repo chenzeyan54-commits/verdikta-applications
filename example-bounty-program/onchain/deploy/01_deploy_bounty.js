@@ -37,9 +37,12 @@ async function main() {
   // The escrow's constructor creates its read-only lens; record it so it can be verified
   // and found on explorers. Callers never need it: lens views answer at the escrow address.
   const lensAddr = await escrow.lens();
+  // ...and the EvaluationWallet implementation every submission wallet is a clone of.
+  const walletImplAddr = await escrow.walletImplementation();
 
   console.log(`\nBountyEscrow deployed at: ${escrowAddr}`);
   console.log(`BountyEscrowLens (created by the escrow): ${lensAddr}`);
+  console.log(`EvaluationWallet implementation (created by the escrow): ${walletImplAddr}`);
 
   // Save deployment JSON
   saveDeployment(network, chainId, {
@@ -49,6 +52,7 @@ async function main() {
     contracts: {
       BountyEscrow: escrowAddr,
       BountyEscrowLens: lensAddr,
+      EvaluationWalletImplementation: walletImplAddr,
       VerdiktaAggregator: verdikta
     }
   });
@@ -84,6 +88,20 @@ if (process.env.BASESCAN_API_KEY) {
         if (m.includes("Already Verified")) console.log("Lens already verified!");
         else console.log(`Lens verify failed (verify manually later): ${m}`);
       }
+      // The wallet implementation: verifying it lets explorers show every submission's
+      // minimal-proxy clone as "EvaluationWallet" with readable state.
+      try {
+        await hre.run("verify:verify", {
+          address: walletImplAddr,
+          contract: "contracts/EvaluationWallet.sol:EvaluationWallet",
+          constructorArguments: [escrowAddr, verdikta]
+        });
+        console.log("Wallet implementation verified successfully!");
+      } catch (wErr) {
+        const m = wErr.message || wErr.toString();
+        if (m.includes("Already Verified")) console.log("Wallet implementation already verified!");
+        else console.log(`Wallet implementation verify failed (verify manually later): ${m}`);
+      }
       break; // Success! Exit the loop
     } catch (err) {
       const errorMsg = err.message || err.toString();
@@ -102,6 +120,7 @@ if (process.env.BASESCAN_API_KEY) {
           console.log("Try verifying manually later with:");
           console.log(`  npx hardhat verify --network ${network} ${escrowAddr} "${verdikta}"`);
           console.log(`  npx hardhat verify --network ${network} --contract contracts/BountyEscrowLens.sol:BountyEscrowLens ${lensAddr} "${verdikta}"`);
+          console.log(`  npx hardhat verify --network ${network} --contract contracts/EvaluationWallet.sol:EvaluationWallet ${walletImplAddr} "${escrowAddr}" "${verdikta}"`);
         } else {
           await new Promise(resolve => setTimeout(resolve, delayMs));
         }

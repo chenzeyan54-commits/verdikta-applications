@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.23;
+pragma solidity 0.8.23;
 
 import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 import {BountyEscrow} from "./BountyEscrow.sol";
@@ -122,7 +122,7 @@ contract BountyEscrowLens {
     function getSubmissions(uint256 bountyId)
         external view returns (BountyEscrow.Submission[] memory out)
     {
-        escrow.getBounty(bountyId); // "bad bountyId" if it does not exist
+        require(bountyId < escrow.bountyCount(), "bad bountyId");
         uint256 n = escrow.submissionCount(bountyId);
         out = new BountyEscrow.Submission[](n);
         for (uint256 i = 0; i < n; i++) out[i] = escrow.getSubmission(bountyId, i);
@@ -134,7 +134,7 @@ contract BountyEscrowLens {
     function getSubmissionsPage(uint256 bountyId, uint256 start, uint256 count)
         external view returns (BountyEscrow.Submission[] memory out)
     {
-        escrow.getBounty(bountyId); // "bad bountyId" if it does not exist
+        require(bountyId < escrow.bountyCount(), "bad bountyId");
         uint256 n = escrow.submissionCount(bountyId);
         if (start >= n) return new BountyEscrow.Submission[](0);
         if (count > MAX_BATCH) count = MAX_BATCH;
@@ -175,7 +175,7 @@ contract BountyEscrowLens {
             uint256[] memory scores, string memory justificationCids, uint256 startTimestamp
         )
     {
-        escrow.getBounty(bountyId); // "bad bountyId" if it does not exist
+        require(bountyId < escrow.bountyCount(), "bad bountyId");
         BountyEscrow.Submission memory s = escrow.getSubmission(bountyId, submissionId);
         if (s.verdiktaAggId == bytes32(0)) {
             return (false, false, false, false, new uint256[](0), "", 0);

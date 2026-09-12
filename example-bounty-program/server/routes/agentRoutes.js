@@ -1167,7 +1167,7 @@ router.get('/api/docs', (req, res) => {
         },
         getSubmission: {
           signature: 'getSubmission(uint256 bountyId, uint256 submissionId) view returns (Submission)',
-          notes: ['Returns full submission struct']
+          notes: ['Returns the Submission struct (12 fields; justificationCids is NOT stored on-chain — read it from the SubmissionFinalized event or getOracleResult; acceptance/rejection are 0..100)']
         },
         startPreparedSubmission: {
           signature: 'startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable',

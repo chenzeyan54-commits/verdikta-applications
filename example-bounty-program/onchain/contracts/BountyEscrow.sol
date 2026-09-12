@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.23;
+pragma solidity 0.8.23;
 
 import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
-import "./EvaluationWallet.sol";
+import {EvaluationWallet} from "./EvaluationWallet.sol";
 import {BountyEscrowLens} from "./BountyEscrowLens.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 /// @title BountyEscrow
 /// @notice Bounty escrow with four effective states: OPEN, EXPIRED, AWARDED, CLOSED
@@ -52,38 +53,51 @@ contract BountyEscrow {
         OracleParams oracle;
     }
 
+    /// @dev Storage layout: fields are declared in ABI order but typed as narrowly as their
+    ///      domain allows so that adjacent ones share a slot (12 slots instead of 15).
+    ///      Every integer still ABI-encodes as one 32-byte word, so an off-chain decoder
+    ///      that declares these fields as uint256 keeps decoding them correctly. Bounds:
+    ///      wei amounts fit uint128 (total ETH supply ~2^87 wei); timestamps fit uint64.
     struct Bounty {
-        address creator;
-        string  evaluationCid;      // IPFS CID for evaluation package (contains jury config, rubric ref, instructions)
-        uint64  requestedClass;     // Verdikta class ID
-        uint8   threshold;          // 0..100 acceptance threshold
-        uint256 payoutWei;          // ETH locked (max of two payment amounts)
-        uint256 createdAt;
-        uint64  submissionDeadline; // Unix timestamp when submissions close
-        BountyStatus status;
-        address winner;
-        uint256 submissions;        // count
-        address targetHunter;       // address(0) = open to all, otherwise only this address can submit
-        uint256 creatorDeterminationPayment;  // Payment if creator approves
-        uint256 arbiterDeterminationPayment;  // Payment if arbiters approve via Verdikta
-        uint64  creatorAssessmentWindowSize;  // Window duration in seconds (0 = no window)
-        OracleParams oracle;                  // creator-chosen oracle request settings
+        address creator;                      // slot 0
+        string  evaluationCid;                // slot 1: IPFS CID for evaluation package (contains jury config, rubric ref, instructions)
+        uint64  requestedClass;               // slot 2: Verdikta class ID
+        uint8   threshold;                    // slot 2: 0..100 acceptance threshold
+        uint128 payoutWei;                    // slot 2: ETH locked (max of two payment amounts)
+        uint64  createdAt;                    // slot 3
+        uint64  submissionDeadline;           // slot 3: Unix timestamp when submissions close
+        BountyStatus status;                  // slot 3
+        address winner;                       // slot 4
+        uint64  submissions;                  // slot 4: count (every prepared submission, started or not)
+        address targetHunter;                 // slot 5: address(0) = open to all, otherwise only this address can submit
+        uint128 creatorDeterminationPayment;  // slot 6: Payment if creator approves
+        uint128 arbiterDeterminationPayment;  // slot 6: Payment if arbiters approve via Verdikta
+        uint64  creatorAssessmentWindowSize;  // slot 7: Window duration in seconds (0 = no window)
+        OracleParams oracle;                  // slots 8-11: creator-chosen oracle request settings (also the createBounty input type — not narrowed)
     }
 
+    /// @dev Same packing approach as Bounty: ABI order kept, types narrowed (6 slots instead
+    ///      of 12). Everything prepare, start and finalize write besides the addresses and
+    ///      the aggregation id sits in ONE slot (4), so each of them pays for it once.
+    ///      ethMaxBudget is uint96 (max ~7.9e28 wei, ~660x the ETH supply): at start it equals
+    ///      msg.value, and the prepare-time estimate is range-checked.
+    ///      The result's justification CIDs are deliberately NOT stored here: the aggregator
+    ///      keeps them permanently (read via getOracleResult / verdikta.getEvaluation) and the
+    ///      SubmissionFinalized event carries them, so a third copy would only cost up to
+    ///      ~250k gas per finalize.
     struct Submission {
-        address hunter;             // who prepared (and is paid the bounty if it wins)
-        string  hunterCid;          // Hunter's work product archive CID (bCID containing the actual submission)
-        address evalWallet;
-        bytes32 verdiktaAggId;      // set once started
-        SubmissionStatus status;
-        uint256 acceptance;         // stored acceptance (0..100)
-        uint256 rejection;          // stored rejection (0..100)
-        string  justificationCids;  // Verdikta result, if any
-        uint256 submittedAt;
-        uint256 finalizedAt;
-        uint256 ethMaxBudget;       // ETH wei prepay: maxTotalFee(...) ESTIMATE at prepare; the amount actually prepaid once started
-        uint64  creatorWindowEnd;   // Timestamp when creator window expires (0 if no window)
-        address funder;             // who attached the prepay at start; receives the unspent refund
+        address hunter;             // slot 0: who prepared (and is paid the bounty if it wins)
+        string  hunterCid;          // slot 1: Hunter's work product archive CID (bCID containing the actual submission)
+        address evalWallet;         // slot 2
+        bytes32 verdiktaAggId;      // slot 3: set once started
+        SubmissionStatus status;    // slot 4
+        uint8   acceptance;         // slot 4: stored acceptance (0..100)
+        uint8   rejection;          // slot 4: stored rejection (0..100)
+        uint64  submittedAt;        // slot 4
+        uint64  finalizedAt;        // slot 4
+        uint96  ethMaxBudget;       // slot 4: ETH wei prepay: maxTotalFee(...) ESTIMATE at prepare; the amount actually prepaid once started
+        uint64  creatorWindowEnd;   // slot 5: Timestamp when creator window expires (0 if no window)
+        address funder;             // slot 5: who attached the prepay at start; receives the unspent refund
     }
 
     IVerdiktaAggregator public immutable verdikta;
@@ -96,6 +110,12 @@ contract BountyEscrow {
     ///         block explorer or a curious caller can find the verified lens source.
     ///         Created once, in the constructor. No setter, no owner, no upgrade path.
     BountyEscrowLens public immutable lens;
+
+    /// @notice The EvaluationWallet implementation every submission's wallet is a minimal-proxy
+    ///         clone of (EIP-1167). Created once, in the constructor; its immutables
+    ///         (bountyContract = this, verdikta) are shared by all clones. Informational —
+    ///         nothing ever operates the implementation itself.
+    EvaluationWallet public immutable walletImplementation;
 
     Bounty[] public bounties;
     mapping(uint256 => Submission[]) public subs;
@@ -307,6 +327,7 @@ contract BountyEscrow {
         // The lens's creation code lives in THIS contract's initcode (its own, larger,
         // EIP-3860 budget), not in the runtime bytecode that EIP-170 caps.
         lens = new BountyEscrowLens(_verdikta);
+        walletImplementation = new EvaluationWallet(address(this), _verdikta);
     }
 
     modifier nonReentrant() {
@@ -348,20 +369,22 @@ contract BountyEscrow {
         require(o.alpha <= MAX_ALPHA, "bad alpha");
         require(verdikta.maxTotalFee(o.maxOracleFee) > 0, "bad budget");
 
+        // The uint128 casts are safe: msg.value == max(payments), so both payments and the
+        // escrowed amount are bounded by the ETH actually sent (far below 2^128 wei).
         bounties.push(Bounty({
             creator: msg.sender,
             evaluationCid: p.evaluationCid,
             requestedClass: p.requestedClass,
             threshold: p.threshold,
-            payoutWei: msg.value,
-            createdAt: block.timestamp,
+            payoutWei: uint128(msg.value),
+            createdAt: uint64(block.timestamp),
             submissionDeadline: p.submissionDeadline,
             status: BountyStatus.Open,
             winner: address(0),
             submissions: 0,
             targetHunter: p.targetHunter,
-            creatorDeterminationPayment: p.creatorDeterminationPayment,
-            arbiterDeterminationPayment: p.arbiterDeterminationPayment,
+            creatorDeterminationPayment: uint128(p.creatorDeterminationPayment),
+            arbiterDeterminationPayment: uint128(p.arbiterDeterminationPayment),
             creatorAssessmentWindowSize: p.creatorAssessmentWindowSize,
             oracle: o
         }));
@@ -456,15 +479,13 @@ contract BountyEscrow {
         );
 
         ethMaxBudget = verdikta.maxTotalFee(b.oracle.maxOracleFee);
-        require(ethMaxBudget > 0, "bad budget");
+        require(ethMaxBudget > 0 && ethMaxBudget <= type(uint96).max, "bad budget");
 
-        EvaluationWallet wallet = new EvaluationWallet(
-            address(this),
-            msg.sender,
-            verdikta
-        );
+        // EIP-1167 clone of the shared implementation: ~40k gas instead of a ~390k deployment.
+        address wallet = Clones.clone(address(walletImplementation));
 
-        bool hasWindow = b.creatorAssessmentWindowSize > 0;
+        uint64 window = b.creatorAssessmentWindowSize;
+        bool hasWindow = window > 0;
 
         // Windowed bounties: the deadline is the last moment for the hunter to have their
         // evaluation STARTED (see startPreparedSubmission), and starting is only allowed
@@ -473,45 +494,38 @@ contract BountyEscrow {
         // could never be arbitrated and the deadline-based close would be unsafe.
         if (hasWindow) {
             require(
-                block.timestamp + b.creatorAssessmentWindowSize + 1 < b.submissionDeadline,
+                block.timestamp + window + 1 < b.submissionDeadline,
                 "window would end after deadline"
             );
         }
 
-        Submission memory s = Submission({
-            hunter: msg.sender,
-            hunterCid: hunterCid,
-            evalWallet: address(wallet),
-            verdiktaAggId: bytes32(0),
-            status: hasWindow
-                ? SubmissionStatus.PendingCreatorApproval
-                : SubmissionStatus.Prepared,
-            acceptance: 0,
-            rejection: 0,
-            justificationCids: "",
-            submittedAt: block.timestamp,
-            finalizedAt: 0,
-            ethMaxBudget: ethMaxBudget,
-            creatorWindowEnd: hasWindow
-                ? uint64(block.timestamp) + b.creatorAssessmentWindowSize
-                : 0,
-            funder: address(0)
-        });
+        // Push an empty struct and assign only the non-zero fields (writing zeros to fresh
+        // slots would cost gas for nothing). Prepared == 0 needs no write.
+        Submission[] storage list = subs[bountyId];
+        Submission storage s = list.push();
+        s.hunter = msg.sender;
+        s.hunterCid = hunterCid;
+        s.evalWallet = wallet;
+        s.submittedAt = uint64(block.timestamp);
+        s.ethMaxBudget = uint96(ethMaxBudget); // range-checked above
+        if (hasWindow) {
+            s.status = SubmissionStatus.PendingCreatorApproval;
+            s.creatorWindowEnd = uint64(block.timestamp) + window;
+        }
 
-        subs[bountyId].push(s);
-        submissionId = subs[bountyId].length - 1;
+        submissionId = list.length - 1;
         b.submissions += 1;
 
         emit SubmissionPrepared(
             bountyId,
             submissionId,
             msg.sender,
-            address(wallet),
+            wallet,
             ethMaxBudget,
             evaluationCid
         );
 
-        evalWallet = address(wallet);
+        evalWallet = wallet;
     }
 
     /// @notice Creator approves a submission during the assessment window
@@ -539,7 +553,7 @@ contract BountyEscrow {
         b.status = BountyStatus.Awarded;
         b.winner = s.hunter;
         s.status = SubmissionStatus.PassedPaid;
-        s.finalizedAt = block.timestamp;
+        s.finalizedAt = uint64(block.timestamp);
 
         emit CreatorApproved(bountyId, submissionId, s.hunter, pay);
         emit PayoutSent(bountyId, s.hunter, pay);
@@ -599,7 +613,7 @@ contract BountyEscrow {
         uint256 required = verdikta.maxTotalFee(o.maxOracleFee);
         require(required > 0, "bad budget");
         require(msg.value == required, "wrong eth amount");
-        s.ethMaxBudget = required; // record what was actually prepaid
+        s.ethMaxBudget = uint96(required); // record what was actually prepaid (== msg.value, so it fits)
 
         EvaluationWallet wallet = EvaluationWallet(payable(s.evalWallet));
 
@@ -642,13 +656,13 @@ contract BountyEscrow {
         Submission storage s = _mustSubmission(bountyId, submissionId);
         require(s.status == SubmissionStatus.PendingVerdikta, "not pending");
 
-        (uint256[] memory scores, string memory justCids, bool ok) =
-            verdikta.getEvaluation(s.verdiktaAggId);
+        bytes32 aggId = s.verdiktaAggId;
+        (uint256[] memory scores, string memory justCids, bool ok) = verdikta.getEvaluation(aggId);
 
         if (!ok) {
             // If timed out but not finalized on Verdikta, try to finalize there
-            try verdikta.finalizeEvaluationTimeout(s.verdiktaAggId) {
-                (scores, justCids, ok) = verdikta.getEvaluation(s.verdiktaAggId);
+            try verdikta.finalizeEvaluationTimeout(aggId) {
+                (scores, justCids, ok) = verdikta.getEvaluation(aggId);
             } catch { /* ignore */ }
         }
         if (!ok) {
@@ -656,7 +670,7 @@ contract BountyEscrow {
             // settled with no result can never be finalized — failTimedOutSubmission is the
             // call (a settle attempt above is rolled back with this revert; force-fail redoes
             // it). Otherwise the oracle simply has not answered yet.
-            (bool settled, , , , , , , , , ) = verdikta.getAggregationStatus(s.verdiktaAggId);
+            (bool settled, , , , , , , , , ) = verdikta.getAggregationStatus(aggId);
             require(!settled, "no oracle result - use failTimedOutSubmission");
             revert("Verdikta not ready");
         }
@@ -672,10 +686,10 @@ contract BountyEscrow {
         // and the escrow would be locked. Failing it keeps the bounty usable and refunds
         // the hunter's leftover prepay.
         (, bool passed, uint256 acceptance, uint256 rejection) = _scoreVector(scores, b.threshold);
-        s.acceptance = acceptance;
-        s.rejection  = rejection;
-        s.justificationCids = justCids;
-        s.finalizedAt = block.timestamp;
+        s.acceptance = uint8(acceptance);   // 0..100 by construction (_scoreVector)
+        s.rejection  = uint8(rejection);
+        s.finalizedAt = uint64(block.timestamp);
+        // justCids is emitted below, not stored (see the Submission struct doc).
 
         if (!passed) {
             s.status = SubmissionStatus.Failed;
@@ -770,7 +784,7 @@ contract BountyEscrow {
 
         // Mark as failed
         s.status = SubmissionStatus.Failed;
-        s.finalizedAt = block.timestamp;
+        s.finalizedAt = uint64(block.timestamp);
 
         emit SubmissionFinalized(
             bountyId,
@@ -894,11 +908,12 @@ contract BountyEscrow {
     ///      not on the list and cost nothing here.
     function _requireNoPassingSubmission(uint256 bountyId, uint256 threshold) internal view {
         uint256[] storage pending = _pending[bountyId];
+        Submission[] storage list = subs[bountyId];
         uint256 n = pending.length;
 
-        for (uint256 i = 0; i < n; i++) {
+        for (uint256 i = 0; i < n; ) {
             (uint256[] memory scores, , bool ok) =
-                verdikta.getEvaluation(subs[bountyId][pending[i]].verdiktaAggId);
+                verdikta.getEvaluation(list[pending[i]].verdiktaAggId);
 
             // If evaluation is complete with a VALID passing result, block. An invalid
             // vector is never "passing" (it will finalize as Failed), so it never blocks.
@@ -908,6 +923,7 @@ contract BountyEscrow {
                     revert("another submission already passed - finalize it first");
                 }
             }
+            unchecked { ++i; }
         }
     }
 
@@ -939,12 +955,14 @@ contract BountyEscrow {
         internal view returns (bool)
     {
         uint256[] storage pending = _pending[bountyId];
-        address hunter = subs[bountyId][submissionId].hunter;
+        Submission[] storage list = subs[bountyId];
+        address hunter = list[submissionId].hunter;
         uint256 n = pending.length;
 
-        for (uint256 i = 0; i < n; i++) {
+        for (uint256 i = 0; i < n; ) {
             uint256 id = pending[i];
-            if (id < submissionId && subs[bountyId][id].hunter != hunter) return true;
+            if (id < submissionId && list[id].hunter != hunter) return true;
+            unchecked { ++i; }
         }
         return false;
     }
@@ -979,16 +997,18 @@ contract BountyEscrow {
     function _hasEarlierUnresolvedSubmission(uint256 bountyId, uint256 submissionId)
         internal view returns (bool)
     {
-        address hunter = subs[bountyId][submissionId].hunter;
-        for (uint256 i = 0; i < submissionId; i++) {
-            Submission storage e = subs[bountyId][i];
+        Submission[] storage list = subs[bountyId];
+        address hunter = list[submissionId].hunter;
+        for (uint256 i = 0; i < submissionId; ) {
+            Submission storage e = list[i];
             SubmissionStatus st = e.status;
             if (st == SubmissionStatus.PendingVerdikta) return true;
-            if (e.hunter == hunter) continue;
-            if (st == SubmissionStatus.PendingCreatorApproval &&
+            if (e.hunter != hunter &&
+                st == SubmissionStatus.PendingCreatorApproval &&
                 block.timestamp <= e.creatorWindowEnd) {
                 return true;
             }
+            unchecked { ++i; }
         }
         return false;
     }
@@ -1070,12 +1090,16 @@ contract BountyEscrow {
         bytes calldata b = bytes(cid);
         uint256 len = b.length;
         if (len < MIN_CID_LENGTH || len > MAX_CID_LENGTH) return false;
-        for (uint256 i = 0; i < len; i++) {
-            bytes1 c = b[i];
-            bool ok = (c >= 0x30 && c <= 0x39)   // 0-9
-                   || (c >= 0x41 && c <= 0x5A)   // A-Z
-                   || (c >= 0x61 && c <= 0x7A);  // a-z
-            if (!ok) return false;
+        for (uint256 i = 0; i < len; ) {
+            uint8 c = uint8(b[i]);
+            unchecked {
+                // 0-9: c-0x30 < 10; A-Z / a-z: fold case with |0x20, then (c|0x20)-0x61 < 26.
+                // Wrap-around on subtraction makes every other byte (incl. /:@[\`{ and >=0x80)
+                // fail both tests.
+                bool ok = (c - 0x30 < 10) || ((c | 0x20) - 0x61 < 26);
+                if (!ok) return false;
+                ++i;
+            }
         }
         return true;
     }

@@ -20,6 +20,13 @@ async function main() {
     contract: "contracts/BountyEscrowLens.sol:BountyEscrowLens",
     constructorArguments: [verdikta]
   });
+  const walletImplAddr = await escrow.walletImplementation();
+  console.log(`Verifying EvaluationWallet implementation at ${walletImplAddr}`);
+  await hre.run("verify:verify", {
+    address: walletImplAddr,
+    contract: "contracts/EvaluationWallet.sol:EvaluationWallet",
+    constructorArguments: [addr, verdikta]
+  });
 }
 
 main().catch((e) => { console.error(e); process.exitCode = 1; });

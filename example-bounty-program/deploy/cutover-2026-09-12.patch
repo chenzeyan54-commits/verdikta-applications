@@ -982,7 +982,7 @@ index 0159b03..38c15f0 100644
     * Pre-validate an evaluation CID before creating a bounty
     * @param {Object} data - { evaluationCid, classId }
 diff --git a/client/src/services/contractService.js b/client/src/services/contractService.js
-index 57a3e45..3458c46 100644
+index 57a3e45..c1b7d13 100644
 --- a/client/src/services/contractService.js
 +++ b/client/src/services/contractService.js
 @@ -17,29 +17,143 @@ import { ethers } from 'ethers';
@@ -1018,7 +1018,7 @@ index 57a3e45..3458c46 100644
    // View Functions (used sparingly)
    "function getEffectiveBountyStatus(uint256) view returns (string)",
 -  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
-+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))",
++  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))",
    "function bountyCount() view returns (uint256)",
 -  "function getBounty(uint256) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))",
 -  "function verdikta() view returns (address)"
@@ -1028,7 +1028,7 @@ index 57a3e45..3458c46 100644
 +  "function canBeClosed(uint256 bountyId) view returns (bool)",
 +  "function requiredPrepay(uint256 bountyId) view returns (uint256)",
 +  "function effectiveOracleParams(uint256 bountyId) view returns (tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling))",
-+  "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
++  "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
 +  "function getBounties(uint256 start, uint256 count) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle)[])",
 +  "function getOracleResult(uint256 bountyId, uint256 submissionId) view returns (bool started, bool hasResult, bool settled, bool failed, uint256[] scores, string justificationCids, uint256 startTimestamp)",
 +  "function nextAction(uint256 bountyId, uint256 submissionId) view returns (string)",
@@ -1635,7 +1635,7 @@ index 57a3e45..3458c46 100644
          throw e;
        }
  
-@@ -803,15 +1084,20 @@ class ContractService {
+@@ -803,15 +1084,21 @@ class ContractService {
  
          return {
            hunter: sub.hunter,
@@ -1650,7 +1650,8 @@ index 57a3e45..3458c46 100644
 +          finalizedAt: Number(sub.finalizedAt),
            acceptance: Number(sub.acceptance),
            rejection: Number(sub.rejection),
-+          justificationCids: sub.justificationCids,
++          // Not stored on-chain (v0.5.0): use checkEvaluationReady() (aggregator) or the API's job data.
++          justificationCids: '',
            ethMaxBudget: sub.ethMaxBudget.toString(),
            creatorWindowEnd: Number(sub.creatorWindowEnd),
 +          // Who attached the prepay at start (receives the unspent refund)
@@ -1658,7 +1659,7 @@ index 57a3e45..3458c46 100644
          };
  
        } catch (error) {
-@@ -841,17 +1127,12 @@ class ContractService {
+@@ -841,17 +1128,12 @@ class ContractService {
      }
  
      try {
@@ -1680,7 +1681,7 @@ index 57a3e45..3458c46 100644
  
        // Status codes: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid, 5=PendingCreatorApproval
        if (statusCode !== 0 && statusCode !== 1) {
-@@ -864,32 +1145,8 @@ class ContractService {
+@@ -864,32 +1146,8 @@ class ContractService {
          return { ready: false };
        }
  
@@ -1715,7 +1716,7 @@ index 57a3e45..3458c46 100644
        let scores, justCids, ok;
        try {
          [scores, justCids, ok] = await verdikta.getEvaluation(verdiktaAggId);
-@@ -931,6 +1188,122 @@ class ContractService {
+@@ -931,6 +1189,122 @@ class ContractService {
      }
    }
  
@@ -1838,7 +1839,7 @@ index 57a3e45..3458c46 100644
    // ==========================================================================
    // CONNECTION STATE
    // ==========================================================================
-@@ -965,6 +1338,7 @@ class ContractService {
+@@ -965,6 +1339,7 @@ class ContractService {
      this.contract = null;
      this.userAddress = null;
      this._readOnlyProvider = null;
@@ -1846,7 +1847,7 @@ index 57a3e45..3458c46 100644
      this.clearCache();
    }
  }
-@@ -1027,7 +1401,8 @@ export async function resolveBountyIdByStateLoose({
+@@ -1027,7 +1402,8 @@ export async function resolveBountyIdByStateLoose({
    const provider = getSharedProvider();
    const abi = [
      "function bountyCount() view returns (uint256)",
@@ -1907,7 +1908,7 @@ index e4dec3f..2adab67 100644
  
  function getProvider() {
 diff --git a/server/routes/jobRoutes.js b/server/routes/jobRoutes.js
-index 8afd8cf..05469b9 100644
+index 8afd8cf..ecc934a 100644
 --- a/server/routes/jobRoutes.js
 +++ b/server/routes/jobRoutes.js
 @@ -32,6 +32,153 @@ const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/s
@@ -2643,6 +2644,19 @@ index 8afd8cf..05469b9 100644
      });
      
      // Map status enum to string (ethers v6 returns BigInt for enums)
+@@ -5657,9 +5916,9 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
+       localSubmission.rejection = rejectScore;
+       localSubmission.evaluationCid = sub.evaluationCid;
+       localSubmission.hunterCid = sub.hunterCid;
+-      // Only overwrite justificationCids if the on-chain value is non-empty.
+-      // Before finalizeSubmission(), BountyEscrow has empty CIDs even though
+-      // VerdiktaAggregator already has them (populated by hot-poll sync).
++      // BountyEscrow does not store justification CIDs (v0.5.0); the local value comes from
++      // the SubmissionFinalized event / the aggregator via the sync service, so this only
++      // ever overwrites with a non-empty value (never, from the escrow wrapper).
+       if (sub.justificationCids) {
+         localSubmission.justificationCids = sub.justificationCids;
+       }
 @@ -5730,26 +5989,109 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
     TIMEOUT STUCK SUBMISSION
     ======================= */
@@ -3047,7 +3061,7 @@ index 8afd8cf..05469b9 100644
  
    return {
 diff --git a/server/routes/receiptRoutes.js b/server/routes/receiptRoutes.js
-index afa67c3..6db145b 100644
+index afa67c3..10d9942 100644
 --- a/server/routes/receiptRoutes.js
 +++ b/server/routes/receiptRoutes.js
 @@ -12,8 +12,8 @@ const router = express.Router();
@@ -3057,7 +3071,7 @@ index afa67c3..6db145b 100644
 -  'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions))',
 -  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum))'
 +  'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))',
-+  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))'
++  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))'
  ];
  
  function providerRO() {
@@ -3077,7 +3091,7 @@ index 0f3c376..6da3a83 100644
  
  function getProvider() {
 diff --git a/server/scripts/claimResults.js b/server/scripts/claimResults.js
-index 4d9eca5..8c5df4b 100755
+index 4d9eca5..4c09a33 100755
 --- a/server/scripts/claimResults.js
 +++ b/server/scripts/claimResults.js
 @@ -62,9 +62,9 @@ const CONFIG = {
@@ -3088,7 +3102,7 @@ index 4d9eca5..8c5df4b 100755
 +  'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))',
    'function submissionCount(uint256 bountyId) view returns (uint256)',
 -  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))',
-+  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))',
++  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))',
    'function finalizeSubmission(uint256 bountyId, uint256 submissionId)',
    'function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
    'function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)',
@@ -3252,7 +3266,7 @@ index 0216d23..018d22d 100755
        );
  
 diff --git a/server/scripts/submitToBounties.js b/server/scripts/submitToBounties.js
-index d7483c8..2653ec1 100644
+index d7483c8..82e8a70 100644
 --- a/server/scripts/submitToBounties.js
 +++ b/server/scripts/submitToBounties.js
 @@ -583,13 +583,17 @@ const VERDIKTA_ABI = [
@@ -3272,7 +3286,7 @@ index d7483c8..2653ec1 100644
    'function submissionCount(uint256 bountyId) view returns (uint256)',
 -  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))',
 -  'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)',
-+  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))',
++  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))',
 +  'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, uint256 ethMaxBudget, string evaluationCid)',
  ];
  
@@ -3320,7 +3334,7 @@ index d7483c8..2653ec1 100644
        }
      } catch (e) {
 diff --git a/server/utils/contractService.js b/server/utils/contractService.js
-index b4023ec..fefa4b8 100644
+index b4023ec..1b7ecc8 100644
 --- a/server/utils/contractService.js
 +++ b/server/utils/contractService.js
 @@ -14,30 +14,76 @@ const logger = require('./logger');
@@ -3334,7 +3348,7 @@ index b4023ec..fefa4b8 100644
    "function canBeClosed(uint256 bountyId) view returns (bool)",
 +  "function requiredPrepay(uint256 bountyId) view returns (uint256)",
 +  "function effectiveOracleParams(uint256 bountyId) view returns (tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling))",
-+  "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
++  "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
 +  "function getBounties(uint256 start, uint256 count) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle)[])",
 +  "function getOracleResult(uint256 bountyId, uint256 submissionId) view returns (bool started, bool hasResult, bool settled, bool failed, uint256[] scores, string justificationCids, uint256 startTimestamp)",
 +  "function nextAction(uint256 bountyId, uint256 submissionId) view returns (string)",
@@ -3342,7 +3356,7 @@ index b4023ec..fefa4b8 100644
 +  "function MAX_BATCH() view returns (uint256)",
    "function submissionCount(uint256 bountyId) view returns (uint256)",
 -  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
-+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))",
++  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))",
    "function verdikta() view returns (address)",
 +  "function activeEvaluations(uint256) view returns (uint256)",
 +  "function withdrawable(address) view returns (uint256)",
@@ -3527,7 +3541,7 @@ index b4023ec..fefa4b8 100644
          isAcceptingSubmissions: isAccepting,
          canBeClosed: canClose,
          syncedFromBlockchain: true,
-@@ -436,7 +574,6 @@ class ContractService {
+@@ -436,19 +574,23 @@ class ContractService {
            submissions.push({
              submissionId: i,
              hunter: sub.hunter,
@@ -3535,7 +3549,15 @@ index b4023ec..fefa4b8 100644
              hunterCid: sub.hunterCid,
              evalWallet: sub.evalWallet,
              verdiktaAggId: sub.verdiktaAggId,
-@@ -449,6 +586,9 @@ class ContractService {
+             status: statusMap[sub.status] || 'UNKNOWN',
+             acceptance: Number(sub.acceptance),
+             rejection: Number(sub.rejection),
+-            justificationCids: sub.justificationCids,
++            // Not stored on-chain (v0.5.0): the sync service records the CIDs from the
++            // SubmissionFinalized event / the aggregator (getEvaluationByAggId). Empty here.
++            justificationCids: '',
+             submittedAt: Number(sub.submittedAt),
+             finalizedAt: Number(sub.finalizedAt),
              ethMaxBudget: sub.ethMaxBudget.toString(),
              score: sub.acceptance > 0 ? Number(sub.acceptance) : null,
              creatorWindowEnd: Number(sub.creatorWindowEnd),
@@ -3545,7 +3567,7 @@ index b4023ec..fefa4b8 100644
            });
          } catch (err) {
            logger.warn(`Failed to fetch submission ${i} for bounty ${bountyId}:`, err);
-@@ -521,5 +661,7 @@ function getContractService() {
+@@ -521,5 +663,7 @@ function getContractService() {
  module.exports = {
    initializeContractService,
    getContractService,

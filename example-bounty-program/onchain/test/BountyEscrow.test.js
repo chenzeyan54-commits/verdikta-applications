@@ -4357,7 +4357,7 @@ describe("BountyEscrow", function () {
       ).to.be.revertedWith("Not bounty");
       // A wallet whose "bounty contract" is a test signer can be driven directly
       const W = await ethers.getContractFactory("EvaluationWallet");
-      const direct = await W.deploy(owner.address, hunter.address, await verdiktaAggregator.getAddress());
+      const direct = await W.deploy(owner.address, await verdiktaAggregator.getAddress());
       const args = [[EVAL_CID, HUNTER_CID], "", ALPHA, MAX_ORACLE_FEE, EST_BASE_COST, MAX_FEE_SCALING, CLASS_ID];
       await direct.connect(owner).startEvaluation(...args, { value: MAX_ORACLE_FEE * 3n });
       expect(await direct.started()).to.equal(true);
@@ -4406,11 +4406,12 @@ describe("BountyEscrow", function () {
       const aggId = sRc.logs.find((l) => l.fragment && l.fragment.name === "WorkSubmitted").args[2];
       await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
       const fRc = await (await bountyEscrow.finalizeSubmission(bountyId, submissionId)).wait();
-      // Measured 2026-09-12: create 384k, prepare 650k, start 440k, finalize 191k. Ceilings leave ~15%.
-      expect(cRc.gasUsed).to.be.lessThan(450_000n);
-      expect(pRc.gasUsed).to.be.lessThan(750_000n);
-      expect(sRc.gasUsed).to.be.lessThan(510_000n);
-      expect(fRc.gasUsed).to.be.lessThan(230_000n);
+      // Measured 2026-09-12 after Tier A (clones + packing): see the numbers in the runbook.
+      // Ceilings leave ~15% headroom; a regression past them fails the suite.
+      expect(cRc.gasUsed).to.be.lessThan(420_000n);
+      expect(pRc.gasUsed).to.be.lessThan(320_000n);
+      expect(sRc.gasUsed).to.be.lessThan(500_000n);
+      expect(fRc.gasUsed).to.be.lessThan(180_000n);
     });
   });
 });

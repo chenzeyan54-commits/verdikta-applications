@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.23;
+pragma solidity 0.8.23;
 
 import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 
@@ -7,9 +7,14 @@ import {IVerdiktaAggregator} from "./interfaces/IVerdiktaAggregator.sol";
 ///         The wallet is msg.sender to Verdikta, so any unspent prepay is refunded to
 ///         ethOwed[this] and recovered via withdrawEth() before being handed back to the
 ///         BountyEscrow, which pays whoever funded the start (Submission.funder).
+/// @dev Deployed ONCE by the escrow's constructor as an implementation; every submission
+///      gets an EIP-1167 minimal-proxy clone of it (BountyEscrow.walletImplementation /
+///      Clones.clone), which costs ~40k gas instead of ~390k for a full deployment. The two
+///      immutables are part of the implementation's CODE, so every clone sees them under
+///      delegatecall; `aggId` / `started` are per-clone storage. The implementation itself
+///      is never operated (the escrow only ever calls clones).
 contract EvaluationWallet {
     address public immutable bountyContract;   // only this can operate
-    address public immutable hunter;           // who prepared (informational; refunds go to Submission.funder via the escrow)
     IVerdiktaAggregator public immutable verdikta;
 
     bytes32 public aggId;
@@ -20,9 +25,8 @@ contract EvaluationWallet {
         _;
     }
 
-    constructor(address _bounty, address _hunter, IVerdiktaAggregator _verdikta) {
+    constructor(address _bounty, IVerdiktaAggregator _verdikta) {
         bountyContract = _bounty;
-        hunter = _hunter;
         verdikta = _verdikta;
     }
 

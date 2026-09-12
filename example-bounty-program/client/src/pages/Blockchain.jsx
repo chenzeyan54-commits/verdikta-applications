@@ -131,6 +131,8 @@ function Blockchain() {
   "function MAX_ALPHA() view returns (uint256)",                  // 1000
   "function MAX_FEE_SCALING_FACTOR() view returns (uint256)",     // 1000
   "function ADDENDUM() view returns (string)",                    // always empty
+  "function SCORE_SCALE() view returns (uint256)",                // 1000000 — max per score entry
+  "function SCORE_DIVISOR() view returns (uint256)",              // 10000 — score / divisor = 0..100
   "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))",
   "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))",
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",

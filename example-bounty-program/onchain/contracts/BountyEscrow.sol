@@ -135,6 +135,14 @@ contract BountyEscrow {
     ///      be added by either party.
     string public constant ADDENDUM = "";
 
+    /// @notice Score semantics. The aggregator returns one likelihood per outcome, each on a
+    ///         0..SCORE_SCALE scale and summing to SCORE_SCALE; the escrow's threshold is
+    ///         0..100, so scores are normalized by SCORE_DIVISOR. A vector is VALID only if
+    ///         it has exactly two entries ([DONT_FUND, FUND]) each within SCORE_SCALE. See
+    ///         _scoreVector — the single interpreter used by finalize and both sibling scans.
+    uint256 public constant SCORE_SCALE = 1_000_000;
+    uint256 public constant SCORE_DIVISOR = 10_000;
+
     /// @notice Gas forwarded to a recipient when the escrow pays out directly (_payOrCredit).
     /// @dev Payouts, refunds and bounty closes send ETH with `call{gas: PAYOUT_GAS_LIMIT}`.
     ///      Capping it makes settlement cost independent of the recipient: a contract that
@@ -591,13 +599,11 @@ contract BountyEscrow {
         // pin activeEvaluations above zero, so the creator could never close the bounty
         // and the escrow would be locked. Failing it keeps the bounty usable and refunds
         // the hunter's leftover prepay.
-        (bool validScores, uint256 acceptance, uint256 rejection) = _interpretScores(scores);
+        (, bool passed, uint256 acceptance, uint256 rejection) = _scoreVector(scores, b.threshold);
         s.acceptance = acceptance;
         s.rejection  = rejection;
         s.justificationCids = justCids;
         s.finalizedAt = block.timestamp;
-
-        bool passed = validScores && _passed(acceptance, b.threshold);
 
         if (!passed) {
             s.status = SubmissionStatus.Failed;
@@ -820,12 +826,11 @@ contract BountyEscrow {
             // Query Verdikta for this submission's evaluation result
             (uint256[] memory scores, , bool ok) = verdikta.getEvaluation(existing.verdiktaAggId);
 
-            // If evaluation is complete, check if it passed
-            if (ok && scores.length == 2) {
-                uint256 acceptance = scores[1] / 10000; // Normalize to 0-100
-                if (acceptance > 100) acceptance = 100;
-
-                if (acceptance >= threshold) {
+            // If evaluation is complete with a VALID passing result, block. An invalid
+            // vector is never "passing" (it will finalize as Failed), so it never blocks.
+            if (ok) {
+                (, bool passed, , ) = _scoreVector(scores, threshold);
+                if (passed) {
                     revert("another submission already passed - finalize it first");
                 }
             }
@@ -870,13 +875,9 @@ contract BountyEscrow {
             if (other.status == SubmissionStatus.PendingVerdikta) {
                 (uint256[] memory scores, , bool ok) = verdikta.getEvaluation(other.verdiktaAggId);
 
-                if (ok && scores.length == 2) {
-                    uint256 acceptance = scores[1] / 10000; // Normalize to 0-100
-                    if (acceptance > 100) acceptance = 100;
-
-                    if (acceptance >= threshold) {
-                        return true;
-                    }
+                if (ok) {
+                    (, bool passed, , ) = _scoreVector(scores, threshold);
+                    if (passed) return true;
                 }
             }
         }
@@ -1032,38 +1033,31 @@ contract BountyEscrow {
         return subs[bountyId][submissionId];
     }
 
-    /// @dev Interpret Verdikta scores: scores[0]=reject (DONT_FUND), scores[1]=accept (FUND)
-    /// @dev Verdikta returns scores that sum to 1,000,000 (e.g., [120000, 880000] = 12% reject, 88% accept)
-    /// @dev We normalize to 0-100 by dividing by 10,000 to match threshold scale
-    /// @dev Never reverts. A vector that is not exactly 2 long is reported as invalid
-    ///      (valid == false, both scores 0) and the caller treats it as a failed evaluation.
-    function _interpretScores(uint256[] memory scores)
-        internal pure returns (bool valid, uint256 accept, uint256 reject)
+    /// @dev THE score interpreter. Used by finalizeSubmission (to decide Failed vs passed and
+    ///      what to record) and by both sibling scans (_requireNoPassingSubmission at start,
+    ///      _hasOtherPassingSubmission at payout), so eligibility and payout decisions can
+    ///      never disagree about what a result means.
+    ///
+    ///      Vector layout: scores[0] = DONT_FUND (rejection), scores[1] = FUND (acceptance),
+    ///      each 0..SCORE_SCALE (they sum to SCORE_SCALE; the sum is NOT checked so
+    ///      aggregator-side rounding cannot invalidate a genuine result). Normalized to 0..100
+    ///      by SCORE_DIVISOR to match the bounty threshold.
+    ///
+    ///      `valid` is false for a wrong length or any entry above SCORE_SCALE. An invalid
+    ///      vector is never `passed` and reports 0/0 scores; finalize records it as Failed
+    ///      (with the prepay refunded) and the scans treat it as not passing. Out-of-range
+    ///      entries are rejected rather than clamped: clamping would turn a corrupt result
+    ///      (e.g. [0, 2_000_000]) into a 100% pass and a payout.
+    ///      Never reverts.
+    function _scoreVector(uint256[] memory scores, uint256 threshold)
+        internal pure returns (bool valid, bool passed, uint256 accept, uint256 reject)
     {
-        if (scores.length != 2) {
-            return (false, 0, 0);
-        }
+        if (scores.length != 2) return (false, false, 0, 0);
+        if (scores[0] > SCORE_SCALE || scores[1] > SCORE_SCALE) return (false, false, 0, 0);
+        reject = scores[0] / SCORE_DIVISOR;
+        accept = scores[1] / SCORE_DIVISOR;
         valid = true;
-
-        // Two scores from Verdikta: [DONT_FUND, FUND]
-        // scores[0] = DONT_FUND (rejection score)
-        // scores[1] = FUND (acceptance score)
-        // Normalize from 0-1000000 to 0-100
-        reject = scores[0] / 10000;
-        accept = scores[1] / 10000;
-
-        // Clamp to [0,100] just in case
-        if (accept > 100) accept = 100;
-        if (reject > 100) reject = 100;
-
-        return (valid, accept, reject);
-    }
-
-    /// @dev Pass rule: acceptance must meet or exceed threshold
-    function _passed(uint256 acceptance, uint256 threshold)
-        internal pure returns (bool)
-    {
-        return acceptance >= threshold;
+        passed = accept >= threshold;
     }
 
     function _max(uint256 a, uint256 b) internal pure returns (uint256) {

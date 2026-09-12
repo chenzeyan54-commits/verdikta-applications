@@ -210,6 +210,7 @@ Identical ABI means internal-logic-only changes: safe to deploy against the exis
 | `SubmissionFinalized` | `(…, bool passed, acceptance, rejection, justification)` | `(…, bool passed, bool paid, acceptance, rejection, justification)` |
 | `SubmissionPrepared` | `(…, evalWallet, string evaluationCid, ethMaxBudget)` | `(…, evalWallet, ethMaxBudget, string evaluationCid)` — new topic0 |
 | New functions/events | — | `recoverLeftoverEth(bountyId, submissionId)`, event `RefundDeferred(bountyId, submissionId)`, view `requiredPrepay(bountyId)` |
+| New constants | — | `SCORE_SCALE`, `SCORE_DIVISOR` (score normalization, documented on-chain) |
 | New views | — | `withdraw()`, `withdrawable`, `canBeClosed`, `activeEvaluations`, `submissionCount`, constants `MAX_SUBMISSIONS_PER_BOUNTY`, `PAYOUT_GAS_LIMIT`, `MIN/MAX_CID_LENGTH`, `MAX_ALPHA`, `MAX_FEE_SCALING_FACTOR`, `ADDENDUM` |
 | Removed | `ILinkToken`, `MockLinkToken` | — |
 
@@ -228,7 +229,7 @@ Behavioral changes shipped in the same revision (all documented in [Submission t
 
 - `PassedUnpaid` payout-deadlock fix; non-windowed tie-break by lowest index (order-independent).
 - `failTimedOutSubmission` gated on aggregator state instead of a 10-minute timer.
-- Malformed score vectors finalize as `Failed` instead of reverting.
+- Malformed score vectors (wrong length, or any entry above `SCORE_SCALE`) finalize as `Failed` instead of reverting; one interpreter (`_scoreVector`) serves finalize and both sibling scans.
 - Deadline rule: `startPreparedSubmission` must happen before the deadline; windowed `prepareSubmission` requires the window to end before the deadline.
 - Windowed priority: same-hunter resubmissions and expired never-started submissions no longer block; a same-hunter in-flight evaluation blocks creator approval; a blocked passing finalize reverts (retryable).
 - `MAX_SUBMISSIONS_PER_BOUNTY = 128`; payout gas cap `PAYOUT_GAS_LIMIT = 120000`; CID shape validation; creator-owned oracle settings; leftover prepay refunded to the funder.
@@ -424,7 +425,7 @@ When a passing `finalizeSubmission` on a windowed bounty is blocked by another h
 
 **Force-fail** (`failTimedOutSubmission`). No timer. Requires `PendingVerdikta`, then: try `finalizeEvaluationTimeout` on the aggregator (ignored if it reverts), require `getEvaluation(aggId).exists == false` (`result available - use finalizeSubmission`), require `getAggregationStatus(aggId).isComplete == true` (`evaluation not settled`). On success: `Failed`, `activeEvaluations` decremented, unspent prepay refunded to the hunter. The aggregator's `responseTimeoutSeconds` is 300 on both networks, so the practical rule is "at least 5 minutes after the start tx and the oracle never responded".
 
-**Malformed oracle result.** `_interpretScores` never reverts. A score vector that is not exactly `[DONT_FUND, FUND]` finalizes the submission as `Failed` with `acceptance = rejection = 0` and refunds the prepay, so a bad evaluation package (or a changed aggregator) cannot brick a bounty. The `SubmissionFinalized` event carries `passed = false` and zero scores in that case.
+**Score semantics** (`_scoreVector`, `SCORE_SCALE = 1_000_000`, `SCORE_DIVISOR = 10_000`). One interpreter serves `finalizeSubmission` and both sibling scans (`_requireNoPassingSubmission` at start, `_hasOtherPassingSubmission` at payout), so eligibility and payout can never disagree about what a result means. A vector is valid only if it has exactly two entries (`[DONT_FUND, FUND]`) and each is at most `SCORE_SCALE`; scores are normalized to 0–100 by `SCORE_DIVISOR` and compared to the bounty threshold (`>=` passes). The sum is deliberately not checked (aggregator rounding). An invalid vector never reverts: finalize records it as `Failed` with `acceptance = rejection = 0` and refunds the prepay (`SubmissionFinalized` carries `passed = false`), and the scans treat it as not passing so a corrupt sibling result never blocks a start or a payout. Out-of-range entries are rejected rather than clamped — clamping would have turned a corrupt `[0, 2_000_000]` into a 100% pass and a payout.
 
 ## Debugging
 

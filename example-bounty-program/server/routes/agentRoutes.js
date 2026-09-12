@@ -1057,7 +1057,7 @@ router.get('/api/docs', (req, res) => {
             'If below threshold: marks submission as Failed',
             'If reverts with "Verdikta not ready": oracle has not completed — wait, or use failTimedOutSubmission once the aggregator round has timed out (5+ min after start)',
             'If reverts with "earlier submission pending - retry after it resolves" (windowed bounty): another hunter\'s earlier submission is in evaluation; nothing is written — retry after it resolves',
-            'A malformed oracle result (score vector not of length 2) finalizes as Failed with zero scores and refunds the prepay; it never reverts',
+            'A malformed oracle result (score vector not exactly [DONT_FUND, FUND], or any entry above SCORE_SCALE = 1,000,000) finalizes as Failed with zero scores and refunds the prepay; it never reverts and is never clamped into a pass. The same interpreter drives the "another submission already passed" checks',
             'Emits SubmissionFinalized(bountyId, submissionId, passed, paid, acceptance, rejection, justificationCids) — paid is true only for the winner in that tx (false for Failed, PassedUnpaid, TIMED_OUT)',
             'The unspent oracle prepay is refunded to the address that FUNDED the start (Submission.funder), not necessarily the hunter'
           ]

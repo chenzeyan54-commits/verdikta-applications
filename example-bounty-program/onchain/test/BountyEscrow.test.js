@@ -735,6 +735,94 @@ describe("BountyEscrow", function () {
     });
   });
 
+  describe("Score semantics (one interpreter for finalize and both sibling scans)", function () {
+    const OVER = [0n, 2_000_000n];          // FUND above SCORE_SCALE — corrupt, must NOT pass
+    const OVER_REJECT = [5_000_000n, 800_000n]; // DONT_FUND above scale — corrupt too
+    const EXACT_MAX = [0n, 1_000_000n];      // FUND == SCORE_SCALE — valid, 100%
+
+    it("Should expose the scale and divisor", async function () {
+      const { bountyEscrow } = await loadFixture(deployBountyEscrowFixture);
+      expect(await bountyEscrow.SCORE_SCALE()).to.equal(1_000_000);
+      expect(await bountyEscrow.SCORE_DIVISOR()).to.equal(10_000);
+    });
+
+    for (const [label, vec] of [["FUND above scale", OVER], ["DONT_FUND above scale", OVER_REJECT]]) {
+      it(`Finalize: ${label} is invalid → Failed with 0/0 scores and a refund (was clamped to a pass before)`, async function () {
+        const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+        const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+        const { submissionId, ethMaxBudget, evalWallet } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        await verdiktaAggregator.setRefundAmount(ethMaxBudget);
+        await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget });
+        const aggId = (await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId;
+        await verdiktaAggregator.setEvaluation(aggId, vec, JUST_CIDS, true);
+        await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+          .to.emit(bountyEscrow, "SubmissionFinalized").withArgs(bountyId, submissionId, false, false, 0, 0, JUST_CIDS)
+          .and.to.emit(bountyEscrow, "EthRefunded").withArgs(bountyId, submissionId, ethMaxBudget)
+          .and.to.not.emit(bountyEscrow, "PayoutSent");
+        expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(2);
+        expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(0); // still Open
+      });
+    }
+
+    it("Finalize: FUND exactly at scale is valid and passes a 100 threshold", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, { threshold: 100 });
+      const { submissionId, aggId } = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      await verdiktaAggregator.setEvaluation(aggId, EXACT_MAX, JUST_CIDS, true);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, submissionId))
+        .to.emit(bountyEscrow, "SubmissionFinalized").withArgs(bountyId, submissionId, true, true, 100, 0, JUST_CIDS);
+    });
+
+    it("Start scan: a sibling with an out-of-range 'passing' result does NOT block a new start", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const a = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      await verdiktaAggregator.setEvaluation(a.aggId, OVER, JUST_CIDS, true);
+      const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+      await expect(bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget }))
+        .to.emit(bountyEscrow, "WorkSubmitted");
+    });
+
+    it("Start scan: a sibling with a genuine passing result still blocks (unchanged)", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const a = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      await verdiktaAggregator.setEvaluation(a.aggId, PASSING_SCORES, JUST_CIDS, true);
+      const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+      await expect(bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget }))
+        .to.be.revertedWith("another submission already passed - finalize it first");
+    });
+
+    it("Tie-break scan: a lower-index sibling with an out-of-range result does NOT hold the win", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const A = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);   // index 0
+      const B = await submitFull(bountyEscrow, verdiktaAggregator, hunter2, bountyId);  // index 1
+      await verdiktaAggregator.setEvaluation(A.aggId, OVER, JUST_CIDS, true);           // corrupt "pass"
+      await verdiktaAggregator.setEvaluation(B.aggId, PASSING_SCORES, JUST_CIDS, true);
+      // B is paid even though A (lower index) has a would-be 100% if clamped
+      await expect(bountyEscrow.finalizeSubmission(bountyId, B.submissionId))
+        .to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, hunter2.address, BOUNTY_WEI);
+      await bountyEscrow.finalizeSubmission(bountyId, A.submissionId);
+      expect((await bountyEscrow.getSubmission(bountyId, A.submissionId)).status).to.equal(2); // Failed
+    });
+
+    it("All three sites agree on the threshold boundary (acceptance == threshold passes)", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, hunter2 } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, { threshold: 70 });
+      const boundary = [300_000n, 700_000n]; // exactly 70
+      const A = await submitFull(bountyEscrow, verdiktaAggregator, hunter, bountyId);
+      await verdiktaAggregator.setEvaluation(A.aggId, boundary, JUST_CIDS, true);
+      // start scan sees it as passing
+      const p = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
+      await expect(bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, p.submissionId, { value: p.ethMaxBudget }))
+        .to.be.revertedWith("another submission already passed - finalize it first");
+      // finalize agrees
+      await expect(bountyEscrow.finalizeSubmission(bountyId, A.submissionId))
+        .to.emit(bountyEscrow, "SubmissionFinalized").withArgs(bountyId, A.submissionId, true, true, 70, 30, JUST_CIDS);
+    });
+  });
+
   describe("Funding requirement is refreshed at start", function () {
     // The aggregator's maxTotalFee can change between prepare and start (owner-settable
     // parameters). Start checks msg.value against the LIVE requirement for the bounty's

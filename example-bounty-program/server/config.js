@@ -119,15 +119,22 @@ const config = {
 // Alias for backwards compatibility
 config.rpcProviderUrl = config.rpcUrl;
 
-// Default parameters for prepareSubmission / startPreparedSubmission.
-// Single source of truth for the values that travel together on every submission,
-// shared by the /submit/prepare and /submit/bundle endpoints, the fee estimator,
-// and the bot script. Canonical unit is WEI — convert with ethers.formatEther at
-// the decimal-ETH call sites rather than re-typing the number (this is what kept
-// the two /submit endpoints from drifting apart).
+// BOUNTY ORACLE DEFAULTS (the key is still `submissionDefaults` to minimise churn).
 //
-// maxOracleFee is a product decision (how much we pay per oracle), deliberately
-// kept well under the aggregator's on-chain 0.0004 ETH ceiling.
+// Since the September 2026 BountyEscrow revision these four values are chosen by
+// the CREATOR at createBounty time (the `oracle` member of the CreateParams struct)
+// and used verbatim for every evaluation of that bounty. Hunters no longer pass
+// any of them to prepareSubmission — the contract reads bounty.oracle and sizes
+// ethMaxBudget = aggregator.maxTotalFee(bounty.oracle.maxOracleFee).
+//
+// They are the defaults for POST /api/jobs/create (oracleMaxOracleFee /
+// oracleAlpha / oracleEstimatedBaseCost / oracleMaxFeeBasedScaling), the create
+// scripts, and the fee estimator's fallback. Canonical unit is WEI — convert with
+// ethers.formatEther at the decimal-ETH call sites rather than re-typing the number.
+//
+// Contract bounds (checked at createBounty): maxOracleFee > 0 and <= aggregator
+// ceiling (0.0004 ETH); estimatedBaseCost < maxOracleFee; 1 <= maxFeeBasedScaling
+// <= 1000; 0 <= alpha <= 1000.
 config.submissionDefaults = {
   maxOracleFeeWei: '20000000000000',      // 0.00002 ETH per oracle call
   estimatedBaseCostWei: '10000000000000', // 0.00001 ETH base cost per evaluation
@@ -139,7 +146,7 @@ config.submissionDefaults = {
 // These are the blocks at or just before the BountyEscrow deployment transactions.
 // Used as the starting point for bootstrap event replay.
 const deploymentBlocks = {
-  'base-sepolia': 42_646_655,  // ETH BountyEscrow 0xAA67…0BDC (verified-new hardened code), ~2026-06-10T03:19:58Z
+  'base-sepolia': 46_734_719,  // ETH BountyEscrow v0.5.0 0x1B4F…e08f (lens + wallet clones), 2026-09-12
   'base':         47_136_166,  // ETH BountyEscrow 0x2Ae2…772D (verified-new hardened code), ~2026-06-10T03:21:19Z
 };
 

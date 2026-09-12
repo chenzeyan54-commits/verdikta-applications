@@ -192,6 +192,25 @@ function applyChainBountyFields(localJob, chainBounty) {
   set('arbiterDeterminationPayment', chainBounty.arbiterDeterminationPayment || '0.0');
   set('creatorAssessmentWindowSize', Number(chainBounty.creatorAssessmentWindowSize || 0));
 
+  // Creator-chosen oracle request settings (September 2026 revision: bounty.oracle).
+  // Compared field-wise so an identical struct doesn't count as a change.
+  if (chainBounty.oracleSettings) {
+    const o = chainBounty.oracleSettings;
+    const cur = localJob.oracleSettings || {};
+    if (String(cur.maxOracleFee) !== String(o.maxOracleFee) ||
+        Number(cur.alpha) !== Number(o.alpha) ||
+        String(cur.estimatedBaseCost) !== String(o.estimatedBaseCost) ||
+        Number(cur.maxFeeBasedScaling) !== Number(o.maxFeeBasedScaling)) {
+      localJob.oracleSettings = {
+        maxOracleFee: String(o.maxOracleFee),
+        alpha: Number(o.alpha),
+        estimatedBaseCost: String(o.estimatedBaseCost),
+        maxFeeBasedScaling: Number(o.maxFeeBasedScaling)
+      };
+      changed = true;
+    }
+  }
+
   // Other authoritative chain fields — only overwrite if the chain has them.
   // We don't want to wipe local-only metadata like title/description/juryNodes.
   if (chainBounty.creator) set('creator', chainBounty.creator);
@@ -655,7 +674,7 @@ class SyncService {
       typeof j.jobId === 'number' &&
       j.jobId < bountyCount &&
       !j._chainFieldsHealed &&
-      (j.creatorDeterminationPayment == null || j.targetHunter === null)
+      (j.creatorDeterminationPayment == null || j.targetHunter === null || j.oracleSettings == null)
     ).slice(0, 50);
 
     if (healCandidates.length > 0) {
@@ -1176,8 +1195,13 @@ class SyncService {
       case 'SubmissionFinalized': {
         const bountyId = Number(args.bountyId);
         const submissionId = Number(args.submissionId);
-        // Contract event signature: (bountyId, submissionId, bool passed, uint256 acceptance, uint256 rejection, string justificationCids)
+        // Contract event signature (September 2026 revision):
+        //   (bountyId, submissionId, bool passed, bool paid, uint256 acceptance, uint256 rejection, string justificationCids)
+        // `paid` is true only for the winner in that tx (PassedPaid); false for
+        // Failed, PassedUnpaid and TIMED_OUT. It replaces the extra getSubmission()
+        // read the old handler needed to tell PassedPaid from PassedUnpaid.
         const passed = Boolean(args.passed);
+        const paid = Boolean(args.paid);
         const acceptance = Number(args.acceptance);
         const rejection = Number(args.rejection);
         const justificationCids = args.justificationCids || '';
@@ -1186,46 +1210,18 @@ class SyncService {
 
         const sub = (job.submissions || []).find(s => s.submissionId === submissionId);
         if (sub) {
-          // The event's `passed` flag does NOT distinguish PassedPaid (3, this
-          // submission won and was paid) from PassedUnpaid (4, it met the threshold
-          // but someone else won) — so read the authoritative status from chain.
-          //
-          // This used to default to PassedPaid and rely on "re-sync will correct it".
-          // Nothing did: the only reconciling pass (Phase D.7) skips non-windowed
-          // bounties, targets only locally-'Prepared' records, and compares collapsed
-          // statuses where 3 and 4 are both 'APPROVED'. The result was that every
-          // genuinely-unpaid submission was reported to its hunter as paid.
-          //
-          // Ordering rules out deriving this from PayoutSent instead: finalizeSubmission
-          // emits SubmissionFinalized BEFORE PayoutSent (BountyEscrow.sol:520 vs :542),
-          // so within one batch the payout is not yet known here.
-          let statusIndex = null;
-          if (passed) {
-            try {
-              const chainSub = await contractService.contract.getSubmission(bountyId, submissionId);
-              statusIndex = Number(chainSub.status);
-            } catch (err) {
-              logger.warn('[event] SubmissionFinalized — chain status read failed, leaving for Phase D.8 heal', {
-                bountyId, submissionId, error: err.message
-              });
-            }
-          }
+          // Status index straight from the event: 2 Failed, 3 PassedPaid, 4 PassedUnpaid.
+          const statusIndex = !passed ? 2 : (paid ? 3 : 4);
 
           if (!passed) {
             sub.status = 'REJECTED';
             sub.onChainStatus = 'Failed';
-          } else if (statusIndex !== null && ON_CHAIN_STATUS_BY_INDEX[statusIndex]) {
+          } else {
             sub.status = LOCAL_STATUS_BY_INDEX[statusIndex];
             sub.onChainStatus = ON_CHAIN_STATUS_BY_INDEX[statusIndex];
-            // Chain status 3 is itself the authoritative record of payment, and is
-            // more reliable than the PayoutSent handler's hunter-address match.
-            if (statusIndex === 3) sub.paidWinner = true;
-          } else {
-            // RPC read failed. Record the half we do know from the event and leave
-            // onChainStatus unset rather than asserting a payment that may not exist;
-            // the Phase D.8 heal picks it up on a later cycle.
-            sub.status = 'APPROVED';
-            sub.onChainStatus = null;
+            // `paid` is the authoritative record of payment (more reliable than the
+            // PayoutSent handler's hunter-address match).
+            sub.paidWinner = paid;
           }
           sub.acceptance = acceptance;
           sub.rejection = rejection;
@@ -1250,7 +1246,7 @@ class SyncService {
           this.hotBountyIds.delete(bountyId);
         }
 
-        logger.info('[event] SubmissionFinalized', { bountyId, submissionId, passed, status: sub?.status });
+        logger.info('[event] SubmissionFinalized', { bountyId, submissionId, passed, paid, status: sub?.status });
         break;
       }
 
@@ -1327,7 +1323,25 @@ class SyncService {
         const bountyId = Number(args.bountyId);
         const submissionId = Number(args.submissionId);
         const amount = args.amount?.toString();
+        // A successful (inline or retried) prepay recovery clears any deferred flag.
+        const job = this._findJob(storage, bountyId, currentContract);
+        const sub = job && (job.submissions || []).find(s => s.submissionId === submissionId);
+        if (sub && sub.refundDeferred) sub.refundDeferred = false;
         logger.info('[event] EthRefunded', { bountyId, submissionId, amount });
+        break;
+      }
+
+      case 'RefundDeferred': {
+        // The resolving tx (finalize / force-fail) could not recover the unspent oracle
+        // prepay (wallet -> aggregator withdrawEth chain failed). The resolution itself
+        // succeeded. Anyone can retry via recoverLeftoverEth(bountyId, submissionId);
+        // the UI offers a "Recover oracle prepay" action while this flag is set.
+        const bountyId = Number(args.bountyId);
+        const submissionId = Number(args.submissionId);
+        const job = this._findJob(storage, bountyId, currentContract);
+        const sub = job && (job.submissions || []).find(s => s.submissionId === submissionId);
+        if (sub) sub.refundDeferred = true;
+        logger.warn('[event] RefundDeferred — prepay recovery failed in the resolving tx; retry with recoverLeftoverEth', { bountyId, submissionId });
         break;
       }
 
@@ -1521,6 +1535,8 @@ class SyncService {
       creatorDeterminationPayment: bounty.creatorDeterminationPayment || '0.0',
       arbiterDeterminationPayment: bounty.arbiterDeterminationPayment || '0.0',
       creatorAssessmentWindowSize: bounty.creatorAssessmentWindowSize || 0,
+      // Creator-chosen oracle request settings from getBounty().oracle
+      oracleSettings: bounty.oracleSettings || null,
       onChain: true,
       syncedFromBlockchain: true,
       lastSyncedAt: Math.floor(Date.now() / 1000),
@@ -1621,7 +1637,8 @@ class SyncService {
           ...(existing || {}),
           submissionId: sub.submissionId,
           hunter: sub.hunter,
-          evaluationCid: sub.evaluationCid,
+          // The Submission struct no longer carries evaluationCid (it is the bounty's);
+          // keep whatever the local record already had.
           hunterCid: sub.hunterCid,
           evalWallet: sub.evalWallet,
           verdiktaAggId: sub.verdiktaAggId,
@@ -1634,6 +1651,7 @@ class SyncService {
           finalizedAt: sub.finalizedAt,
           score: sub.acceptance > 0 ? sub.acceptance : null,
           creatorWindowEnd: sub.creatorWindowEnd || 0,
+          funder: sub.funder || null,
         });
       }
 

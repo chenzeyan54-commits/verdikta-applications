@@ -17,28 +17,142 @@ import { ethers } from 'ethers';
 import { config, currentNetwork } from '../config';
 
 // BountyEscrow ABI - only the functions we need to call
+// (September 2026 revision: struct createBounty, 3-arg prepareSubmission, per-bounty
+// oracle settings in getBounty().oracle, `funder` on getSubmission, `paid` on
+// SubmissionFinalized, ethMaxBudget before the string in SubmissionPrepared.)
 const BOUNTY_ESCROW_ABI = [
   // Events
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
-  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)",
+  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, uint256 ethMaxBudget, string evaluationCid)",
+  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, bool paid, uint256 acceptance, uint256 rejection, string justificationCids)",
+  "event PaymentDeferred(address indexed to, uint256 amount)",
+  "event RefundDeferred(uint256 indexed bountyId, uint256 indexed submissionId)",
 
   // Write Functions
-  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)",
-  "function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)",
-  "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)",
+  "function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle) p) payable returns (uint256 bountyId)",
+  "function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)",
   "function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable",
   "function finalizeSubmission(uint256 bountyId, uint256 submissionId)",
   "function failTimedOutSubmission(uint256 bountyId, uint256 submissionId)",
   "function closeExpiredBounty(uint256 bountyId)",
   "function creatorApproveSubmission(uint256 bountyId, uint256 submissionId)",
+  "function withdraw()",
+  "function recoverLeftoverEth(uint256 bountyId, uint256 submissionId)",
 
   // View Functions (used sparingly)
   "function getEffectiveBountyStatus(uint256) view returns (string)",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))",
   "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))",
-  "function verdikta() view returns (address)"
+  "function getBounty(uint256) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))",
+  "function verdikta() view returns (address)",
+  "function withdrawable(address) view returns (uint256)",
+  "function canBeClosed(uint256 bountyId) view returns (bool)",
+  "function requiredPrepay(uint256 bountyId) view returns (uint256)",
+  "function effectiveOracleParams(uint256 bountyId) view returns (tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling))",
+  "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
+  "function getBounties(uint256 start, uint256 count) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle)[])",
+  "function getOracleResult(uint256 bountyId, uint256 submissionId) view returns (bool started, bool hasResult, bool settled, bool failed, uint256[] scores, string justificationCids, uint256 startTimestamp)",
+  "function nextAction(uint256 bountyId, uint256 submissionId) view returns (string)",
+  "function prepareCutoff(uint256 bountyId) view returns (uint256)",
+  "function MAX_BATCH() view returns (uint256)",
+  "function activeEvaluations(uint256) view returns (uint256)"
 ];
+
+// Verdikta aggregator views used for oracle results and force-fail gating.
+// getEvaluation takes bytes32 (NOT uint256) and returns (uint256[], string, bool).
+const VERDIKTA_AGGREGATOR_ABI = [
+  "function getEvaluation(bytes32 aggId) view returns (uint256[] memory scores, string justificationCids, bool ok)",
+  "function getAggregationStatus(bytes32 aggId) view returns (bool isComplete, bool failed, bool commitPhaseComplete, uint256 commitExpected, uint256 commitReceived, uint256 responseCount, uint256 requiredN, uint256 clusterP, address requester, uint256 startTimestamp)",
+  "function responseTimeoutSeconds() view returns (uint256)",
+  "function maxOracleFee() view returns (uint256)"
+];
+
+// Contract bounds for creator oracle settings (BountyEscrow MAX_ALPHA / MAX_FEE_SCALING_FACTOR).
+export const ORACLE_MAX_ALPHA = 1000;
+export const ORACLE_MAX_FEE_SCALING = 1000;
+// Aggregator per-oracle fee ceiling (0.0004 ETH). Used as a static pre-check.
+export const ORACLE_FEE_CEILING_WEI = ethers.parseEther('0.0004');
+
+/**
+ * Map a raw BountyEscrow revert string to a user-facing message.
+ * Returns null when the reason is not recognised (caller rethrows the original).
+ * Order matters: more specific phrases first.
+ */
+const REVERT_MESSAGES = [
+  // Retryable, NOT a failure
+  ['earlier submission pending', 'An earlier submission is still being evaluated; retry after it resolves (this is not a failure — your result is kept).'],
+  ['evaluation slots full', 'This bounty already has the maximum number of evaluations in flight (256). A slot frees as soon as any of them resolves — retry in a few minutes (this is not a failure; your prepared submission is kept).'],
+  ['earlier submission unresolved', 'An earlier submission must be resolved first (it is still in evaluation or in its approval window).'],
+  // Force-fail / finalize routing
+  ['result available - use finalizesubmission', 'The oracle produced a result for this submission — finalize it instead of force-failing.'],
+  ['result available', 'The oracle produced a result for this submission — finalize it instead of force-failing.'],
+  ['evaluation not settled', 'The aggregator round is still open (it times out about 5 minutes after the evaluation started). Wait for it to settle, or finalize if the oracle responds.'],
+  ['verdikta not ready', 'The oracle has not completed this evaluation yet — please wait.'],
+  ['another submission already passed', 'Another submission already passed — finalize it first.'],
+  // Windowed bounties
+  ['window would end after deadline', 'The creator approval window would end after the bounty deadline — this bounty no longer accepts submissions.'],
+  ['creator window still open', 'The creator approval window is still open.'],
+  ['window expired', 'The creator approval window has expired.'],
+  ['not pending creator approval', 'Submission is not pending creator approval.'],
+  ['only creator', 'Only the bounty creator can approve submissions.'],
+  // CIDs / limits
+  ['bad huntercid', 'The submission CID must be a bare IPFS CID (46–100 letters and digits, no path or punctuation).'],
+  ['bad evaluationcid', 'The evaluation package CID must be a bare IPFS CID (46–100 letters and digits, no path or punctuation).'],
+  ['evaluationcid mismatch', 'The evaluation CID does not match the bounty\'s stored evaluation package.'],
+  ['submission limit reached', 'This windowed bounty has reached its limit of 128 submissions (bounties without a creator window have no such limit).'],
+  // Creator oracle settings
+  ['oracle fee above ceiling', 'Max oracle fee is above the aggregator\'s ceiling (0.0004 ETH).'],
+  ['bad oracle fee', 'Max oracle fee must be greater than 0.'],
+  ['base cost must be below fee', 'Estimated base cost must be below the max oracle fee.'],
+  ['bad fee scaling', 'Max fee-based scaling must be between 1 and 1000.'],
+  ['bad alpha', 'Alpha must be between 0 and 1000.'],
+  ['bad budget', 'The aggregator currently quotes a zero oracle prepay (its fee ceiling may be 0). Nothing to change on your side — wait, or report it.'],
+  // Lifecycle
+  ['deadline passed', 'The submission deadline has passed.'],
+  ['deadline in past', 'Deadline must be in the future.'],
+  ['deadline not passed', 'Cannot close yet - deadline has not passed.'],
+  ['active evaluation', 'Cannot close - active evaluations in progress. Finalize them first.'],
+  ['bounty not open', 'Bounty is not open.'],
+  ['bounty is targeted', 'This bounty is targeted at a specific hunter address.'],
+  ['wrong eth amount', 'Incorrect ETH amount for the evaluation prepay.'],
+  ['only hunter', 'Only the submitting hunter can start this evaluation.'],
+  ['already started or resolved', 'This submission has already been started (or is already resolved) — nothing to start.'],
+  ['not pending', 'This submission is not in evaluation — it was never started, or it has already been resolved. Check nextAction.'],
+  ['no oracle result', 'The oracle round ended without a result — use "Fail timed-out submission" (failTimedOutSubmission) instead of finalizing.'],
+  ['not resolved', 'The prepay can only be recovered once the submission has resolved (Failed / PassedPaid / PassedUnpaid).'],
+  ['never started', 'This submission was never started, so it holds no oracle prepay to recover.'],
+  ['nothing to recover', 'No unspent prepay is waiting for this submission.'],
+  ['withdraw failed', 'Your wallet rejected the ETH transfer — withdraw from an address that can receive ETH.'],
+  ['nothing to withdraw', 'Nothing is owed to this address on the pull ledger.'],
+  ['unknown function', 'The contract has no such function — check the function name against the merged ABI.'],
+  ['self only', 'lensDelegate is internal plumbing for the contract\'s read views and cannot be called directly.'],
+  ['reentrant', 'Re-entrant call rejected.'],
+  ['eth must equal max payment', 'The ETH sent must equal the larger of the creator and arbiter payments.'],
+  ['window required when payments differ', 'Approval window is required when creator and arbiter payments differ.'],
+  ['no creator payment', 'Creator approval payment must be > 0.'],
+  ['no arbiter payment', 'Arbiter (oracle) payment must be > 0.'],
+  ['bad threshold', 'Threshold must be 0..100.'],
+  ['bad bountyid', 'That bounty does not exist on-chain.'],
+  ['bad submissionid', 'That submission does not exist on-chain.'],
+  ['nothing to withdraw', 'Nothing to withdraw for this address.'],
+];
+
+export function friendlyRevertMessage(rawMessage) {
+  const msg = String(rawMessage || '').toLowerCase();
+  if (!msg) return null;
+  const compact = msg.replace(/\s+/g, '');
+  for (const [needle, friendly] of REVERT_MESSAGES) {
+    if (msg.includes(needle) || compact.includes(needle.replace(/\s+/g, ''))) return friendly;
+  }
+  return null;
+}
+
+/** Revert reasons that mean "retry later", not "the action failed". */
+export function isRetryableRevert(rawMessage) {
+  const msg = String(rawMessage || '').toLowerCase();
+  return msg.includes('earlier submission pending') || msg.includes('verdikta not ready') ||
+    msg.includes('evaluation not settled') || msg.includes('evaluation slots full');
+}
 
 // ============================================================================
 // PERFORMANCE: Debounce utility
@@ -99,6 +213,10 @@ class ContractService {
     // Cache for expensive reads
     this._statusCache = new Map();
     this._statusCacheTTL = 5000; // 5 seconds
+
+    // Aggregator (read-only) + its constant response timeout
+    this._aggregator = null;
+    this._responseTimeoutSeconds = null;
   }
 
   // ==========================================================================
@@ -226,14 +344,63 @@ class ContractService {
   // ==========================================================================
 
   /**
-   * Create a bounty on-chain via MetaMask
+   * Resolve + validate the creator oracle settings for createBounty's `oracle` struct.
+   * Accepts wei strings/bigints (or decimal-ETH strings containing a '.') for the two
+   * fee fields, integers for alpha / scaling. Defaults come from config.submissionDefaults.
+   * Enforces the same bounds as the contract so a bad value fails before MetaMask opens.
+   */
+  static resolveOracleParams(oracle = {}) {
+    const d = config.submissionDefaults;
+    const toWei = (v, label) => {
+      if (v === undefined || v === null || v === '') return null;
+      const str = String(v).trim();
+      try {
+        return str.includes('.') ? ethers.parseEther(str) : BigInt(str);
+      } catch {
+        throw new Error(`${label} must be a decimal-ETH amount or an integer wei value`);
+      }
+    };
+    const maxOracleFee = toWei(oracle.maxOracleFee, 'Max oracle fee') ?? BigInt(d.maxOracleFeeWei);
+    const estimatedBaseCost = toWei(oracle.estimatedBaseCost, 'Estimated base cost') ?? BigInt(d.estimatedBaseCostWei);
+    const alpha = oracle.alpha === undefined || oracle.alpha === null || oracle.alpha === '' ? Number(d.alpha) : Number(oracle.alpha);
+    const maxFeeBasedScaling = oracle.maxFeeBasedScaling === undefined || oracle.maxFeeBasedScaling === null || oracle.maxFeeBasedScaling === ''
+      ? Number(d.maxFeeBasedScaling) : Number(oracle.maxFeeBasedScaling);
+
+    if (maxOracleFee <= 0n) throw new Error('Max oracle fee must be greater than 0');
+    if (maxOracleFee > ORACLE_FEE_CEILING_WEI) throw new Error(`Max oracle fee is above the aggregator ceiling of ${ethers.formatEther(ORACLE_FEE_CEILING_WEI)} ETH`);
+    if (estimatedBaseCost < 0n) throw new Error('Estimated base cost must be >= 0');
+    if (estimatedBaseCost >= maxOracleFee) throw new Error('Estimated base cost must be below the max oracle fee');
+    if (!Number.isInteger(maxFeeBasedScaling) || maxFeeBasedScaling < 1 || maxFeeBasedScaling > ORACLE_MAX_FEE_SCALING) {
+      throw new Error(`Max fee-based scaling must be an integer between 1 and ${ORACLE_MAX_FEE_SCALING}`);
+    }
+    if (!Number.isInteger(alpha) || alpha < 0 || alpha > ORACLE_MAX_ALPHA) {
+      throw new Error(`Alpha must be an integer between 0 and ${ORACLE_MAX_ALPHA}`);
+    }
+    return {
+      maxOracleFee,
+      alpha: BigInt(alpha),
+      estimatedBaseCost,
+      maxFeeBasedScaling: BigInt(maxFeeBasedScaling)
+    };
+  }
+
+  /**
+   * Create a bounty on-chain via MetaMask.
+   *
+   * createBounty takes ONE CreateParams struct (no more 5/8-arg overloads).
+   * msg.value == max(creatorDeterminationPayment, arbiterDeterminationPayment);
+   * a non-windowed bounty passes both payments equal to the amount and window 0.
+   * `oracle` (creator-chosen oracle request settings) is optional — defaults from
+   * config.submissionDefaults: { maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling }.
    */
   async createBounty({ evaluationCid, classId, threshold, bountyAmountEth, submissionWindowHours, targetHunter,
-                       creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, creatorAssessmentWindowHours }) {
+                       creatorDeterminationPaymentEth, arbiterDeterminationPaymentEth, creatorAssessmentWindowHours,
+                       oracle }) {
     if (!this.contract) throw new Error('Contract not initialized. Call connect() first.');
 
     // Quick UI validations
     if (!evaluationCid || typeof evaluationCid !== 'string') throw new Error('Evaluation CID is empty');
+    if (!/^[A-Za-z0-9]{46,100}$/.test(evaluationCid)) throw new Error('Evaluation CID must be a bare IPFS CID (46–100 letters and digits)');
     const winHrs = Number(submissionWindowHours);
     if (!Number.isFinite(winHrs) || winHrs <= 0) throw new Error('Submission window (hours) must be > 0');
     const thrNum = Number(threshold);
@@ -243,6 +410,9 @@ class ContractService {
 
     // Determine if this is a windowed bounty
     const hasApprovalWindow = creatorAssessmentWindowHours != null && Number(creatorAssessmentWindowHours) > 0;
+
+    // Creator oracle settings (validated against contract bounds)
+    const oracleParams = ContractService.resolveOracleParams(oracle || {});
 
     try {
       // Encode exact solidity widths
@@ -257,67 +427,52 @@ class ContractService {
       if ((classId64 & ~mask64) !== 0n) throw new Error('classId exceeds uint64');
       if ((thresh8 & ~mask8) !== 0n) throw new Error('threshold exceeds uint8');
 
-      let args;
-      let valueWei;
-      let callFn;
-
+      const amountWei = ethers.parseEther(ethStr);
+      let creatorPayWei, arbiterPayWei, windowSizeSec;
       if (hasApprovalWindow) {
-        // 8-param overload with creator approval window
-        const creatorPayWei = ethers.parseEther(String(creatorDeterminationPaymentEth));
-        const arbiterPayWei = ethers.parseEther(String(arbiterDeterminationPaymentEth));
-        const windowSizeSec = BigInt(Math.trunc(Number(creatorAssessmentWindowHours) * 3600));
-
-        // Escrow = max(creatorPay, arbiterPay)
-        valueWei = creatorPayWei > arbiterPayWei ? creatorPayWei : arbiterPayWei;
-
-        console.log('🔍 createBounty (windowed) params', {
-          evaluationCid: evaluationCid.substring(0, 20) + '...',
-          classId64: classId64.toString(),
-          threshold8: thresh8.toString(),
-          submissionDeadline: submissionDeadline.toString(),
-          creatorPayWei: creatorPayWei.toString(),
-          arbiterPayWei: arbiterPayWei.toString(),
-          windowSizeSec: windowSizeSec.toString(),
-          valueWei: valueWei.toString()
-        });
-
-        args = [
-          evaluationCid,
-          classId64,
-          thresh8,
-          submissionDeadline,
-          targetHunter || '0x0000000000000000000000000000000000000000',
-          creatorPayWei,
-          arbiterPayWei,
-          windowSizeSec,
-          { value: valueWei }
-        ];
-
-        // Use the 8-param overload signature to disambiguate
-        callFn = this.contract['createBounty(string,uint64,uint8,uint64,address,uint256,uint256,uint64)'];
+        creatorPayWei = ethers.parseEther(String(creatorDeterminationPaymentEth));
+        arbiterPayWei = ethers.parseEther(String(arbiterDeterminationPaymentEth));
+        windowSizeSec = BigInt(Math.trunc(Number(creatorAssessmentWindowHours) * 3600));
       } else {
-        // Classic 5-param overload
-        valueWei = ethers.parseEther(ethStr);
-
-        console.log('🔍 createBounty params', {
-          evaluationCid: evaluationCid.substring(0, 20) + '...',
-          classId64: classId64.toString(),
-          threshold8: thresh8.toString(),
-          submissionDeadline: submissionDeadline.toString(),
-          valueWei: valueWei.toString()
-        });
-
-        args = [
-          evaluationCid,
-          classId64,
-          thresh8,
-          submissionDeadline,
-          targetHunter || '0x0000000000000000000000000000000000000000',
-          { value: valueWei }
-        ];
-
-        callFn = this.contract['createBounty(string,uint64,uint8,uint64,address)'];
+        // Non-windowed: both payments equal the escrowed amount, window 0.
+        creatorPayWei = amountWei;
+        arbiterPayWei = amountWei;
+        windowSizeSec = 0n;
       }
+      // Escrow = max(creatorPay, arbiterPay)
+      const valueWei = creatorPayWei > arbiterPayWei ? creatorPayWei : arbiterPayWei;
+
+      const params = {
+        evaluationCid,
+        requestedClass: classId64,
+        threshold: thresh8,
+        submissionDeadline,
+        targetHunter: targetHunter || '0x0000000000000000000000000000000000000000',
+        creatorDeterminationPayment: creatorPayWei,
+        arbiterDeterminationPayment: arbiterPayWei,
+        creatorAssessmentWindowSize: windowSizeSec,
+        oracle: oracleParams
+      };
+
+      console.log(`🔍 createBounty${hasApprovalWindow ? ' (windowed)' : ''} params`, {
+        evaluationCid: evaluationCid.substring(0, 20) + '...',
+        requestedClass: classId64.toString(),
+        threshold: thresh8.toString(),
+        submissionDeadline: submissionDeadline.toString(),
+        creatorPayWei: creatorPayWei.toString(),
+        arbiterPayWei: arbiterPayWei.toString(),
+        windowSizeSec: windowSizeSec.toString(),
+        oracle: {
+          maxOracleFee: oracleParams.maxOracleFee.toString(),
+          alpha: oracleParams.alpha.toString(),
+          estimatedBaseCost: oracleParams.estimatedBaseCost.toString(),
+          maxFeeBasedScaling: oracleParams.maxFeeBasedScaling.toString()
+        },
+        valueWei: valueWei.toString()
+      });
+
+      const args = [params, { value: valueWei }];
+      const callFn = this.contract.createBounty;
 
       // Dry-run to surface revert reasons
       try {
@@ -327,11 +482,8 @@ class ContractService {
         const msg = (decoded || e?.message || '').toLowerCase();
         if (msg.includes('no eth') || msg.includes('noeth')) throw new Error('Bounty requires ETH value (msg.value > 0)');
         if (msg.includes('empty evaluationcid') || msg.includes('emptyevaluationcid')) throw new Error('Evaluation CID is empty');
-        if (msg.includes('bad threshold') || msg.includes('badthreshold')) throw new Error('Threshold must be 0..100');
-        if (msg.includes('deadline in past') || msg.includes('deadlineinpast')) throw new Error('Deadline must be in the future');
-        if (msg.includes('no creator payment')) throw new Error('Creator approval payment must be > 0');
-        if (msg.includes('no arbiter payment')) throw new Error('Arbiter (oracle) payment must be > 0');
-        if (msg.includes('window required')) throw new Error('Approval window is required when creator and arbiter payments differ');
+        const friendly = friendlyRevertMessage(msg);
+        if (friendly) throw new Error(friendly);
         throw e;
       }
 
@@ -372,20 +524,23 @@ class ContractService {
   /**
    * STEP 1: Prepare a submission (deploys EvaluationWallet)
    *
-   * alpha (0-1000): timeliness-vs-quality blend in ReputationKeeper.getSelectionScore:
-   *   weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
-   *   0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
-   * maxFeeBasedScaling: plain integer N (x-factor). Caps the fee-boost multiplier
-   *   that favors oracles priced below maxOracleFee. The contract scales by 1e18
-   *   internally — pass the x-factor itself (e.g. 3 = up to 3x). Must be >= 1.
+   * prepareSubmission(bountyId, evaluationCid, hunterCid) — the oracle request
+   * settings (maxOracleFee, alpha, estimatedBaseCost, maxFeeBasedScaling) are chosen
+   * by the bounty CREATOR at createBounty and applied by the contract with an empty
+   * addendum; hunters supply only the two CIDs. Extra trailing arguments from the
+   * legacy 8-arg form are accepted and ignored.
+   * hunterCid must be a bare CID (46–100 alphanumeric chars) or the contract reverts
+   * "bad hunterCid".
    */
-  async prepareSubmission(bountyId, evaluationCid, hunterCid, addendum = "",
-                          alpha = config.submissionDefaults.alpha,
-                          maxOracleFee = config.submissionDefaults.maxOracleFeeWei,       // under the 0.0004 ETH ceiling
-                          estimatedBaseCost = config.submissionDefaults.estimatedBaseCostWei,
-                          maxFeeBasedScaling = config.submissionDefaults.maxFeeBasedScaling) {
+  async prepareSubmission(bountyId, evaluationCid, hunterCid, ..._legacyIgnored) {
     if (!this.contract) {
       throw new Error('Contract not initialized. Call connect() first.');
+    }
+    if (_legacyIgnored.length) {
+      console.warn('prepareSubmission: ignoring legacy hunter-side oracle arguments (addendum/alpha/fee/baseCost/scaling); the bounty creator sets these at createBounty.');
+    }
+    if (!/^[A-Za-z0-9]{46,100}$/.test(String(hunterCid || ''))) {
+      throw new Error('The submission CID must be a bare IPFS CID (46–100 letters and digits, no path or punctuation).');
     }
 
     try {
@@ -395,15 +550,20 @@ class ContractService {
         hunterCid: hunterCid?.substring(0, 20) + '...'
       });
 
+      // Dry-run to surface revert reasons before prompting MetaMask
+      try {
+        await this.contract.prepareSubmission.staticCall(bountyId, evaluationCid, hunterCid);
+      } catch (e) {
+        const decoded = this._decodeRevertReason(e, [this.contract]);
+        const friendly = friendlyRevertMessage(decoded || e?.message);
+        if (friendly) throw new Error(friendly);
+        throw e;
+      }
+
       const tx = await this.contract.prepareSubmission(
         bountyId,
         evaluationCid,
-        hunterCid,
-        addendum,
-        alpha,
-        maxOracleFee,
-        estimatedBaseCost,
-        maxFeeBasedScaling
+        hunterCid
       );
 
       console.log('📤 Transaction sent:', tx.hash);
@@ -438,6 +598,8 @@ class ContractService {
       if (error.code === 'ACTION_REJECTED') {
         throw new Error('Transaction rejected by user');
       }
+      const friendly = friendlyRevertMessage(this._decodeRevertReason(error, [this.contract]) || error?.message);
+      if (friendly) throw new Error(friendly);
       throw error;
     }
   }
@@ -445,23 +607,37 @@ class ContractService {
   /**
    * STEP 2: Start the prepared submission (triggers Verdikta evaluation).
    *
-   * Funds the oracle evaluation with ETH: msg.value must equal the ethMaxBudget
-   * returned by prepareSubmission (or read from getSubmission). No ERC20 approval.
-   * Unspent prepay is refunded to the hunter automatically at finalization.
+   * Funds the oracle evaluation with ETH: msg.value must equal requiredPrepay(bountyId),
+   * read live here (the ethMaxBudget from prepareSubmission is only an estimate). No ERC20
+   * approval. Unspent prepay is refunded to the funder automatically at finalization.
    *
    * @param {string|number} bountyId
    * @param {string|number} submissionId
-   * @param {string|bigint} ethMaxBudget - worst-case prepay in wei (== msg.value)
+   * @param {string|bigint} [ethMaxBudget] - prepare-time estimate, used only if the live read fails
    */
   async startPreparedSubmission(bountyId, submissionId, ethMaxBudget) {
     if (!this.contract) {
       throw new Error('Contract not initialized. Call connect() first.');
     }
-    if (ethMaxBudget == null) {
-      throw new Error('ethMaxBudget is required to fund the evaluation');
-    }
 
-    const value = BigInt(ethMaxBudget);
+    // The contract checks msg.value against the LIVE requirement for the bounty
+    // (requiredPrepay = aggregator maxTotalFee for the bounty's fee, which can change if
+    // aggregator parameters change). The prepare-time ethMaxBudget is only an estimate.
+    let value;
+    try {
+      value = BigInt(await this.contract.requiredPrepay(bountyId));
+      if (ethMaxBudget != null && BigInt(ethMaxBudget) !== value) {
+        console.warn('Prepay requirement changed since prepare; using the live value', {
+          estimate: ethers.formatEther(BigInt(ethMaxBudget)), live: ethers.formatEther(value)
+        });
+      }
+    } catch (e) {
+      if (ethMaxBudget == null) {
+        throw new Error('Could not read the required prepay from the contract, and no estimate was provided');
+      }
+      console.warn('requiredPrepay read failed; using the prepare-time estimate', e.message);
+      value = BigInt(ethMaxBudget);
+    }
 
     try {
       console.log('🔍 Starting submission evaluation...', {
@@ -478,6 +654,11 @@ class ContractService {
         if (msg.includes('only hunter')) throw new Error('Only the submitting hunter can start this evaluation');
         if (msg.includes('creator window still open')) throw new Error('The creator approval window is still open');
         if (msg.includes('already passed')) throw new Error('Another submission already passed — finalize it first');
+        if (msg.includes('deadline passed')) throw new Error('The submission deadline has passed — evaluations can no longer be started for this bounty');
+        // "evaluation slots full - retry later": the concurrency cap (MAX_ACTIVE_EVALUATIONS).
+        // Handled by the table below; isRetryableRevert() reports it as retry-later.
+        const friendly = friendlyRevertMessage(msg);
+        if (friendly) throw new Error(friendly);
         throw e;
       }
 
@@ -514,6 +695,21 @@ class ContractService {
     try {
       console.log('🔍 Finalizing submission...', { bountyId, submissionId });
 
+      // Dry-run to surface revert reasons before prompting MetaMask. "earlier
+      // submission pending - retry after it resolves" is retryable, not a failure.
+      try {
+        await this.contract.finalizeSubmission.staticCall(bountyId, submissionId);
+      } catch (e) {
+        const decoded = this._decodeRevertReason(e, [this.contract]);
+        const friendly = friendlyRevertMessage(decoded || e?.message);
+        if (friendly) {
+          const err = new Error(friendly);
+          err.retryable = isRetryableRevert(decoded || e?.message);
+          throw err;
+        }
+        throw e;
+      }
+
       const tx = await this.contract.finalizeSubmission(bountyId, submissionId);
       console.log('📤 Transaction sent:', tx.hash);
 
@@ -535,6 +731,9 @@ class ContractService {
       if (error.code === 'ACTION_REJECTED') {
         throw new Error('Transaction rejected by user');
       }
+      if (error.retryable !== undefined) throw error;
+      const friendly = friendlyRevertMessage(this._decodeRevertReason(error, [this.contract]) || error?.message);
+      if (friendly) throw new Error(friendly);
       throw error;
     }
   }
@@ -564,11 +763,24 @@ class ContractService {
       if (msg.includes('not pending') || msg.includes('notpending') || msg.includes('not pendingverdikta')) {
         return { success: false, reason: 'already_terminal' };
       }
+      // Windowed priority: an earlier submission is still being evaluated. Retryable —
+      // NOT a failure and NOT a force-fail candidate (a result exists and is kept).
+      if (msg.includes('earlier submission pending')) {
+        return { success: false, reason: 'earlier_pending', retryable: true, canFallbackToTimeout: false,
+                 message: friendlyRevertMessage(msg) };
+      }
+      // The round is settled with no result: finalize can never succeed — force-fail is the call.
+      if (msg.includes('no oracle result')) {
+        return { success: false, reason: 'oracle_no_result', canFallbackToTimeout: true,
+                 message: friendlyRevertMessage(msg) };
+      }
       if (msg.includes('verdikta') || msg.includes('not ready') || msg.includes('notready') || msg.includes('evaluation')) {
+        // Oracle has no result yet. Whether force-fail is possible depends on the
+        // aggregator state — callers must check getForceFailEligibility().
         return { success: false, reason: 'oracle_not_ready', canFallbackToTimeout: true };
       }
       // Unknown revert — still flag as potential timeout fallback
-      return { success: false, reason: msg || 'unknown_revert', canFallbackToTimeout: true };
+      return { success: false, reason: msg || 'unknown_revert', canFallbackToTimeout: true, message: friendlyRevertMessage(msg) };
     }
 
     // Dry-run passed — send the real transaction
@@ -605,6 +817,24 @@ class ContractService {
     try {
       console.log('⏱️ Failing timed-out submission...', { bountyId, submissionId });
 
+      // Dry-run: the contract has no timer — it reverts "result available - use
+      // finalizeSubmission" when the oracle answered, and "evaluation not settled"
+      // while the aggregator round is still open. Surface those before MetaMask.
+      try {
+        await this.contract.failTimedOutSubmission.staticCall(bountyId, submissionId);
+      } catch (e) {
+        const decoded = this._decodeRevertReason(e, [this.contract]);
+        const friendly = friendlyRevertMessage(decoded || e?.message);
+        if (friendly) {
+          const err = new Error(friendly);
+          const raw = String(decoded || e?.message || '').toLowerCase();
+          err.shouldFinalize = raw.includes('result available');
+          err.retryable = raw.includes('evaluation not settled');
+          throw err;
+        }
+        throw e;
+      }
+
       const tx = await this.contract.failTimedOutSubmission(bountyId, submissionId);
       console.log('📤 Transaction sent:', tx.hash);
 
@@ -626,6 +856,53 @@ class ContractService {
       if (error.code === 'ACTION_REJECTED') {
         throw new Error('Transaction rejected by user');
       }
+      if (error.shouldFinalize !== undefined) throw error;
+      const friendly = friendlyRevertMessage(this._decodeRevertReason(error, [this.contract]) || error?.message);
+      if (friendly) throw new Error(friendly);
+      throw error;
+    }
+  }
+
+  /**
+   * Claim ETH credited to the connected wallet on the escrow's pull-payment ledger
+   * (a payout / refund whose direct delivery failed — see PaymentDeferred).
+   */
+  async withdraw() {
+    if (!this.contract) {
+      throw new Error('Contract not initialized. Call connect() first.');
+    }
+    try {
+      const tx = await this.contract.withdraw();
+      const receipt = await tx.wait();
+      return { success: true, txHash: receipt.hash, blockNumber: receipt.blockNumber };
+    } catch (error) {
+      if (error.code === 'ACTION_REJECTED') throw new Error('Transaction rejected by user');
+      const friendly = friendlyRevertMessage(this._decodeRevertReason(error, [this.contract]) || error?.message);
+      if (friendly) throw new Error(friendly);
+      throw error;
+    }
+  }
+
+  /**
+   * Retry recovery of a resolved submission's unspent oracle prepay (after a resolving
+   * tx emitted RefundDeferred). Anyone may call; the funder is paid.
+   */
+  async recoverLeftoverEth(bountyId, submissionId) {
+    if (!this.contract) {
+      throw new Error('Contract not initialized. Call connect() first.');
+    }
+    try {
+      await this.contract.recoverLeftoverEth.staticCall(bountyId, submissionId);
+      const tx = await this.contract.recoverLeftoverEth(bountyId, submissionId);
+      const receipt = await tx.wait();
+      return { success: true, txHash: receipt.hash, blockNumber: receipt.blockNumber };
+    } catch (error) {
+      if (error.code === 'ACTION_REJECTED') throw new Error('Transaction rejected by user');
+      const reason = this._decodeRevertReason(error, [this.contract]) || error?.message || '';
+      if (/nothing to recover/i.test(reason)) throw new Error('Nothing to recover: the prepay for this submission has already been refunded.');
+      if (/not resolved/i.test(reason)) throw new Error('This submission is still being evaluated; recovery is possible once it is finalized or force-failed.');
+      const friendly = friendlyRevertMessage(reason);
+      if (friendly) throw new Error(friendly);
       throw error;
     }
   }
@@ -674,6 +951,8 @@ class ContractService {
       if (msg.includes('active evaluation') || msg.includes('activeevaluation')) {
         throw new Error('Cannot close - active evaluations in progress. Finalize them first.');
       }
+      const friendly = friendlyRevertMessage(msg);
+      if (friendly) throw new Error(friendly);
 
       throw error;
     }
@@ -700,8 +979,10 @@ class ContractService {
         if (msg.includes('only creator')) throw new Error('Only the bounty creator can approve submissions');
         if (msg.includes('window expired')) throw new Error('The creator approval window has expired');
         if (msg.includes('not pending creator approval')) throw new Error('Submission is not pending creator approval');
-        if (msg.includes('earlier submission unresolved')) throw new Error('An earlier submission must be resolved first');
+        if (msg.includes('earlier submission unresolved')) throw new Error('An earlier submission must be resolved first (it is still in evaluation or in its approval window)');
         if (msg.includes('bounty not open')) throw new Error('Bounty is not open');
+        const friendly = friendlyRevertMessage(msg);
+        if (friendly) throw new Error(friendly);
         throw e;
       }
 
@@ -803,15 +1084,21 @@ class ContractService {
 
         return {
           hunter: sub.hunter,
+          hunterCid: sub.hunterCid,
           evalWallet: sub.evalWallet,
           verdiktaAggId: sub.verdiktaAggId,
-          status: statusMap[sub.status] || 'UNKNOWN',
-          statusCode: sub.status,
+          status: statusMap[Number(sub.status)] || 'UNKNOWN',
+          statusCode: Number(sub.status),
           submittedAt: Number(sub.submittedAt),
+          finalizedAt: Number(sub.finalizedAt),
           acceptance: Number(sub.acceptance),
           rejection: Number(sub.rejection),
+          // Not stored on-chain (v0.5.0): use checkEvaluationReady() (aggregator) or the API's job data.
+          justificationCids: '',
           ethMaxBudget: sub.ethMaxBudget.toString(),
           creatorWindowEnd: Number(sub.creatorWindowEnd),
+          // Who attached the prepay at start (receives the unspent refund)
+          funder: sub.funder === '0x0000000000000000000000000000000000000000' ? null : sub.funder,
         };
 
       } catch (error) {
@@ -841,17 +1128,12 @@ class ContractService {
     }
 
     try {
-      // Use the CORRECT 18-field Submission struct ABI (matches actual BountyEscrow.sol)
-      const submissionAbi = [
-        'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))'
-      ];
-
-      const tempContract = new ethers.Contract(this.contractAddress, submissionAbi, provider);
+      // Submission struct (September 2026 revision: 13 fields, no hunter-side oracle params)
+      const tempContract = new ethers.Contract(this.contractAddress, BOUNTY_ESCROW_ABI, provider);
       const submission = await tempContract.getSubmission(bountyId, submissionId);
 
-      // Extract fields - indices match the 17-field struct
-      const verdiktaAggId = submission.verdiktaAggId || submission[4];
-      const statusCode = Number(submission.status ?? submission[5]);
+      const verdiktaAggId = submission.verdiktaAggId;
+      const statusCode = Number(submission.status);
 
       // Status codes: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid, 5=PendingCreatorApproval
       if (statusCode !== 0 && statusCode !== 1) {
@@ -864,32 +1146,8 @@ class ContractService {
         return { ready: false };
       }
 
-      // Get VerdiktaAggregator address
-      const verdiktaSelector = ethers.id('verdikta()').slice(0, 10);
-      const verdiktaResult = await provider.call({
-        to: this.contractAddress,
-        data: verdiktaSelector
-      });
-      const verdiktaAddr = '0x' + verdiktaResult.slice(26);
+      const verdikta = await this._getAggregator(provider);
 
-      // VerdiktaAggregator ABI for getEvaluation - use bytes32 (not uint256!)
-      // The function selector for getEvaluation(bytes32) is different from getEvaluation(uint256)
-      // Return type is: (uint256[] memory, string memory, bool) - note string not string[]
-      const verdiktaAbi = [
-        'function getEvaluation(bytes32 aggId) view returns (uint256[] memory scores, string justificationCids, bool ok)'
-      ];
-      
-      // Use a public RPC provider for more reliable read calls (avoids MetaMask caching/throttling issues)
-      let readProvider;
-      try {
-        readProvider = new ethers.JsonRpcProvider(currentNetwork.rpcUrl);
-      } catch (e) {
-        console.log('⚠️ Public RPC failed, falling back to MetaMask provider');
-        readProvider = provider;
-      }
-      
-      const verdikta = new ethers.Contract(verdiktaAddr, verdiktaAbi, readProvider);
-      
       let scores, justCids, ok;
       try {
         [scores, justCids, ok] = await verdikta.getEvaluation(verdiktaAggId);
@@ -932,6 +1190,122 @@ class ContractService {
   }
 
   // ==========================================================================
+  // AGGREGATOR READS (force-fail gating)
+  // ==========================================================================
+
+  /**
+   * Read-only VerdiktaAggregator contract (address from escrow.verdikta(), cached).
+   * Prefers the public RPC over MetaMask for reliability.
+   */
+  async _getAggregator(fallbackProvider = null) {
+    if (this._aggregator) return this._aggregator;
+    const provider = this.getReadOnlyProvider() || fallbackProvider;
+    if (!provider) throw new Error('No provider available');
+
+    let verdiktaAddr = config.verdiktaAggregatorAddress || null;
+    if (!verdiktaAddr) {
+      const verdiktaSelector = ethers.id('verdikta()').slice(0, 10);
+      const verdiktaResult = await provider.call({ to: this.contractAddress, data: verdiktaSelector });
+      verdiktaAddr = '0x' + verdiktaResult.slice(26);
+    }
+
+    let readProvider;
+    try {
+      readProvider = new ethers.JsonRpcProvider(currentNetwork.rpcUrl);
+    } catch (e) {
+      readProvider = provider;
+    }
+    this._aggregator = new ethers.Contract(verdiktaAddr, VERDIKTA_AGGREGATOR_ABI, readProvider);
+    return this._aggregator;
+  }
+
+  /** Aggregator response timeout in seconds (a constant, ~300 s). Cached. */
+  async getResponseTimeoutSeconds() {
+    if (this._responseTimeoutSeconds != null) return this._responseTimeoutSeconds;
+    const agg = await this._getAggregator();
+    this._responseTimeoutSeconds = Number(await agg.responseTimeoutSeconds());
+    return this._responseTimeoutSeconds;
+  }
+
+  /** getAggregationStatus(aggId) as a plain object. */
+  async getAggregationStatus(aggId) {
+    const agg = await this._getAggregator();
+    const r = await agg.getAggregationStatus(aggId);
+    return {
+      isComplete: Boolean(r.isComplete),
+      failed: Boolean(r.failed),
+      commitPhaseComplete: Boolean(r.commitPhaseComplete),
+      commitExpected: Number(r.commitExpected),
+      commitReceived: Number(r.commitReceived),
+      responseCount: Number(r.responseCount),
+      requiredN: Number(r.requiredN),
+      clusterP: Number(r.clusterP),
+      requester: r.requester,
+      startTimestamp: Number(r.startTimestamp),
+    };
+  }
+
+  /**
+   * Force-fail gate — the SAME rule BountyEscrow.failTimedOutSubmission applies
+   * (there is no timer): eligible iff getEvaluation(aggId).exists === false AND
+   * (getAggregationStatus(aggId).isComplete === true OR now >= startTimestamp +
+   * responseTimeoutSeconds). If a result exists the caller must finalize instead.
+   *
+   * @param {string} verdiktaAggId bytes32 aggregation id (from getSubmission)
+   * @returns {{eligible:boolean, hasResult:boolean, settled:boolean, isComplete:boolean,
+   *   startTimestamp:number, timeoutAt:number|null, secondsUntilTimeout:number|null,
+   *   reason:string, hint:string}}
+   */
+  async getForceFailEligibility(verdiktaAggId) {
+    const zeroBytes32 = '0x0000000000000000000000000000000000000000000000000000000000000000';
+    if (!verdiktaAggId || verdiktaAggId === zeroBytes32) {
+      return { eligible: false, hasResult: false, settled: false, isComplete: false, startTimestamp: 0,
+               timeoutAt: null, secondsUntilTimeout: null, reason: 'no_agg_id',
+               hint: 'The evaluation was never started.' };
+    }
+    try {
+      const agg = await this._getAggregator();
+      const [evalRes, status, responseTimeoutSeconds] = await Promise.all([
+        agg.getEvaluation(verdiktaAggId).then(r => Boolean(r[2])).catch(e => {
+          if (e.code === 'CALL_EXCEPTION') return false;
+          throw e;
+        }),
+        this.getAggregationStatus(verdiktaAggId),
+        this.getResponseTimeoutSeconds(),
+      ]);
+      const hasResult = evalRes;
+      const now = Math.floor(Date.now() / 1000);
+      const timeoutAt = status.startTimestamp > 0 ? status.startTimestamp + responseTimeoutSeconds : null;
+      const timedOut = timeoutAt != null && now >= timeoutAt;
+      const settled = status.isComplete || timedOut;
+      const secondsUntilTimeout = timeoutAt != null ? Math.max(0, timeoutAt - now) : null;
+
+      let eligible = false, reason, hint;
+      if (hasResult) {
+        reason = 'result_available';
+        hint = 'The oracle produced a result — finalize this submission instead.';
+      } else if (status.startTimestamp === 0) {
+        reason = 'unknown_aggregation';
+        hint = 'The aggregator has no record of this round.';
+      } else if (!settled) {
+        reason = 'not_settled';
+        hint = `The aggregator round is still open; it settles in ${secondsUntilTimeout}s unless the oracle responds first.`;
+      } else {
+        eligible = true;
+        reason = status.isComplete ? 'settled_no_result' : 'timed_out_no_result';
+        hint = 'The round settled with no result — the submission can be force-failed and the prepay refunded.';
+      }
+      return { eligible, hasResult, settled, isComplete: status.isComplete, startTimestamp: status.startTimestamp,
+               responseTimeoutSeconds, timeoutAt, secondsUntilTimeout, reason, hint };
+    } catch (error) {
+      console.warn('getForceFailEligibility failed:', error.message);
+      return { eligible: false, hasResult: false, settled: false, isComplete: false, startTimestamp: 0,
+               timeoutAt: null, secondsUntilTimeout: null, reason: 'rpc_error', error: error.message,
+               hint: 'Could not read the aggregator state; retry shortly.' };
+    }
+  }
+
+  // ==========================================================================
   // CONNECTION STATE
   // ==========================================================================
 
@@ -965,6 +1339,7 @@ class ContractService {
     this.contract = null;
     this.userAddress = null;
     this._readOnlyProvider = null;
+    this._aggregator = null;
     this.clearCache();
   }
 }
@@ -1027,7 +1402,8 @@ export async function resolveBountyIdByStateLoose({
   const provider = getSharedProvider();
   const abi = [
     "function bountyCount() view returns (uint256)",
-    "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)"
+    // Full Bounty tuple (incl. trailing `oracle` struct); positional reads b[0]/b[1]/b[6] below are unchanged.
+    "function getBounty(uint256) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))"
   ];
 
   const c = new ethers.Contract(escrowAddress, abi, provider);

@@ -1,5 +1,5 @@
 const hre = require("hardhat");
-// require("dotenv").config({ quiet: true });
+require("dotenv").config({ quiet: true }); // onchain/.env: VERDIKTA_AGGREGATOR_* (hardhat.config already loaded the secrets file)
 const { saveDeployment, copyAbiToFrontend } = require("./helpers");
 
 async function main() {
@@ -34,11 +34,26 @@ async function main() {
   const escrow = await Escrow.deploy(verdikta);
   await escrow.waitForDeployment();
   const escrowAddr = await escrow.getAddress();
+  const deployTx = escrow.deploymentTransaction();
+  const deployRc = deployTx ? await deployTx.wait() : null;
+  const deploymentBlock = deployRc ? deployRc.blockNumber : null;
   // The escrow's constructor creates its read-only lens; record it so it can be verified
   // and found on explorers. Callers never need it: lens views answer at the escrow address.
-  const lensAddr = await escrow.lens();
+  // Load-balanced RPCs can lag a block or two behind the receipt, answering eth_call with
+  // empty data ("could not decode result data") — retry rather than abort after the deploy.
+  async function readWithRetry(label, fn) {
+    for (let i = 1; i <= 10; i++) {
+      try { return await fn(); } catch (e) {
+        if (i === 10) throw e;
+        console.log(`  ${label}: RPC not caught up yet (${e.shortMessage || e.message}); retry ${i}/10 in 3s`);
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+  }
+  const lensAddr = await readWithRetry("lens()", () => escrow.lens());
   // ...and the EvaluationWallet implementation every submission wallet is a clone of.
-  const walletImplAddr = await escrow.walletImplementation();
+  const walletImplAddr = await readWithRetry("walletImplementation()", () => escrow.walletImplementation());
+  if (deploymentBlock) console.log(`Deployment block: ${deploymentBlock}  (set server/config.js deploymentBlocks)`);
 
   console.log(`\nBountyEscrow deployed at: ${escrowAddr}`);
   console.log(`BountyEscrowLens (created by the escrow): ${lensAddr}`);
@@ -49,6 +64,7 @@ async function main() {
     network,
     chainId,
     deployedAt: new Date().toISOString(),
+    deploymentBlock,
     contracts: {
       BountyEscrow: escrowAddr,
       BountyEscrowLens: lensAddr,

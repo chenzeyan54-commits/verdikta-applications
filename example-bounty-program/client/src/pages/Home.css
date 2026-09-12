@@ -722,3 +722,34 @@
 
 
 
+
+/* Oracle-pool check (shown next to the validate result on a bounty card) */
+.oracle-check-block {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  background: #f1f8e9;
+  border: 1px solid #c5e1a5;
+  color: #33691e;
+  cursor: default;
+}
+.oracle-check-block.has-warnings {
+  background: #fff8e1;
+  border-color: #ffe082;
+  color: #8a6d00;
+}
+.oracle-check-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+.oracle-check-warnings {
+  margin: 0.35rem 0 0 0;
+  padding-left: 1.1rem;
+}
+.oracle-check-warnings li {
+  margin: 0.15rem 0;
+}

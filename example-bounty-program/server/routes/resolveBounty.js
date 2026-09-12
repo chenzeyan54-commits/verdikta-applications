@@ -17,7 +17,9 @@ if (!RPC_PROVIDER_URL) {
 const BOUNTY_ABI = [
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string rubricCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
   "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256) view returns (address,string,uint64,uint8,uint256,uint256,uint64,uint8,address,uint256)"
+  // Full Bounty tuple (September 2026 revision, incl. the trailing `oracle` struct).
+  // Positional reads below (b[0] creator, b[1] evaluationCid, b[6] submissionDeadline) are unchanged.
+  "function getBounty(uint256) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))"
 ];
 
 function getProvider() {

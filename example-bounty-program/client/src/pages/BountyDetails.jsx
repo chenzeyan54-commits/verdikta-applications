@@ -67,8 +67,12 @@ const CONFIG = {
   INITIAL_LOAD_MAX_RETRIES: 20,
   INITIAL_LOAD_RETRY_DELAY_MS: 3000,
 
-  // Timeout threshold for submissions (in minutes) - for force-fail
-  // NOTE: Must match contract's 20 minute requirement in failTimedOutSubmission()
+  // Typical time (minutes) after which an unanswered evaluation is force-failable.
+  // DISPLAY ONLY. The contract's failTimedOutSubmission has NO timer: it succeeds iff
+  // the aggregator holds no result AND the round is settled (isComplete, or
+  // responseTimeoutSeconds ≈ 5 min elapsed since start). The actual gate used by the
+  // buttons and the resolve-and-close flow is contractService.getForceFailEligibility()
+  // (see forceFailEligibility state below).
   SUBMISSION_TIMEOUT_MINUTES: 10,
 
   // How often to update the live timer display (1 second)
@@ -157,6 +161,7 @@ function BountyDetails({ walletState }) {
   const [closingMessage, setClosingMessage] = useState('');
   const [finalizingSubmissions, setFinalizingSubmissions] = useState(new Set());
   const [failingSubmissions, setFailingSubmissions] = useState(new Set());
+  const [recoveringSubmissions, setRecoveringSubmissions] = useState(new Set());
   const [cancelingSubmissions, setCancelingSubmissions] = useState(new Set());
   const [refreshingSubmissions, setRefreshingSubmissions] = useState(new Set());
   const [startingSubmissions, setStartingSubmissions] = useState(new Set());
@@ -178,6 +183,13 @@ function BountyDetails({ walletState }) {
   // Polling state for submissions waiting for status update
   // Stores: { attempts, maxAttempts }
   const [pollingSubmissions, setPollingSubmissions] = useState(new Map());
+
+  // Force-fail eligibility per submissionId, read from the aggregator with the SAME
+  // rule as BountyEscrow.failTimedOutSubmission (no local timer):
+  //   eligible iff getEvaluation(aggId).exists === false
+  //            AND (getAggregationStatus(aggId).isComplete OR now >= start + responseTimeoutSeconds)
+  // Shape: { eligible, hasResult, settled, secondsUntilTimeout, reason, hint }
+  const [forceFailEligibility, setForceFailEligibility] = useState(new Map());
 
   // Evaluation results derived from backend submission status (no direct on-chain polling).
   // The server sync service detects oracle completion and sets status to
@@ -368,6 +380,47 @@ function BountyDetails({ walletState }) {
     const id = parseInt(bountyId, 10);
     return Number.isNaN(id) ? null : id;
   }, [bountyId]);
+
+  /**
+   * Refresh force-fail eligibility for every on-chain pending submission by reading
+   * the aggregator (read-only RPC; no wallet needed). Replaces the old
+   * "age > SUBMISSION_TIMEOUT_MINUTES" heuristic.
+   */
+  const refreshForceFailEligibility = useCallback(async (subs) => {
+    const onChainId = getOnChainBountyId();
+    if (onChainId == null) return;
+    const pending = (subs || []).filter(s =>
+      isSubmissionOnChain(s.status) || isSubmissionOnChain(s.onChainStatus)
+    );
+    if (pending.length === 0) {
+      setForceFailEligibility(prev => (prev.size ? new Map() : prev));
+      return;
+    }
+    const contractService = getContractService();
+    const next = new Map();
+    const zero = /^0x0+$/;
+    for (const s of pending) {
+      const subId = s.onChainSubmissionId ?? s.submissionId;
+      try {
+        let aggId = s.verdiktaAggId;
+        if (!aggId || zero.test(aggId)) {
+          const chainSub = await contractService.getSubmission(onChainId, subId);
+          if (chainSub.status !== 'PendingVerdikta') continue;
+          aggId = chainSub.verdiktaAggId;
+        }
+        next.set(s.submissionId, await contractService.getForceFailEligibility(aggId));
+      } catch (e) {
+        // leave unknown — buttons stay conservative (no force-fail offered)
+      }
+    }
+    if (isMountedRef.current) setForceFailEligibility(next);
+  }, [getOnChainBountyId]);
+
+  // Refresh eligibility whenever the submission list changes (load / sync).
+  useEffect(() => {
+    if (!submissions || submissions.length === 0) return;
+    refreshForceFailEligibility(submissions);
+  }, [submissions, refreshForceFailEligibility]);
 
   // ============================================================================
   // DATA LOADING (with on-chain status verification)
@@ -634,6 +687,12 @@ function BountyDetails({ walletState }) {
         }
       }
 
+      // Re-read the aggregator gate so force-fail buttons appear as soon as the
+      // round settles (no status change needed for that).
+      if (isMountedRef.current) {
+        try { await refreshForceFailEligibility(currentSubs); } catch (_) { /* ignore */ }
+      }
+
       // Reload if any status changed
       if (hasUpdates && isMountedRef.current) {
         loadJobDetails(true);
@@ -646,7 +705,7 @@ function BountyDetails({ walletState }) {
         autoRefreshIntervalRef.current = null;
       }
     };
-  }, [job?.jobId, job?.status, submissions, loadJobDetails]);
+  }, [job?.jobId, job?.status, submissions, loadJobDetails, refreshForceFailEligibility]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1161,6 +1220,13 @@ function BountyDetails({ walletState }) {
 
     } catch (err) {
       console.error('❌ Error finalizing submission:', err);
+      // "earlier submission pending - retry after it resolves" is not a failure.
+      if (err.retryable) {
+        setFinalizingSubmissions(prev => { const next = new Set(prev); next.delete(submissionId); return next; });
+        setPollingSubmissions(prev => { const next = new Map(prev); next.delete(submissionId); return next; });
+        toast.info(`Submission #${submissionId}: ${err.message}`);
+        return;
+      }
       setError(err.message || 'Failed to finalize submission');
 
       setFinalizingSubmissions(prev => {
@@ -1180,6 +1246,38 @@ function BountyDetails({ walletState }) {
     }
   };
 
+  // Retry recovery of a resolved submission's unspent oracle prepay. Shown only when the
+  // sync service recorded a RefundDeferred event for the submission (the resolving tx
+  // could not pull the refund from the aggregator). Anyone may call; the funder is paid.
+  const handleRecoverRefund = async (submissionId) => {
+    if (!walletState.isConnected) {
+      toast.warning('Please connect your wallet first');
+      return;
+    }
+    const onChainId = getOnChainBountyId();
+    if (onChainId == null) {
+      toast.warning('Unable to determine the on-chain bounty ID yet. Please wait for sync or refresh.');
+      return;
+    }
+    try {
+      setRecoveringSubmissions(prev => new Set(prev).add(submissionId));
+      const contractService = getContractService();
+      if (!contractService.isConnected()) await contractService.connect();
+      const result = await contractService.recoverLeftoverEth(onChainId, submissionId);
+      toast.success(`Oracle prepay recovered for submission #${submissionId}. TX: ${result.txHash?.slice(0, 10)}...`);
+      await loadJobDetails(true);
+    } catch (err) {
+      console.error('Error recovering prepay:', err);
+      toast.error(err.message || 'Failed to recover the oracle prepay');
+    } finally {
+      setRecoveringSubmissions(prev => {
+        const next = new Set(prev);
+        next.delete(submissionId);
+        return next;
+      });
+    }
+  };
+
   const handleFailTimedOutSubmission = async (submissionId) => {
     if (!walletState.isConnected) {
       toast.warning('Please connect your wallet first');
@@ -1192,12 +1290,36 @@ function BountyDetails({ walletState }) {
       return;
     }
 
+    // Aggregator-state gate (the contract has no timer). Read live so a stale
+    // cache can't hand the user a transaction that reverts.
+    let gate = forceFailEligibility.get(submissionId) || null;
+    try {
+      const contractService = getContractService();
+      const chainSub = await contractService.getSubmission(onChainId, submissionId);
+      if (chainSub.status !== 'PendingVerdikta') {
+        toast.info(`Submission #${submissionId} is ${chainSub.status} on-chain — nothing to force-fail. Refreshing…`);
+        loadJobDetails(true);
+        return;
+      }
+      gate = await contractService.getForceFailEligibility(chainSub.verdiktaAggId);
+    } catch (e) {
+      console.warn('Force-fail pre-check failed, using cached eligibility:', e.message);
+    }
+    if (gate?.hasResult) {
+      toast.warning(`Submission #${submissionId}: the oracle produced a result — finalize it instead of force-failing.`);
+      return;
+    }
+    if (gate && !gate.eligible) {
+      toast.warning(`Submission #${submissionId} cannot be force-failed yet: ${gate.hint || gate.reason}`);
+      return;
+    }
+
     const confirmed = window.confirm(
       `Force-fail submission #${submissionId}?\n\n` +
-      `This submission has been stuck in evaluation for over ${CONFIG.SUBMISSION_TIMEOUT_MINUTES} minutes.\n` +
+      'The aggregator round for this submission has settled with no oracle result.\n' +
       'This action will:\n' +
       '• Mark the submission as Failed (timeout)\n' +
-      '• Refund the unspent ETH prepay to the submitter\n' +
+      '• Refund the unspent ETH prepay to whoever funded the evaluation\n' +
       '• Allow the bounty to be closed\n\n' +
       'This requires a blockchain transaction that you must sign.'
     );
@@ -1229,6 +1351,16 @@ function BountyDetails({ walletState }) {
       await loadJobDetails();
     } catch (err) {
       console.error('❌ Error failing timed-out submission:', err);
+      if (err.shouldFinalize) {
+        toast.warning(`Submission #${submissionId}: ${err.message}`);
+        refreshForceFailEligibility(submissionsRef.current);
+        return;
+      }
+      if (err.retryable) {
+        toast.info(`Submission #${submissionId}: ${err.message}`);
+        refreshForceFailEligibility(submissionsRef.current);
+        return;
+      }
       setError(err.message || 'Failed to mark submission as timed-out');
       toast.error(`Failed to timeout submission #${submissionId}: ${err.message}`);
     } finally {
@@ -1385,6 +1517,9 @@ function BountyDetails({ walletState }) {
         toast.error('Cannot start: the bounty submission deadline has passed.');
       } else if (msg.includes('insufficient funds') || msg.includes('wrong eth amount') || msg.includes('Incorrect ETH')) {
         toast.error('Could not fund the evaluation. Ensure you have enough ETH for the prepay and gas, then try again.');
+      } else if (msg.includes('evaluation slots full') || msg.includes('evaluations in flight')) {
+        // Concurrency cap (MAX_ACTIVE_EVALUATIONS): retry later, the submission is not lost.
+        toast.warning('This bounty already has the maximum number of evaluations in flight. Retry in a few minutes, once any of them resolves — your submission is kept.');
       } else if (msg.includes('ACTION_REJECTED') || msg.includes('rejected')) {
         toast.warning('Transaction was rejected.');
       } else {
@@ -1558,12 +1693,16 @@ function BountyDetails({ walletState }) {
       for (const sub of pendingToResolve) {
         const subId = sub.onChainSubmissionId ?? sub.submissionId;
         const ageMin = sub.submittedAt ? getSubmissionAge(sub.submittedAt).toFixed(0) : '?';
-        const canTimeout = sub.submittedAt && getSubmissionAge(sub.submittedAt) > CONFIG.SUBMISSION_TIMEOUT_MINUTES;
+        const gate = forceFailEligibility.get(sub.submissionId);
         confirmMessage += `  - Submission #${subId} (${ageMin} min old)`;
-        confirmMessage += canTimeout ? ' — timeout eligible\n' : '\n';
+        confirmMessage += gate?.hasResult
+          ? ' — oracle result ready (will finalize)\n'
+          : gate?.eligible
+            ? ' — round settled with no result (will force-fail)\n'
+            : ' — still in evaluation (will retry finalize; force-fail only once the round settles)\n';
       }
-      confirmMessage += '\nFor each, we will try to pull oracle results (finalize).\n';
-      confirmMessage += 'If the oracle is not ready, we will force-fail via timeout.\n';
+      confirmMessage += '\nFor each, we will first try to pull oracle results (finalize).\n';
+      confirmMessage += 'Only if the aggregator round has settled with no result will we force-fail it.\n';
       const maxTx = pendingToResolve.length + 1; // +1 for close
       confirmMessage += `Up to ${maxTx} transaction(s) may be required.\n\n`;
     }
@@ -1623,15 +1762,28 @@ function BountyDetails({ walletState }) {
               continue;
             }
 
-            // Finalize failed (oracle not ready) — try force-fail via timeout
-            const ageMin = sub.submittedAt ? getSubmissionAge(sub.submittedAt) : 0;
-            if (ageMin <= CONFIG.SUBMISSION_TIMEOUT_MINUTES) {
-              toast.warning(`Submission #${subId} cannot be finalized or timed out yet (${ageMin.toFixed(0)} min old, need >${CONFIG.SUBMISSION_TIMEOUT_MINUTES} min)`);
+            if (finalizeResult.reason === 'earlier_pending') {
+              // Windowed priority — a result exists and is kept; retry after the earlier one resolves.
+              toast.warning(`Submission #${subId}: an earlier submission is still being evaluated — retry after it resolves`);
               unresolvedIds.push(subId);
               continue;
             }
 
-            setClosingMessage(`Force-failing submission ${i + 1}/${pendingToResolve.length} (#${subId}) via timeout...`);
+            // Finalize failed (no oracle result) — force-fail ONLY if the aggregator
+            // round is settled with no result (the contract's own rule; no timer).
+            const gate = await contractService.getForceFailEligibility(onChainSub.verdiktaAggId);
+            if (gate.hasResult) {
+              toast.warning(`Submission #${subId}: the oracle has a result — finalize it (retry in a moment)`);
+              unresolvedIds.push(subId);
+              continue;
+            }
+            if (!gate.eligible) {
+              toast.warning(`Submission #${subId} cannot be force-failed yet: ${gate.hint || gate.reason}`);
+              unresolvedIds.push(subId);
+              continue;
+            }
+
+            setClosingMessage(`Force-failing submission ${i + 1}/${pendingToResolve.length} (#${subId}) (round settled, no result)...`);
             try {
               await contractService.failTimedOutSubmission(onChainId, subId);
               toast.info(`Force-failed submission #${subId} via timeout`);
@@ -1676,7 +1828,7 @@ function BountyDetails({ walletState }) {
         }
 
         if (stillPending.length > 0) {
-          const msg = `Cannot close bounty: submission(s) #${stillPending.join(', #')} are still PendingVerdikta on-chain. They may need more time before timeout is eligible.`;
+          const msg = `Cannot close bounty: submission(s) #${stillPending.join(', #')} are still PendingVerdikta on-chain. Wait for their aggregator round to settle (about 5 minutes after start) or for the oracle result, then retry.`;
           toast.error(msg);
           setError(msg);
           return;
@@ -2064,6 +2216,8 @@ function BountyDetails({ walletState }) {
                   isPreviewing={previewingSubmissions.size > 0}
                   onFinalize={handleFinalizeSubmission}
                   onFailTimeout={handleFailTimedOutSubmission}
+                  onRecoverRefund={handleRecoverRefund}
+                  recoveringSubmissions={recoveringSubmissions}
                   onCancel={handleCancelSubmission}
                   onStart={handleStartSubmission}
                   onCreatorApprove={handleCreatorApprove}
@@ -2074,6 +2228,7 @@ function BountyDetails({ walletState }) {
                   approvingSubmissions={approvingSubmissions}
                   pollingSubmissions={pollingSubmissions}
                   evaluationResults={evaluationResults}
+                  forceFailEligibility={forceFailEligibility}
                   disableActions={disableActionsForMissingId}
                   timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
                   walletState={walletState}
@@ -2456,6 +2611,8 @@ function BountyDetails({ walletState }) {
               onClose={handleCloseExpiredBounty}
               onFinalize={handleFinalizeSubmission}
               onFailTimeout={handleFailTimedOutSubmission}
+                  onRecoverRefund={handleRecoverRefund}
+                  recoveringSubmissions={recoveringSubmissions}
               onCancel={handleCancelSubmission}
               onStart={handleStartSubmission}
               finalizingSubmissions={finalizingSubmissions}
@@ -2464,6 +2621,7 @@ function BountyDetails({ walletState }) {
               startingSubmissions={startingSubmissions}
               pollingSubmissions={pollingSubmissions}
               evaluationResults={evaluationResults}
+              forceFailEligibility={forceFailEligibility}
               timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
               toast={toast}
             />
@@ -2483,6 +2641,8 @@ function BountyDetails({ walletState }) {
                 jobId={bountyId}
                 walletState={walletState}
                 onFailTimeout={handleFailTimedOutSubmission}
+                  onRecoverRefund={handleRecoverRefund}
+                  recoveringSubmissions={recoveringSubmissions}
                 onFinalize={handleFinalizeSubmission}
                 onCancel={handleCancelSubmission}
                 onStart={handleStartSubmission}
@@ -2499,6 +2659,7 @@ function BountyDetails({ walletState }) {
                 isPolling={pollingSubmissions.has(submission.submissionId)}
                 pollingState={pollingSubmissions.get(submission.submissionId)}
                 evaluationResult={evaluationResults.get(submission.submissionId)}
+                forceFail={forceFailEligibility.get(submission.submissionId)}
                 disableActions={disableActionsForMissingId}
                 getSubmissionAge={getSubmissionAge}
                 timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
@@ -2910,6 +3071,8 @@ function PendingSubmissionsPanel({
   isPreviewing,
   onFinalize,
   onFailTimeout,
+  onRecoverRefund,
+  recoveringSubmissions,
   onCancel,
   onStart,
   onCreatorApprove,
@@ -2920,6 +3083,7 @@ function PendingSubmissionsPanel({
   approvingSubmissions,
   pollingSubmissions,
   evaluationResults,
+  forceFailEligibility,
   disableActions,
   timeoutMinutes,
   walletState,
@@ -2942,8 +3106,10 @@ function PendingSubmissionsPanel({
         const now = Math.floor(Date.now() / 1000);
         const windowOpen = isPendingCreatorApproval && windowEnd > now;
         const windowExpired = isPendingCreatorApproval && windowEnd > 0 && windowEnd <= now;
-        // Only allow timeout for on-chain submissions (not Prepared or PendingCreatorApproval)
-        const canTimeout = isOnChain && !isPendingCreatorApproval && ageMinutes > timeoutMinutes;
+        // Force-fail only when the aggregator round is settled with no result (the
+        // contract's own rule — there is no timer). Never for Prepared / PendingCreatorApproval.
+        const gate = forceFailEligibility?.get(s.submissionId);
+        const canTimeout = isOnChain && !isPendingCreatorApproval && gate?.eligible === true;
         const isFailing = failingSubmissions.has(s.submissionId);
         const isFinalizing = finalizingSubmissions.has(s.submissionId);
         const isApproving = approvingSubmissions?.has(s.submissionId);
@@ -3148,16 +3314,23 @@ function PendingSubmissionsPanel({
               )}
             </div>
 
-            {!canTimeout && !evalResult?.ready && (
+            {!canTimeout && !evalResult?.ready && isOnChain && !isPendingCreatorApproval && (
               <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.5rem' }}>
-                ⏳ Force-fail available in {(timeoutMinutes - ageMinutes).toFixed(1)} min
+                {gate?.hasResult
+                  ? '✅ Oracle result available — finalize to record it'
+                  : gate?.secondsUntilTimeout != null && gate.secondsUntilTimeout > 0
+                    ? `⏳ Force-fail available in ${(gate.secondsUntilTimeout / 60).toFixed(1)} min if the oracle does not respond`
+                    : gate?.reason === 'no_agg_id'
+                      ? '⏳ Evaluation not started yet'
+                      : '⏳ Waiting for the aggregator round to settle…'}
               </div>
             )}
           </div>
         );
       })}
       <p style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: '#666' }}>
-        💡 Auto-checking every 15 seconds. Submissions stuck &gt;{timeoutMinutes} minutes can be force-failed.
+        💡 Auto-checking every 20 seconds. A submission can be force-failed once its oracle round settles with no
+        result (about {timeoutMinutes} minutes after it was started at the latest).
       </p>
     </div>
   );
@@ -3175,6 +3348,8 @@ function ExpiredBountyActions({
   onClose,
   onFinalize,
   onFailTimeout,
+  onRecoverRefund,
+  recoveringSubmissions,
   onCancel,
   onStart,
   finalizingSubmissions,
@@ -3183,6 +3358,7 @@ function ExpiredBountyActions({
   startingSubmissions,
   pollingSubmissions,
   evaluationResults,
+  forceFailEligibility,
   timeoutMinutes,
   toast
 }) {
@@ -3220,24 +3396,25 @@ function ExpiredBountyActions({
                 {pendingSubmissions.map(sub => {
                   const subId = sub.onChainSubmissionId ?? sub.submissionId;
                   const ageMin = sub.submittedAt ? getSubmissionAge(sub.submittedAt) : 0;
-                  const canTimeout = ageMin > timeoutMinutes;
+                  const gate = forceFailEligibility?.get(sub.submissionId);
+                  const canTimeout = gate?.eligible === true;
                   const evalResult = evaluationResults?.get(sub.submissionId);
                   return (
                     <li key={subId} style={{ marginBottom: '0.25rem' }}>
                       <strong>#{subId}</strong> — {ageMin.toFixed(0)} min old
-                      {evalResult?.ready
+                      {evalResult?.ready || gate?.hasResult
                         ? <span style={{ color: '#2e7d32' }}> (oracle results available — will finalize)</span>
                         : canTimeout
-                          ? <span style={{ color: '#e65100' }}> (oracle not ready — will force-fail via timeout)</span>
-                          : <span style={{ color: '#666' }}> (waiting for oracle or timeout eligibility)</span>
+                          ? <span style={{ color: '#e65100' }}> (round settled with no result — will force-fail)</span>
+                          : <span style={{ color: '#666' }}> (round still open{gate?.secondsUntilTimeout > 0 ? ` — settles in ~${Math.ceil(gate.secondsUntilTimeout / 60)} min` : ''}; will retry finalize)</span>
                       }
                     </li>
                   );
                 })}
               </ul>
               <div style={{ fontSize: '0.85rem', color: '#555', marginBottom: '0.75rem' }}>
-                For each submission, we first try to pull oracle results. If the oracle is not ready,
-                submissions older than {timeoutMinutes} minutes will be force-failed via timeout.
+                For each submission, we first try to pull oracle results (finalize). Only submissions whose
+                aggregator round has settled with no result are force-failed — the contract has no timer.
               </div>
             </div>
           )}
@@ -3304,6 +3481,8 @@ function SubmissionCard({
   jobId,
   walletState,
   onFailTimeout,
+  onRecoverRefund,
+  recoveringSubmissions,
   onFinalize,
   onCancel,
   onStart,
@@ -3320,6 +3499,7 @@ function SubmissionCard({
   isPolling,
   pollingState,
   evaluationResult,
+  forceFail,
   disableActions,
   getSubmissionAge,
   timeoutMinutes,
@@ -3358,8 +3538,9 @@ function SubmissionCard({
   // Receipts-as-memes: only show for paid winners
   const isPaidWinner = submission.paidWinner === true;
   const ageMinutes = isPending && submission.submittedAt ? getSubmissionAge(submission.submittedAt) : 0;
-  // Only allow timeout for submissions that are actually on-chain (not Prepared)
-  const canTimeout = isOnChain && ageMinutes > timeoutMinutes;
+  // Force-fail only when the aggregator round is settled with no result (the
+  // contract's rule; no timer) and the submission is actually on-chain (not Prepared).
+  const canTimeout = isOnChain && forceFail?.eligible === true;
   // Only allow finalize for on-chain submissions (not Prepared)
   const canFinalize = isOnChain && !isPolling;
   const hasEvalReady = evaluationResult?.ready;
@@ -3859,7 +4040,7 @@ function SubmissionCard({
                 borderRadius: '4px',
                 marginBottom: '0.25rem'
               }}>
-                ⚠️ Oracle hasn't responded after {ageMinutes.toFixed(0)} min.
+                ⚠️ The oracle round settled with no result ({ageMinutes.toFixed(0)} min since submission).
                 Use the button below to mark as failed and refund the ETH prepay.
               </div>
               <button
@@ -3878,10 +4059,37 @@ function SubmissionCard({
             </>
           )}
           
+          {/* Deferred oracle-prepay refund: the resolving tx could not recover it; retry here */}
+          {isOnChain && submission.refundDeferred && (
+            <>
+              <div style={{
+                fontSize: '0.8rem', color: '#e65100', padding: '0.5rem',
+                backgroundColor: '#fff3e0', borderRadius: '4px', marginBottom: '0.25rem'
+              }}>
+                ⚠️ The unspent oracle prepay for this submission could not be recovered when it was
+                resolved (the aggregator withdrawal failed). It is still recoverable — retry below.
+              </div>
+              <button
+                onClick={() => onRecoverRefund && onRecoverRefund(submission.submissionId)}
+                disabled={!onRecoverRefund || (recoveringSubmissions && recoveringSubmissions.has(submission.submissionId)) || disableActions}
+                className="btn btn-warning"
+                style={{ fontSize: '1rem', padding: '0.75rem 1rem', width: '100%', fontWeight: 'bold' }}
+              >
+                {recoveringSubmissions && recoveringSubmissions.has(submission.submissionId)
+                  ? '⏳ Recovering prepay...'
+                  : '♻️ Recover oracle prepay'}
+              </button>
+            </>
+          )}
+
           {/* Show countdown only if timeout not yet available and eval not ready */}
-          {!canTimeout && !hasEvalReady && (
+          {!canTimeout && !hasEvalReady && isOnChain && (
             <div style={{ fontSize: '0.8rem', color: '#888', textAlign: 'center' }}>
-              Force-fail available in {(timeoutMinutes - ageMinutes).toFixed(1)} min
+              {forceFail?.hasResult
+                ? 'Oracle result available — finalize to record it'
+                : forceFail?.secondsUntilTimeout != null && forceFail.secondsUntilTimeout > 0
+                  ? `Force-fail available in ${(forceFail.secondsUntilTimeout / 60).toFixed(1)} min if the oracle does not respond`
+                  : `Waiting for the aggregator round to settle (typically within ${timeoutMinutes} min)…`}
             </div>
           )}
         </div>

@@ -50,7 +50,7 @@ See `.env.example`. Required:
 npm run deploy:sepolia     # or deploy:base
 ```
 
-After deployment, the new BountyEscrow address (and the `BountyEscrowLens` it created) is printed to console and saved to `deployments/`; both are verified on Basescan when `BASESCAN_API_KEY` is set (`deploy/verify.js <escrow>` verifies both after the fact). The lens is verified separately only so the explorer's read tab can show the views — callers never need its address. Update `BOUNTY_ESCROW_ADDRESS_*` in both `server/.env` and `client/.env`, then restart the server and rebuild the client. If the ABI changed, that is not enough — follow the release's cutover runbook in `../deploy/` (currently `../deploy/CUTOVER-2026-09-12.md`), which also applies the off-chain migration patch, bumps `deploymentBlocks`, and resets the job data.
+After deployment, the new BountyEscrow address (and the `BountyEscrowLens` it created) is printed to console and saved to `deployments/`; both are verified on Basescan when `BASESCAN_API_KEY` is set (`ESCROW=<escrow> npx hardhat run deploy/verify.js --network <net>` verifies all three after the fact). The lens is verified separately only so the explorer's read tab can show the views — callers never need its address. Update `BOUNTY_ESCROW_ADDRESS_*` in both `server/.env` and `client/.env`, then restart the server and rebuild the client. If the ABI changed, that is not enough — follow the release's cutover runbook in `../deploy/` (currently `../deploy/CUTOVER-2026-09-12.md`), which also applies the off-chain migration patch, bumps `deploymentBlocks`, and resets the job data.
 
 ## Project context
 

@@ -583,13 +583,17 @@ const VERDIKTA_ABI = [
   'function getEvaluation(bytes32 requestId) view returns (uint256[] likelihoods, string justificationCID, bool exists)',
 ];
 
+// September 2026 BountyEscrow revision: prepareSubmission takes only the two CIDs
+// (the creator's oracle settings live on the bounty), getSubmission lost the
+// hunter-side oracle fields and gained `funder`, and SubmissionPrepared emits
+// ethMaxBudget BEFORE the dynamic string.
 const BOUNTY_ESCROW_ABI = [
-  'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid, string addendum, uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) returns (uint256, address, uint256)',
+  'function prepareSubmission(uint256 bountyId, string evaluationCid, string hunterCid) returns (uint256 submissionId, address evalWallet, uint256 ethMaxBudget)',
   'function startPreparedSubmission(uint256 bountyId, uint256 submissionId) payable',
-  'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))',
+  'function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))',
   'function submissionCount(uint256 bountyId) view returns (uint256)',
-  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))',
-  'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)',
+  'function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))',
+  'event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, uint256 ethMaxBudget, string evaluationCid)',
 ];
 
 // On-chain submission status codes
@@ -736,21 +740,16 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
 
   // Step 1: Prepare submission on-chain (only do this ONCE, not on retry)
   //
-  // alpha (0-1000): timeliness-vs-quality blend in ReputationKeeper.getSelectionScore:
-  //   weighted = ((1000 - alpha) * quality + alpha * timeliness) / 1000.
-  //   0 = pure quality; 1000 = pure timeliness; 500 = equal blend.
-  // maxFeeBasedScaling: plain integer x-factor (contract scales by 1e18 internally).
-  //   Caps the fee-boost multiplier for oracles priced below maxOracleFee. Must be >= 1.
+  // The oracle request settings (maxOracleFee, alpha, estimatedBaseCost,
+  // maxFeeBasedScaling) are chosen by the bounty CREATOR at createBounty and
+  // applied by the contract; the hunter supplies only the two CIDs. ethMaxBudget
+  // (the prepay) is derived from bounty.oracle.maxOracleFee and is the same for
+  // every submission to the bounty.
   console.log('    Preparing submission on-chain...');
   const prepareTx = await contract.prepareSubmission(
     bountyId,
     evaluationCid,
-    hunterCid,
-    '',                                                   // addendum
-    serverConfig.submissionDefaults.alpha,                // alpha (equal quality/timeliness blend)
-    serverConfig.submissionDefaults.maxOracleFeeWei,      // maxOracleFee
-    serverConfig.submissionDefaults.estimatedBaseCostWei, // estimatedBaseCost
-    serverConfig.submissionDefaults.maxFeeBasedScaling    // maxFeeBasedScaling (x-factor cap on fee-based boost)
+    hunterCid
   );
 
   const prepareReceipt = await prepareTx.wait();
@@ -762,9 +761,10 @@ async function startSubmissionOnChain(wallet, bountyId, evaluationCid, hunterCid
     try {
       const parsed = contract.interface.parseLog(log);
       if (parsed?.name === 'SubmissionPrepared') {
-        submissionId = parsed.args[1];
-        evalWallet = parsed.args[3];
-        ethMaxBudget = parsed.args[5];
+        // Named access — field order changed in the September 2026 revision.
+        submissionId = parsed.args.submissionId;
+        evalWallet = parsed.args.evalWallet;
+        ethMaxBudget = parsed.args.ethMaxBudget;
         break;
       }
     } catch (e) {

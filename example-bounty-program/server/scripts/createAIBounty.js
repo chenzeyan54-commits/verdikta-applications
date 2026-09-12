@@ -57,10 +57,24 @@ const CONFIG = {
   botApiKey: process.env.BOT_API_KEY,
 };
 
+// September 2026 BountyEscrow revision: createBounty takes ONE CreateParams struct.
 const BOUNTY_ESCROW_ABI = [
   'event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)',
-  'function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)',
+  'function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle) p) payable returns (uint256 bountyId)',
 ];
+
+// Creator-chosen oracle settings: prefer what the API persisted on the job so the
+// on-chain bounty and the backend record agree; fall back to server defaults.
+function oracleParamsFromJob(job) {
+  const o = job?.oracleSettings;
+  const d = serverConfig.submissionDefaults;
+  return {
+    maxOracleFee: BigInt(String(o?.maxOracleFee ?? d.maxOracleFeeWei)),
+    alpha: BigInt(String(o?.alpha ?? d.alpha)),
+    estimatedBaseCost: BigInt(String(o?.estimatedBaseCost ?? d.estimatedBaseCostWei)),
+    maxFeeBasedScaling: BigInt(String(o?.maxFeeBasedScaling ?? d.maxFeeBasedScaling)),
+  };
+}
 
 // Default jury: same as other scripts. Stick to verified-working models.
 const DEFAULT_JURY = [
@@ -256,12 +270,23 @@ async function updateJobBountyId(jobId, bountyId, txHash, blockNumber) {
   return resp.json();
 }
 
-async function createBountyOnChain(contract, evaluationCid, classId, threshold, hours, amountEth) {
+async function createBountyOnChain(contract, evaluationCid, classId, threshold, hours, amountEth, oracle) {
   const deadline = Math.floor(Date.now() / 1000) + (hours * 3600);
   const value = ethers.parseEther(amountEth.toString());
   console.log('    Sending transaction...');
-  const createFn = contract['createBounty(string,uint64,uint8,uint64,address)'];
-  const tx = await createFn(evaluationCid, classId, threshold, deadline, ethers.ZeroAddress, { value });
+  // Non-windowed bounty: both payments equal the amount, window 0.
+  const params = {
+    evaluationCid,
+    requestedClass: BigInt(classId),
+    threshold: BigInt(threshold),
+    submissionDeadline: BigInt(deadline),
+    targetHunter: ethers.ZeroAddress,
+    creatorDeterminationPayment: value,
+    arbiterDeterminationPayment: value,
+    creatorAssessmentWindowSize: 0n,
+    oracle: oracle || oracleParamsFromJob(null),
+  };
+  const tx = await contract.createBounty(params, { value });
   console.log(`    Tx hash: ${tx.hash}`);
   console.log('    Waiting for confirmation...');
   const receipt = await tx.wait();
@@ -394,7 +419,8 @@ async function main() {
   // 5) On-chain createBounty
   console.log('\n  Creating bounty on chain...');
   const result = await createBountyOnChain(
-    contract, evaluationCid, opts.classId, opts.threshold, opts.hours, opts.amount
+    contract, evaluationCid, opts.classId, opts.threshold, opts.hours, opts.amount,
+    oracleParamsFromJob(job?.job ?? job)
   );
   console.log(`    bountyId:    ${result.bountyId}`);
   console.log(`    txHash:      ${result.txHash}`);

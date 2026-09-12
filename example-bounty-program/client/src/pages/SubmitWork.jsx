@@ -304,17 +304,15 @@ function SubmitWork({ walletState }) {
       }
 
       // STEP 2: Prepare submission on-chain (deploys EvaluationWallet)
-      // Pass both CIDs: evaluationCid (must match bounty's stored CID) and hunterCid (work product)
+      // prepareSubmission(bountyId, evaluationCid, hunterCid) — the oracle request
+      // settings were chosen by the bounty creator at createBounty and are applied by
+      // the contract; the narrative is already inside the hunter package
+      // (primary_query.json), it is NOT an on-chain addendum any more.
       setLoadingMessage('Preparing submission on blockchain...');
       const { submissionId, evalWallet, ethMaxBudget } = await contractService.prepareSubmission(
         onChainId,           // Use on-chain ID, not URL parameter
         evaluationCid,       // Evaluation package CID (must match bounty's stored evaluationCid)
-        hunterCid,           // Hunter's work product CID
-        submissionNarrative || "",  // addendum
-        config.submissionDefaults.alpha,                // alpha: timeliness-vs-quality blend (0-1000). 500 = equal; weighted = ((1000-alpha)*quality + alpha*timeliness)/1000
-        config.submissionDefaults.maxOracleFeeWei,      // maxOracleFee — under the 0.0004 ETH on-chain ceiling
-        config.submissionDefaults.estimatedBaseCostWei, // estimatedBaseCost
-        config.submissionDefaults.maxFeeBasedScaling    // maxFeeBasedScaling: x-factor cap on fee-based boost (contract scales by 1e18 internally; must be >= 1)
+        hunterCid            // Hunter's work product CID (bare CID, 46-100 alphanumeric chars)
       );
 
       console.log('✅ Submission prepared:', {
@@ -438,6 +436,10 @@ function SubmitWork({ walletState }) {
         errorMessage = 'This bounty is restricted to a specific address. Only the targeted wallet can submit.';
       } else if (errorMessage.includes('deadline passed')) {
         errorMessage = 'Submission deadline has passed';
+      } else if (errorMessage.includes('evaluation slots full') || errorMessage.includes('evaluations in flight')) {
+        // Concurrency cap at start (256 evaluations in flight). Your prepared submission is kept —
+        // start it again in a few minutes, once any in-flight evaluation resolves.
+        errorMessage = '⏳ This bounty already has the maximum number of evaluations in flight. Your submission is prepared and kept — retry "start" in a few minutes, once any of them resolves.';
       } else if (errorMessage.includes('not open')) {
         errorMessage = 'Bounty is not accepting submissions';
       }
@@ -754,9 +756,10 @@ function SubmitWork({ walletState }) {
 
         <h3><MessageSquare size={18} className="inline-icon" /> About Your Submission Narrative</h3>
         <p>
-          The narrative you provide is included in the primary_query.json file sent to the AI evaluators.
-          Use it to explain any nuances, context, or special considerations about your work. This helps the
-          AI better understand and evaluate your submission according to the rubric.
+          The narrative you provide is included in the primary_query.json file inside your submission package
+          (it is part of your work product, not an on-chain addendum — the contract forwards only the two CIDs
+          to the evaluators). Use it to explain any nuances, context, or special considerations about your work.
+          This helps the AI better understand and evaluate your submission according to the rubric.
         </p>
 
         <h3><FolderOpen size={18} className="inline-icon" /> Multiple Files Support</h3>

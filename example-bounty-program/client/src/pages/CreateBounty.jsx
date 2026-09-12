@@ -13,18 +13,54 @@ import {
   X,
   Eye,
   RefreshCw,
+  Settings,
+  ChevronDown,
 } from 'lucide-react';
+import { ethers } from 'ethers';
 import { useToast } from '../components/Toast';
 import { apiService } from '../services/api';
 import { modelProviderService } from '../services/modelProviderService';
 import { walletService } from '../services/wallet';
-import { getContractService } from '../services/contractService';
+import { getContractService, ORACLE_MAX_ALPHA, ORACLE_MAX_FEE_SCALING, ORACLE_FEE_CEILING_WEI } from '../services/contractService';
+import { config } from '../config';
 import * as rubricStorage from '../services/rubricStorage';
 import { getTemplateOptions, getTemplate, createBlankRubric, RUBRIC_DEFAULTS } from '../data/rubricTemplates';
 import ClassSelector from '../components/ClassSelector';
 import CriterionEditor from '../components/CriterionEditor';
 import RubricLibrary from '../components/RubricLibrary';
 import './CreateBounty.css';
+
+// Creator oracle settings (advanced). Prefilled from config.submissionDefaults (wei) and
+// edited as decimal ETH / plain integers. They go into createBounty's `oracle` struct and
+// apply to every evaluation of the bounty; hunters cannot change them.
+const ORACLE_DEFAULTS = {
+  oracleMaxOracleFeeEth: ethers.formatEther(config.submissionDefaults.maxOracleFeeWei),
+  oracleAlpha: String(config.submissionDefaults.alpha),
+  oracleEstimatedBaseCostEth: ethers.formatEther(config.submissionDefaults.estimatedBaseCostWei),
+  oracleMaxFeeBasedScaling: String(config.submissionDefaults.maxFeeBasedScaling),
+};
+const ORACLE_FEE_CEILING_ETH = ethers.formatEther(ORACLE_FEE_CEILING_WEI);
+
+/**
+ * Validate the oracle settings form fields against the contract's bounds.
+ * Returns an error string, or null when valid.
+ */
+function validateOracleSettings(f) {
+  let feeWei, baseWei;
+  try { feeWei = ethers.parseEther(String(f.oracleMaxOracleFeeEth || '').trim()); }
+  catch { return 'Max oracle fee must be a decimal ETH amount (e.g. 0.00002)'; }
+  try { baseWei = ethers.parseEther(String(f.oracleEstimatedBaseCostEth || '0').trim() || '0'); }
+  catch { return 'Estimated base cost must be a decimal ETH amount (e.g. 0.00001)'; }
+  if (feeWei <= 0n) return 'Max oracle fee must be greater than 0';
+  if (feeWei > ORACLE_FEE_CEILING_WEI) return `Max oracle fee must be at most ${ORACLE_FEE_CEILING_ETH} ETH (aggregator ceiling)`;
+  if (baseWei < 0n) return 'Estimated base cost must be >= 0';
+  if (baseWei >= feeWei) return 'Estimated base cost must be below the max oracle fee';
+  const alpha = Number(f.oracleAlpha);
+  if (!Number.isInteger(alpha) || alpha < 0 || alpha > ORACLE_MAX_ALPHA) return `Alpha must be an integer between 0 and ${ORACLE_MAX_ALPHA}`;
+  const scaling = Number(f.oracleMaxFeeBasedScaling);
+  if (!Number.isInteger(scaling) || scaling < 1 || scaling > ORACLE_MAX_FEE_SCALING) return `Max fee-based scaling must be an integer between 1 and ${ORACLE_MAX_FEE_SCALING}`;
+  return null;
+}
 
 function CreateBounty({ walletState }) {
   const toast = useToast();
@@ -88,7 +124,11 @@ function CreateBounty({ walletState }) {
     // just surfaces buttons on the website. Revocable later from the bounty
     // details page.
     publicSubmissions: false,
+    // Oracle settings (advanced) — creator-chosen, applied to every evaluation.
+    ...ORACLE_DEFAULTS,
   });
+  // "Oracle settings (advanced)" group is collapsed by default.
+  const [showOracleSettings, setShowOracleSettings] = useState(false);
 
   // ---------- helpers ----------
   const messageFromAxios = (err) => {
@@ -219,7 +259,28 @@ function CreateBounty({ walletState }) {
           approvalWindowHours: hasApprovalWindow
             ? String(Math.max(1, Math.round(windowSecs / 3600)))
             : prev.approvalWindowHours,
+          // Oracle settings — copied from the source bounty (wei strings on the record)
+          ...(job.oracleSettings && job.oracleSettings.maxOracleFee != null ? (() => {
+            try {
+              return {
+                oracleMaxOracleFeeEth: ethers.formatEther(String(job.oracleSettings.maxOracleFee)),
+                oracleAlpha: String(job.oracleSettings.alpha ?? prev.oracleAlpha),
+                oracleEstimatedBaseCostEth: ethers.formatEther(String(job.oracleSettings.estimatedBaseCost ?? '0')),
+                oracleMaxFeeBasedScaling: String(job.oracleSettings.maxFeeBasedScaling ?? prev.oracleMaxFeeBasedScaling),
+              };
+            } catch { return {}; }
+          })() : {}),
         }));
+        // Surface the copied oracle settings if they differ from the defaults
+        if (job.oracleSettings && job.oracleSettings.maxOracleFee != null) {
+          const o = job.oracleSettings;
+          const differs =
+            String(o.maxOracleFee) !== String(config.submissionDefaults.maxOracleFeeWei) ||
+            Number(o.alpha) !== Number(config.submissionDefaults.alpha) ||
+            String(o.estimatedBaseCost) !== String(config.submissionDefaults.estimatedBaseCostWei) ||
+            Number(o.maxFeeBasedScaling) !== Number(config.submissionDefaults.maxFeeBasedScaling);
+          if (differs) setShowOracleSettings(true);
+        }
 
         // Rubric — fetched from IPFS by the server (job.rubricContent). The pinned
         // rubric stores per-criterion instructions under `description`.
@@ -654,6 +715,15 @@ function CreateBounty({ walletState }) {
     const juryValidation = validateJuryWeights();
     if (!juryValidation.valid) { toast.warning(`Invalid jury weights: ${juryValidation.message}`); return; }
 
+    const oracleError = validateOracleSettings(formData);
+    if (oracleError) { setShowOracleSettings(true); toast.warning(`Oracle settings: ${oracleError}`); return; }
+    const oracleSettings = {
+      maxOracleFee: String(formData.oracleMaxOracleFeeEth).trim(),          // decimal ETH
+      alpha: parseInt(formData.oracleAlpha, 10),
+      estimatedBaseCost: String(formData.oracleEstimatedBaseCostEth || '0').trim() || '0', // decimal ETH
+      maxFeeBasedScaling: parseInt(formData.oracleMaxFeeBasedScaling, 10),
+    };
+
     try {
       setLoading(true);
       setLoadingText('Creating job on backend…');
@@ -695,6 +765,11 @@ function CreateBounty({ walletState }) {
           creatorAssessmentWindowHours: parseFloat(formData.approvalWindowHours),
         } : {}),
         publicSubmissions: !!formData.publicSubmissions,
+        // Creator oracle settings (decimal ETH accepted; the server normalises to wei)
+        oracleMaxOracleFee: oracleSettings.maxOracleFee,
+        oracleAlpha: oracleSettings.alpha,
+        oracleEstimatedBaseCost: oracleSettings.estimatedBaseCost,
+        oracleMaxFeeBasedScaling: oracleSettings.maxFeeBasedScaling,
       });
 
       if (!apiResponse?.success) {
@@ -721,6 +796,9 @@ function CreateBounty({ walletState }) {
           arbiterDeterminationPaymentEth: parseFloat(formData.arbiterPaymentEth),
           creatorAssessmentWindowHours: parseFloat(formData.approvalWindowHours),
         } : {}),
+        // Prefer the settings the server persisted (already wei-normalised) so the
+        // on-chain struct matches the API record exactly; fall back to the form values.
+        oracle: job.oracleSettings && job.oracleSettings.maxOracleFee != null ? job.oracleSettings : oracleSettings,
       });
 
       if (!contractResult?.success || contractResult?.bountyId == null) {
@@ -1055,6 +1133,120 @@ function CreateBounty({ walletState }) {
                   <span className="toggle-switch-slider" />
                 </span>
               </label>
+            </div>
+
+            {/* Oracle settings (advanced) — creator-chosen, collapsed by default */}
+            <div className={`feature-card ${showOracleSettings ? 'enabled' : ''}`}>
+              <div
+                className="feature-card-header"
+                role="button"
+                tabIndex={0}
+                onClick={() => setShowOracleSettings((v) => !v)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setShowOracleSettings((v) => !v); } }}
+                aria-expanded={showOracleSettings}
+                style={{ cursor: 'pointer' }}
+              >
+                <Settings size={20} className="feature-card-icon" />
+                <div className="feature-card-text">
+                  <div className="feature-card-title">Oracle settings (advanced)</div>
+                  <div className="feature-card-desc">
+                    How arbiters are selected and paid for every evaluation of this bounty. These are fixed
+                    at creation and apply to all submissions — hunters cannot change them. The defaults work
+                    for most bounties.
+                  </div>
+                </div>
+                {showOracleSettings ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+              </div>
+
+              {showOracleSettings && (
+                <div className="feature-card-body">
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label htmlFor="oracleMaxOracleFeeEth">Max oracle fee (ETH per arbiter call)</label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        id="oracleMaxOracleFeeEth"
+                        value={formData.oracleMaxOracleFeeEth}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, oracleMaxOracleFeeEth: e.target.value }))}
+                        placeholder={ORACLE_DEFAULTS.oracleMaxOracleFeeEth}
+                      />
+                      <small className="helper-text">
+                        Arbiters priced above this are ineligible. Sizes the hunter's ETH prepay. Must be &gt; 0 and
+                        at most {ORACLE_FEE_CEILING_ETH} ETH.
+                      </small>
+                    </div>
+                    <div className="form-group">
+                      <label htmlFor="oracleAlpha">Alpha (0–{ORACLE_MAX_ALPHA})</label>
+                      <input
+                        type="number"
+                        id="oracleAlpha"
+                        value={formData.oracleAlpha}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, oracleAlpha: e.target.value }))}
+                        placeholder={ORACLE_DEFAULTS.oracleAlpha}
+                        step="1"
+                        min="0"
+                        max={ORACLE_MAX_ALPHA}
+                      />
+                      <small className="helper-text">
+                        Quality-vs-timeliness blend in arbiter selection: 0 = pure quality, {ORACLE_MAX_ALPHA} = pure timeliness,
+                        500 = equal.
+                      </small>
+                    </div>
+                  </div>
+
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label htmlFor="oracleEstimatedBaseCostEth">Estimated base cost (ETH)</label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        id="oracleEstimatedBaseCostEth"
+                        value={formData.oracleEstimatedBaseCostEth}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, oracleEstimatedBaseCostEth: e.target.value }))}
+                        placeholder={ORACLE_DEFAULTS.oracleEstimatedBaseCostEth}
+                      />
+                      <small className="helper-text">
+                        Baseline for the price boost that favours cheaper arbiters. Must be below the max oracle fee;
+                        0 disables the boost.
+                      </small>
+                    </div>
+                    <div className="form-group">
+                      <label htmlFor="oracleMaxFeeBasedScaling">Max fee-based scaling (1–{ORACLE_MAX_FEE_SCALING})</label>
+                      <input
+                        type="number"
+                        id="oracleMaxFeeBasedScaling"
+                        value={formData.oracleMaxFeeBasedScaling}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, oracleMaxFeeBasedScaling: e.target.value }))}
+                        placeholder={ORACLE_DEFAULTS.oracleMaxFeeBasedScaling}
+                        step="1"
+                        min="1"
+                        max={ORACLE_MAX_FEE_SCALING}
+                      />
+                      <small className="helper-text">
+                        Caps the price-boost multiplier (x-factor). 1 disables the boost.
+                      </small>
+                    </div>
+                  </div>
+
+                  {(() => {
+                    const err = validateOracleSettings(formData);
+                    return err
+                      ? <div className="escrow-preview" style={{ color: '#b00020' }}><AlertTriangle size={14} className="inline-icon" /> {err}</div>
+                      : (
+                        <div className="escrow-preview">
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => setFormData((prev) => ({ ...prev, ...ORACLE_DEFAULTS }))}
+                          >
+                            Reset to defaults
+                          </button>
+                        </div>
+                      );
+                  })()}
+                </div>
+              )}
             </div>
 
             <div className="form-actions">

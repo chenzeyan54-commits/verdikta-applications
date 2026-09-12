@@ -67,6 +67,18 @@ const KEEPER_ABI = [
   "function verdiktaToken() view returns (address)"
 ];
 
+// ArbiterOperator (Chainlink Operator) ABI — one operator contract serves one
+// owner and may back several jobIds. Same pattern as the arbiters app: ownership
+// is the operator's own `owner()` (ConfirmedOwner).
+const OPERATOR_ABI = [
+  "function owner() view returns (address)"
+];
+
+// Aggregator jury-size protocol params (K oracles polled per round). Used only to
+// phrase the "fewer than K eligible arbiters" warning when the on-chain read of
+// commitOraclesToPoll fails.
+const DEFAULT_ORACLES_TO_POLL = 6;
+
 class VerdiktaService {
   constructor(providerUrl, aggregatorAddress, aggregatorDeployBlock = 0) {
     this.provider = new ethers.JsonRpcProvider(providerUrl);
@@ -76,6 +88,10 @@ class VerdiktaService {
     this.aggregator = new ethers.Contract(aggregatorAddress, AGGREGATOR_ABI, this.provider);
     this.reputationKeeper = null;
     this.keeperAddress = null;
+    // Registry walk (all oracles + info) and operator owner() reads are the
+    // expensive part of the oracle-check; memoize them per instance.
+    this._oraclesCache = null;          // { data, ts }
+    this._ownerMap = {};                // { operatorLower: { owner, ts } }
   }
 
   // Retry a read against transient RPC errors (the public/load-balanced Base
@@ -271,6 +287,184 @@ class VerdiktaService {
       logger.warn('Failed to get thresholds, using defaults', { msg: error.message });
       return { mildThreshold: -300, severeThreshold: -900 };
     }
+  }
+
+  /**
+   * Walk the ReputationKeeper registry once: identity (address, jobId, classes)
+   * + getOracleInfo for every index. Memoized for `maxAgeMs` so repeated
+   * oracle-checks don't re-walk the registry. A single unreadable index yields
+   * an error sentinel rather than failing the whole dataset.
+   */
+  async getAllOracles({ maxAgeMs = 60000 } = {}) {
+    if (this._oraclesCache && Date.now() - this._oraclesCache.ts < maxAgeMs) {
+      return this._oraclesCache.data;
+    }
+    const count = await this.getOracleCount();
+    const oracles = [];
+    const batchSize = 4;
+    for (let i = 0; i < count; i += batchSize) {
+      const batchEnd = Math.min(i + batchSize, count);
+      const batch = [];
+      for (let j = i; j < batchEnd; j++) {
+        const index = j;
+        batch.push(
+          this.getOracleAtIndex(index)
+            .then(o => this.getOracleInfo(o.oracle, o.jobId).then(info => ({ index, ...o, ...info })))
+            .catch(err => {
+              logger.warn('[verdikta] Failed to read oracle, skipping', { index, msg: err.message });
+              return { index, error: err.message };
+            })
+        );
+      }
+      oracles.push(...(await Promise.all(batch)));
+    }
+    this._oraclesCache = { data: oracles, ts: Date.now() };
+    return oracles;
+  }
+
+  /**
+   * operator (lowercased) -> owner address (or null if unreadable). owner() is
+   * effectively static, so results are cached per instance.
+   */
+  async getOwnerMap(operatorAddrs, { maxAgeMs = 600000 } = {}) {
+    const now = Date.now();
+    const unique = [...new Set(operatorAddrs.map(a => String(a).toLowerCase()))];
+    const stale = unique.filter(a => {
+      const e = this._ownerMap[a];
+      return !e || now - e.ts >= maxAgeMs;
+    });
+    const batchSize = 6;
+    for (let i = 0; i < stale.length; i += batchSize) {
+      const slice = stale.slice(i, i + batchSize);
+      await Promise.all(slice.map(async (addr) => {
+        const op = new ethers.Contract(addr, OPERATOR_ABI, this.provider);
+        const owner = await this._withRetry(() => op.owner(), `owner(${addr.slice(0, 10)})`).catch(() => null);
+        this._ownerMap[addr] = { owner: owner ? String(owner) : null, ts: now };
+      }));
+    }
+    const map = {};
+    for (const a of unique) map[a] = this._ownerMap[a]?.owner ?? null;
+    return map;
+  }
+
+  /**
+   * Oracle-check for a bounty: how many registered arbiters in `classId` could
+   * actually be selected under the bounty's creator-chosen oracle settings.
+   *
+   * An arbiter is "eligible" when it is registered for the class, active, not
+   * currently blocked, and its per-call fee is <= the bounty's maxOracleFee (the
+   * keeper drops arbiters priced above the fee ceiling from selection).
+   *
+   * @param {number} classId
+   * @param {{maxOracleFee:string|bigint, alpha:number, estimatedBaseCost:string|bigint, maxFeeBasedScaling:number}} oracleSettings (wei strings)
+   * @returns {Promise<object>} see route GET /api/jobs/:id/oracle-check
+   */
+  async getClassOracleEligibility(classId, oracleSettings) {
+    const cls = Number(classId);
+    const maxFeeWei = BigInt(String(oracleSettings?.maxOracleFee ?? '0'));
+    const alpha = Number(oracleSettings?.alpha ?? 0);
+    const baseCostWei = BigInt(String(oracleSettings?.estimatedBaseCost ?? '0'));
+    const scaling = Number(oracleSettings?.maxFeeBasedScaling ?? 1);
+
+    const [oracles, thresholds] = await Promise.all([
+      this.getAllOracles(),
+      this.getThresholds()
+    ]);
+    let oraclesToPoll = DEFAULT_ORACLES_TO_POLL;
+    try {
+      oraclesToPoll = Number(await this._withRetry(() => this.aggregator.commitOraclesToPoll(), 'commitOraclesToPoll')) || DEFAULT_ORACLES_TO_POLL;
+    } catch (_) { /* keep default */ }
+
+    const now = Math.floor(Date.now() / 1000);
+    const inClass = oracles.filter(o => !o.error && Array.isArray(o.classes) && o.classes.includes(cls));
+
+    const feeWei = (o) => {
+      try { return ethers.parseEther(String(o.fee)); } catch { return null; }
+    };
+    const isBlocked = (o) => o.blocked && Number(o.lockedUntil) > now;
+
+    const activeInClass = inClass.filter(o => o.isActive && !isBlocked(o));
+    const eligible = activeInClass.filter(o => {
+      const f = feeWei(o);
+      return f != null && f <= maxFeeWei;
+    });
+    const pricedOut = activeInClass.length - eligible.length;
+
+    // Owner concentration among the eligible pool.
+    const ownerMap = await this.getOwnerMap(eligible.map(o => o.oracle));
+    const ownerCounts = {};
+    for (const o of eligible) {
+      const owner = ownerMap[String(o.oracle).toLowerCase()] || `unknown:${String(o.oracle).toLowerCase()}`;
+      ownerCounts[owner] = (ownerCounts[owner] || 0) + 1;
+    }
+    const distinctOwnersEligible = Object.keys(ownerCounts).length;
+    let dominantOwner = null;
+    let dominantOwnerCount = 0;
+    for (const [owner, n] of Object.entries(ownerCounts)) {
+      if (n > dominantOwnerCount) { dominantOwner = owner; dominantOwnerCount = n; }
+    }
+
+    const priceBoostEnabled = baseCostWei > 0n || scaling > 1;
+    const alphaExtreme = alpha <= 100 || alpha >= 900;
+
+    const warnings = [];
+    if (inClass.length === 0) {
+      warnings.push(`No arbiters are registered for class ${cls}. Evaluations for this bounty cannot be served until at least ${oraclesToPoll} join the class.`);
+    } else if (eligible.length === 0) {
+      warnings.push(`None of the ${inClass.length} arbiter(s) registered for class ${cls} is both active and priced at or below this bounty's max oracle fee (${ethers.formatEther(maxFeeWei)} ETH). Evaluations would stall — raise the fee or pick another class.`);
+    } else if (eligible.length < oraclesToPoll) {
+      warnings.push(`Only ${eligible.length} eligible arbiter(s) in class ${cls} (the aggregator polls ${oraclesToPoll} per round). Evaluations may time out or be served by the same few nodes.`);
+    }
+    if (pricedOut > 0) {
+      warnings.push(`${pricedOut} active arbiter(s) in class ${cls} charge more than this bounty's max oracle fee (${ethers.formatEther(maxFeeWei)} ETH) and will not be selected.`);
+    }
+    if (eligible.length > 0 && dominantOwnerCount * 2 >= eligible.length) {
+      const label = dominantOwner && !dominantOwner.startsWith('unknown:')
+        ? `${dominantOwner.slice(0, 6)}…${dominantOwner.slice(-4)}`
+        : 'one operator';
+      warnings.push(`${label} controls ${dominantOwnerCount} of the ${eligible.length} eligible arbiter(s) — at least half the pool. A single party could dominate the jury.`);
+    }
+    if (priceBoostEnabled) {
+      warnings.push(`Price boost is enabled (estimatedBaseCost ${ethers.formatEther(baseCostWei)} ETH, up to ${scaling}x). Cheaper arbiters are favoured in selection, which trades reputation for cost.`);
+    }
+    if (alphaExtreme) {
+      warnings.push(alpha <= 100
+        ? `alpha is ${alpha}: selection is weighted almost entirely on quality score, ignoring timeliness. Slow-but-accurate arbiters may be chosen and rounds can take longer.`
+        : `alpha is ${alpha}: selection is weighted almost entirely on timeliness, ignoring quality score. Fast-but-inaccurate arbiters may be chosen.`);
+    }
+
+    return {
+      available: true,
+      classId: cls,
+      oracleSettings: {
+        maxOracleFee: maxFeeWei.toString(),
+        maxOracleFeeEth: ethers.formatEther(maxFeeWei),
+        alpha,
+        estimatedBaseCost: baseCostWei.toString(),
+        maxFeeBasedScaling: scaling
+      },
+      totalInClass: inClass.length,
+      activeInClass: activeInClass.length,
+      eligibleCount: eligible.length,
+      pricedOutCount: pricedOut,
+      distinctOwnersEligible,
+      dominantOwner: dominantOwner && !dominantOwner.startsWith('unknown:') ? dominantOwner : null,
+      dominantOwnerCount,
+      oraclesToPoll,
+      priceBoostEnabled,
+      alphaExtreme,
+      thresholds,
+      eligibleArbiters: eligible.map(o => ({
+        oracle: o.oracle,
+        owner: ownerMap[String(o.oracle).toLowerCase()] || null,
+        fee: o.fee,
+        qualityScore: o.qualityScore,
+        timelinessScore: o.timelinessScore,
+        callCount: o.callCount
+      })),
+      warnings,
+      checkedAt: new Date().toISOString()
+    };
   }
 
   /**

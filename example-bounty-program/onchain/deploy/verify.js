@@ -2,8 +2,9 @@ const hre = require("hardhat");
 require("dotenv").config();
 
 async function main() {
-  const addr = process.argv[2];
-  if (!addr) throw new Error("Usage: npx hardhat run deploy/verify.js --network base <address>");
+  // `hardhat run` does not forward positional arguments (HH308): pass the escrow as ESCROW=0x…
+  const addr = process.env.ESCROW || process.argv[2];
+  if (!addr) throw new Error("Usage: ESCROW=0x… npx hardhat run deploy/verify.js --network base");
   const verdikta = hre.network.name === "base"
     ? process.env.VERDIKTA_AGGREGATOR_BASE
     : process.env.VERDIKTA_AGGREGATOR_BASE_SEPOLIA;

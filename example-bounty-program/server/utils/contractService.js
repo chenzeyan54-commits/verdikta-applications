@@ -14,29 +14,75 @@ const logger = require('./logger');
 const BOUNTY_ESCROW_ABI = [
   // Functions
   "function bountyCount() view returns (uint256)",
-  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize))",
+  "function getBounty(uint256 bountyId) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle))",
   "function getEffectiveBountyStatus(uint256 bountyId) view returns (string)",
   "function isAcceptingSubmissions(uint256 bountyId) view returns (bool)",
   "function canBeClosed(uint256 bountyId) view returns (bool)",
+  "function requiredPrepay(uint256 bountyId) view returns (uint256)",
+  "function effectiveOracleParams(uint256 bountyId) view returns (tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling))",
+  "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
+  "function getBounties(uint256 start, uint256 count) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle)[])",
+  "function getOracleResult(uint256 bountyId, uint256 submissionId) view returns (bool started, bool hasResult, bool settled, bool failed, uint256[] scores, string justificationCids, uint256 startTimestamp)",
+  "function nextAction(uint256 bountyId, uint256 submissionId) view returns (string)",
+  "function prepareCutoff(uint256 bountyId) view returns (uint256)",
+  "function MAX_BATCH() view returns (uint256)",
   "function submissionCount(uint256 bountyId) view returns (uint256)",
-  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string evaluationCid, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling, string addendum, uint64 creatorWindowEnd))",
+  "function getSubmission(uint256 bountyId, uint256 submissionId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder))",
   "function verdikta() view returns (address)",
+  "function activeEvaluations(uint256) view returns (uint256)",
+  "function withdrawable(address) view returns (uint256)",
+  "function MAX_SUBMISSIONS_PER_BOUNTY() view returns (uint256)",
+  "function recoverLeftoverEth(uint256 bountyId, uint256 submissionId)",
   // Events
   "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)",
   "event BountyClosed(uint256 indexed bountyId, address indexed creator, uint256 amountReturned)",
-  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, string evaluationCid, uint256 ethMaxBudget)",
+  // FIELD ORDER: ethMaxBudget BEFORE the dynamic string (September 2026 revision).
+  // Logs of the pre-September-2026 contract used (…, string evaluationCid, uint256 ethMaxBudget)
+  // and a different topic0 — see server/utils/submissionEvents.js LEGACY_* if you ever
+  // need to read that address again.
+  "event SubmissionPrepared(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, address evalWallet, uint256 ethMaxBudget, string evaluationCid)",
   "event WorkSubmitted(uint256 indexed bountyId, uint256 indexed submissionId, bytes32 verdiktaAggId)",
-  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, uint256 acceptance, uint256 rejection, string justificationCids)",
+  // `paid` is true only for the winner in that tx (PassedPaid); false for Failed,
+  // PassedUnpaid and TIMED_OUT.
+  "event SubmissionFinalized(uint256 indexed bountyId, uint256 indexed submissionId, bool passed, bool paid, uint256 acceptance, uint256 rejection, string justificationCids)",
   "event PayoutSent(uint256 indexed bountyId, address indexed winner, uint256 amount)",
   "event CreatorApproved(uint256 indexed bountyId, uint256 indexed submissionId, address indexed hunter, uint256 amountPaid)",
   "event CreatorRefunded(uint256 indexed bountyId, address indexed creator, uint256 amountRefunded)",
-  "event EthRefunded(uint256 indexed bountyId, uint256 indexed submissionId, uint256 amount)"
+  "event EthRefunded(uint256 indexed bountyId, uint256 indexed submissionId, uint256 amount)",
+  "event RefundDeferred(uint256 indexed bountyId, uint256 indexed submissionId)",
+  // Pull-payment ledger: a direct payout/refund that could not be delivered is credited
+  // to `withdrawable[to]` and claimed via withdraw().
+  "event PaymentDeferred(address indexed to, uint256 amount)",
+  "event Withdrawn(address indexed account, uint256 amount)"
 ];
 
-// Verdikta Aggregator ABI (for checking evaluation results)
+// Verdikta Aggregator ABI (for checking evaluation results + force-fail gating)
 const VERDIKTA_AGGREGATOR_ABI = [
-  "function getEvaluation(bytes32 aggId) view returns (uint256[] memory scores, string justificationCids, bool ok)"
+  "function getEvaluation(bytes32 aggId) view returns (uint256[] memory scores, string justificationCids, bool ok)",
+  "function getAggregationStatus(bytes32 aggId) view returns (bool isComplete, bool failed, bool commitPhaseComplete, uint256 commitExpected, uint256 commitReceived, uint256 responseCount, uint256 requiredN, uint256 clusterP, address requester, uint256 startTimestamp)",
+  "function responseTimeoutSeconds() view returns (uint256)",
+  "function maxOracleFee() view returns (uint256)",
+  "function maxTotalFee(uint256 maxFee) view returns (uint256)"
 ];
+
+/**
+ * Normalize the `oracle` member of a getBounty() tuple into the serializable shape
+ * persisted on job records and returned by GET /api/jobs/:id (`oracleSettings`).
+ * Wei values are strings (BigInt-safe); alpha / scaling are plain integers.
+ */
+function normalizeOracleSettings(oracle) {
+  if (!oracle) return null;
+  try {
+    return {
+      maxOracleFee: oracle.maxOracleFee.toString(),
+      alpha: Number(oracle.alpha),
+      estimatedBaseCost: oracle.estimatedBaseCost.toString(),
+      maxFeeBasedScaling: Number(oracle.maxFeeBasedScaling)
+    };
+  } catch {
+    return null;
+  }
+}
 
 // On-chain bounty status enum: 0=Open, 1=Awarded, 2=Closed
 const BOUNTY_STATUS_ENUM = ['Open', 'Awarded', 'Closed'];
@@ -95,6 +141,8 @@ class ContractService {
     this.verdiktaAggregator = null; // Lazy-loaded
     this.verdiktaAggregatorAddress = null;
     this._iface = new ethers.Interface(BOUNTY_ESCROW_ABI);
+    // responseTimeoutSeconds is an aggregator constant (300 s) — read once.
+    this._responseTimeoutSeconds = null;
   }
 
   /**
@@ -250,6 +298,94 @@ class ContractService {
   }
 
   /**
+   * The aggregator's response timeout (seconds after startPreparedSubmission at
+   * which an unanswered round is considered timed out). Cached after first read.
+   */
+  async getResponseTimeoutSeconds() {
+    if (this._responseTimeoutSeconds == null) {
+      const aggregator = await this.getVerdiktaAggregator();
+      this._responseTimeoutSeconds = Number(await aggregator.responseTimeoutSeconds());
+    }
+    return this._responseTimeoutSeconds;
+  }
+
+  /**
+   * Force-fail gate — mirrors BountyEscrow.failTimedOutSubmission, which has NO
+   * local timer. A PendingVerdikta submission can be force-failed iff:
+   *   getEvaluation(aggId).exists === false
+   *   AND (getAggregationStatus(aggId).isComplete === true
+   *        OR now >= startTimestamp + responseTimeoutSeconds)
+   * If a result exists the caller must finalizeSubmission instead.
+   *
+   * Returns:
+   *   { eligible, hasResult, settled, isComplete, startTimestamp,
+   *     responseTimeoutSeconds, timeoutAt, secondsUntilTimeout, reason, hint }
+   * Never throws for a missing/zero aggId (eligible:false, reason:'no_agg_id');
+   * RPC failures are reported as { eligible:false, reason:'rpc_error', error }.
+   */
+  async getForceFailEligibility(verdiktaAggId) {
+    if (!verdiktaAggId || verdiktaAggId === ethers.ZeroHash) {
+      return {
+        eligible: false, hasResult: false, settled: false, reason: 'no_agg_id',
+        hint: 'The submission has no aggregator round (it was never started).'
+      };
+    }
+    try {
+      const aggregator = await this.getVerdiktaAggregator();
+      const [evalRes, statusRes, responseTimeoutSeconds] = await Promise.all([
+        aggregator.getEvaluation(verdiktaAggId).then(r => ({ ok: Boolean(r[2]) })).catch(err => {
+          // CALL_EXCEPTION = no evaluation record → no result
+          if (err.code === 'CALL_EXCEPTION') return { ok: false };
+          throw err;
+        }),
+        aggregator.getAggregationStatus(verdiktaAggId),
+        this.getResponseTimeoutSeconds()
+      ]);
+
+      const hasResult = evalRes.ok;
+      const isComplete = Boolean(statusRes.isComplete);
+      const failed = Boolean(statusRes.failed);
+      const startTimestamp = Number(statusRes.startTimestamp);
+      const now = Math.floor(Date.now() / 1000);
+      const timeoutAt = startTimestamp > 0 ? startTimestamp + responseTimeoutSeconds : null;
+      const timedOut = timeoutAt != null && now >= timeoutAt;
+      const settled = isComplete || timedOut;
+      const secondsUntilTimeout = timeoutAt != null ? Math.max(0, timeoutAt - now) : null;
+
+      let eligible = false;
+      let reason;
+      let hint;
+      if (hasResult) {
+        reason = 'result_available';
+        hint = 'The oracle produced a result — call finalizeSubmission (POST /finalize) instead. failTimedOutSubmission reverts with "result available - use finalizeSubmission".';
+      } else if (startTimestamp === 0) {
+        reason = 'unknown_aggregation';
+        hint = 'The aggregator has no record of this round.';
+      } else if (!settled) {
+        reason = 'not_settled';
+        hint = `The aggregator round is still open; it times out ${responseTimeoutSeconds}s after start (at unix ${timeoutAt}, in ${secondsUntilTimeout}s). failTimedOutSubmission reverts with "evaluation not settled" until then.`;
+      } else {
+        eligible = true;
+        reason = isComplete ? 'settled_no_result' : 'timed_out_no_result';
+        hint = 'The round is settled with no result — failTimedOutSubmission will succeed and refund the unspent prepay.';
+      }
+
+      return {
+        eligible, hasResult, settled, isComplete, failed,
+        startTimestamp, responseTimeoutSeconds, timeoutAt, secondsUntilTimeout,
+        reason, hint
+      };
+    } catch (error) {
+      logger.warn('getForceFailEligibility failed', { verdiktaAggId, msg: error.message });
+      return {
+        eligible: false, hasResult: false, settled: false, reason: 'rpc_error',
+        error: error.message,
+        hint: 'Could not read the aggregator state; retry shortly.'
+      };
+    }
+  }
+
+  /**
    * Check if evaluation results are ready for a submission
    * Queries the Verdikta Aggregator contract directly
    * @param bountyId - The bounty ID
@@ -362,6 +498,7 @@ class ContractService {
         creatorDeterminationPayment: ethers.formatEther(bounty.creatorDeterminationPayment),
         arbiterDeterminationPayment: ethers.formatEther(bounty.arbiterDeterminationPayment),
         creatorAssessmentWindowSize: Number(bounty.creatorAssessmentWindowSize),
+        oracleSettings: normalizeOracleSettings(bounty.oracle),
         isAcceptingSubmissions: isAccepting,
         canBeClosed: canClose,
         syncedFromBlockchain: true,
@@ -405,6 +542,7 @@ class ContractService {
         creatorDeterminationPayment: ethers.formatEther(bounty.creatorDeterminationPayment),
         arbiterDeterminationPayment: ethers.formatEther(bounty.arbiterDeterminationPayment),
         creatorAssessmentWindowSize: Number(bounty.creatorAssessmentWindowSize),
+        oracleSettings: normalizeOracleSettings(bounty.oracle),
         isAcceptingSubmissions: isAccepting,
         canBeClosed: canClose,
         syncedFromBlockchain: true,
@@ -436,19 +574,23 @@ class ContractService {
           submissions.push({
             submissionId: i,
             hunter: sub.hunter,
-            evaluationCid: sub.evaluationCid,
             hunterCid: sub.hunterCid,
             evalWallet: sub.evalWallet,
             verdiktaAggId: sub.verdiktaAggId,
             status: statusMap[sub.status] || 'UNKNOWN',
             acceptance: Number(sub.acceptance),
             rejection: Number(sub.rejection),
-            justificationCids: sub.justificationCids,
+            // Not stored on-chain (v0.5.0): the sync service records the CIDs from the
+            // SubmissionFinalized event / the aggregator (getEvaluationByAggId). Empty here.
+            justificationCids: '',
             submittedAt: Number(sub.submittedAt),
             finalizedAt: Number(sub.finalizedAt),
             ethMaxBudget: sub.ethMaxBudget.toString(),
             score: sub.acceptance > 0 ? Number(sub.acceptance) : null,
             creatorWindowEnd: Number(sub.creatorWindowEnd),
+            // Who attached the prepay at start (receives the unspent refund);
+            // ZeroAddress until startPreparedSubmission.
+            funder: sub.funder === ethers.ZeroAddress ? null : sub.funder,
           });
         } catch (err) {
           logger.warn(`Failed to fetch submission ${i} for bounty ${bountyId}:`, err);
@@ -521,5 +663,7 @@ function getContractService() {
 module.exports = {
   initializeContractService,
   getContractService,
-  ContractService
+  ContractService,
+  normalizeOracleSettings,
+  BOUNTY_ESCROW_ABI
 };

@@ -437,6 +437,9 @@ function Home({ walletState }) {
 function JobCard({ job, ethPrice }) {
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
+  // Oracle-pool check (arbiters eligible under the bounty's oracle settings) — runs
+  // alongside validation; degrades silently when the keeper is unreadable.
+  const [oracleCheck, setOracleCheck] = useState(null);
 
   // Handler for running validation
   const handleValidate = async (e) => {
@@ -447,6 +450,12 @@ function JobCard({ job, ethPrice }) {
 
     setValidating(true);
     setValidationResult(null);
+    setOracleCheck(null);
+
+    // Fire the oracle-pool check in parallel; it never blocks the package validation.
+    apiService.getOracleCheck(job.jobId)
+      .then((oc) => setOracleCheck(oc && oc.available ? oc : null))
+      .catch(() => setOracleCheck(null));
 
     try {
       const result = await apiService.validateJob(job.jobId);
@@ -695,6 +704,26 @@ function JobCard({ job, ethPrice }) {
           </div>
         </div>
       </div>
+      {oracleCheck && (
+        <div
+          className={`oracle-check-block ${oracleCheck.warnings?.length ? 'has-warnings' : 'ok'}`}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          title="Arbiter pool for this bounty's class under its oracle settings (fee ceiling, alpha, price boost)"
+        >
+          <div className="oracle-check-summary">
+            {oracleCheck.warnings?.length ? <AlertTriangle size={12} /> : <CheckCircle size={12} />}
+            <span>
+              Oracle pool: {oracleCheck.eligibleCount}/{oracleCheck.totalInClass} arbiters eligible in class {oracleCheck.classId}
+              {' '}({oracleCheck.distinctOwnersEligible} owner{oracleCheck.distinctOwnersEligible === 1 ? '' : 's'})
+            </span>
+          </div>
+          {oracleCheck.warnings?.length > 0 && (
+            <ul className="oracle-check-warnings">
+              {oracleCheck.warnings.map((w, i) => <li key={i}>{w}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
       {job.workProductType && (
         <div className="work-type-badge">{job.workProductType}</div>
       )}

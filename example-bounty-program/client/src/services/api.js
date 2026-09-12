@@ -619,6 +619,18 @@ async uploadRubric(rubricJson, classId = 128) {
   },
 
   /**
+   * Oracle-pool check for a bounty: arbiters in its class that are eligible under the
+   * bounty's creator-chosen oracle settings, owner concentration, and plain-English
+   * warnings. Returns { available:false } (never throws) when the keeper is unreadable.
+   * @param {string|number} jobId
+   * @returns {Object} - { available, eligibleCount, totalInClass, distinctOwnersEligible, priceBoostEnabled, alphaExtreme, warnings[] }
+   */
+  async getOracleCheck(jobId) {
+    const response = await api.get(`/api/jobs/${jobId}/oracle-check`);
+    return response.data;
+  },
+
+  /**
    * Pre-validate an evaluation CID before creating a bounty
    * @param {Object} data - { evaluationCid, classId }
    * @returns {Object} - { valid, errors[], warnings[] }

@@ -72,12 +72,28 @@ const CONFIG = {
   botApiKey: process.env.BOT_API_KEY,
 };
 
+// September 2026 BountyEscrow revision: createBounty takes ONE CreateParams struct
+// (no overloads). msg.value == max(creatorDeterminationPayment, arbiterDeterminationPayment);
+// a non-windowed bounty passes both payments equal to the amount and window 0.
 const BOUNTY_ESCROW_ABI = [
   'event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)',
-  'function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter) payable returns (uint256)',
-  'function createBounty(string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize) payable returns (uint256)',
+  'function createBounty((string evaluationCid, uint64 requestedClass, uint8 threshold, uint64 submissionDeadline, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, (uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle) p) payable returns (uint256 bountyId)',
   'function bountyCount() view returns (uint256)',
 ];
+
+// Creator-chosen oracle request settings. Prefer the values the API persisted on the
+// job (job.oracleSettings, returned by POST /api/jobs/create) so the on-chain bounty
+// and the backend record agree; fall back to the server defaults.
+function oracleParamsFromJob(job) {
+  const o = job?.oracleSettings;
+  const d = serverConfig.submissionDefaults;
+  return {
+    maxOracleFee: BigInt(String(o?.maxOracleFee ?? d.maxOracleFeeWei)),
+    alpha: BigInt(String(o?.alpha ?? d.alpha)),
+    estimatedBaseCost: BigInt(String(o?.estimatedBaseCost ?? d.estimatedBaseCostWei)),
+    maxFeeBasedScaling: BigInt(String(o?.maxFeeBasedScaling ?? d.maxFeeBasedScaling)),
+  };
+}
 
 // =============================================================================
 // BOUNTY TEMPLATES
@@ -452,21 +468,33 @@ async function createBountyOnChain(contract, evaluationCid, classId, threshold, 
   const deadline = Math.floor(Date.now() / 1000) + (hours * 3600);
   const value = ethers.parseEther(amountEth.toString());
   const targetHunter = options.target || ethers.ZeroAddress;
+  const oracle = options.oracle || oracleParamsFromJob(null);
 
   console.log(`    Sending transaction...`);
 
-  let tx;
-  if (options.creatorPay !== null && options.creatorPay !== undefined) {
-    // 8-arg: windowed bounty with split payments
-    const creatorPayWei = ethers.parseEther(options.creatorPay.toString());
-    const arbiterPayWei = ethers.parseEther(options.arbiterPay.toString());
-    const createFn = contract['createBounty(string,uint64,uint8,uint64,address,uint256,uint256,uint64)'];
-    tx = await createFn(evaluationCid, classId, threshold, deadline, targetHunter, creatorPayWei, arbiterPayWei, options.window, { value });
-  } else {
-    // 5-arg: standard bounty
-    const createFn = contract['createBounty(string,uint64,uint8,uint64,address)'];
-    tx = await createFn(evaluationCid, classId, threshold, deadline, targetHunter, { value });
-  }
+  const windowed = options.creatorPay !== null && options.creatorPay !== undefined;
+  // Non-windowed: both payments equal the escrowed amount, window 0.
+  const creatorPayWei = windowed ? ethers.parseEther(options.creatorPay.toString()) : value;
+  const arbiterPayWei = windowed ? ethers.parseEther(options.arbiterPay.toString()) : value;
+  const msgValue = creatorPayWei > arbiterPayWei ? creatorPayWei : arbiterPayWei;
+
+  const params = {
+    evaluationCid,
+    requestedClass: BigInt(classId),
+    threshold: BigInt(threshold),
+    submissionDeadline: BigInt(deadline),
+    targetHunter,
+    creatorDeterminationPayment: creatorPayWei,
+    arbiterDeterminationPayment: arbiterPayWei,
+    creatorAssessmentWindowSize: BigInt(windowed ? options.window : 0),
+    oracle: {
+      maxOracleFee: oracle.maxOracleFee,
+      alpha: oracle.alpha,
+      estimatedBaseCost: oracle.estimatedBaseCost,
+      maxFeeBasedScaling: oracle.maxFeeBasedScaling,
+    },
+  };
+  const tx = await contract.createBounty(params, { value: msgValue });
 
   console.log(`    Tx hash: ${tx.hash}`);
   console.log(`    Waiting for confirmation...`);
@@ -630,6 +658,8 @@ async function main() {
           creatorPay: options.creatorPay,
           arbiterPay: options.arbiterPay,
           window: options.window,
+          // Same oracle settings the API persisted on the job record.
+          oracle: oracleParamsFromJob(job),
         }
       );
 

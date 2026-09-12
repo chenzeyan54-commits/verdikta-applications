@@ -983,6 +983,79 @@ describe("BountyEscrow", function () {
     });
   });
 
+  describe("Oracle settings are clamped to the aggregator's live ceiling at start", function () {
+    // Creation validates against the ceiling of that moment. If the aggregator owner later
+    // lowers the ceiling to or below a bounty's base cost, the keeper would reject every start
+    // ("base cost must be less than max fee"). The escrow clamps at start instead, so no
+    // configuration change can strand a prepared submission.
+    const FEE = ethers.parseEther("0.0002"), BASE = ethers.parseEther("0.0001");
+
+    it("effectiveOracleParams equals the creator's settings while the ceiling is above the fee", async function () {
+      const { bountyEscrow, creator } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, { maxOracleFee: FEE, estimatedBaseCost: BASE, maxFeeBasedScaling: 3, alpha: 600 });
+      const e = await bountyEscrow.effectiveOracleParams(bountyId);
+      expect(e.maxOracleFee).to.equal(FEE); expect(e.estimatedBaseCost).to.equal(BASE);
+      expect(e.maxFeeBasedScaling).to.equal(3); expect(e.alpha).to.equal(600);
+    });
+
+    it("Ceiling lowered below the fee but above the base cost: fee is clamped, base cost kept, start works, prepay follows", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, { maxOracleFee: FEE, estimatedBaseCost: BASE });
+      const { submissionId, ethMaxBudget: estimate } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      const newCeiling = ethers.parseEther("0.00015");
+      await verdiktaAggregator.setMaxOracleFee(newCeiling);
+      const e = await bountyEscrow.effectiveOracleParams(bountyId);
+      expect(e.maxOracleFee).to.equal(newCeiling); expect(e.estimatedBaseCost).to.equal(BASE);
+      const live = await bountyEscrow.requiredPrepay(bountyId);
+      expect(live).to.equal(await verdiktaAggregator.maxTotalFee(newCeiling));
+      expect(live).to.be.lt(estimate);
+      await expect(bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: live }))
+        .to.emit(bountyEscrow, "WorkSubmitted");
+      const rp = await verdiktaAggregator.requestParams((await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId);
+      expect(rp.maxFee).to.equal(newCeiling); expect(rp.estimatedBaseCost).to.equal(BASE);
+    });
+
+    it("Ceiling lowered to/below the base cost: base cost is clamped to fee-1 so the start still succeeds", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, { maxOracleFee: FEE, estimatedBaseCost: BASE });
+      const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      const newCeiling = ethers.parseEther("0.00005"); // below the creator's base cost
+      await verdiktaAggregator.setMaxOracleFee(newCeiling);
+      const e = await bountyEscrow.effectiveOracleParams(bountyId);
+      expect(e.maxOracleFee).to.equal(newCeiling);
+      expect(e.estimatedBaseCost).to.equal(newCeiling - 1n);
+      const live = await bountyEscrow.requiredPrepay(bountyId);
+      await expect(bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: live }))
+        .to.emit(bountyEscrow, "WorkSubmitted");
+      const rp = await verdiktaAggregator.requestParams((await bountyEscrow.getSubmission(bountyId, submissionId)).verdiktaAggId);
+      expect(rp.maxFee).to.equal(newCeiling); expect(rp.estimatedBaseCost).to.equal(newCeiling - 1n);
+      // stored settings on the bounty are untouched — the clamp is applied at start only
+      const b = await bountyEscrow.getBounty(bountyId);
+      expect(b.oracle.maxOracleFee).to.equal(FEE); expect(b.oracle.estimatedBaseCost).to.equal(BASE);
+    });
+
+    it("The unclamped values WOULD have been rejected by the aggregator (mock enforces the keeper's rule)", async function () {
+      const { verdiktaAggregator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      await verdiktaAggregator.setMaxOracleFee(ethers.parseEther("0.00005"));
+      await expect(
+        verdiktaAggregator.connect(hunter).requestAIEvaluationWithApproval(["a", "b"], "", 500, FEE, BASE, 3, 128, { value: 0 })
+      ).to.be.revertedWith("Base cost must be less than max fee");
+    });
+
+    it("Windowed submission prepared before the ceiling drop can still be started by anyone after the window", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, {
+        creatorPay: BOUNTY_WEI, arbiterPay: BOUNTY_WEI, windowSize: 3600, maxOracleFee: FEE, estimatedBaseCost: BASE,
+      });
+      const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await verdiktaAggregator.setMaxOracleFee(ethers.parseEther("0.00005"));
+      await time.increase(3601);
+      const live = await bountyEscrow.requiredPrepay(bountyId);
+      await expect(bountyEscrow.connect(other).startPreparedSubmission(bountyId, submissionId, { value: live }))
+        .to.emit(bountyEscrow, "WorkSubmitted");
+    });
+  });
+
   describe("Funding requirement is refreshed at start", function () {
     // The aggregator's maxTotalFee can change between prepare and start (owner-settable
     // parameters). Start checks msg.value against the LIVE requirement for the bounty's

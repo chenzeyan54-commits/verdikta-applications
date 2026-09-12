@@ -473,6 +473,11 @@ function createBounty(tuple(string evaluationCid, uint64 requestedClass, uint8 t
   < maxOracleFee; 0 disables the price boost), maxFeeBasedScaling (1-1000; 1 disables the price
   boost). Defaults the API uses: 0.00002 ETH / 500 / 0.00001 ETH / 3. Reverts: "bad oracle fee",
   "oracle fee above ceiling", "base cost must be below fee", "bad fee scaling", "bad alpha".
+  These checks use the aggregator ceiling AT CREATION. If the aggregator owner later lowers
+  the ceiling, startPreparedSubmission clamps: fee -> min(fee, ceiling), base cost -> fee-1
+  if it no longer fits (alpha/scaling unchanged), so starts keep working. Read
+  effectiveOracleParams(bountyId) for what will actually be forwarded; the stored settings
+  on the bounty never change.
 - Hunters cannot influence any oracle parameter; run GET /api/jobs/:id/oracle-check before
   submitting to see how many arbiters are eligible at the bounty's fee and who owns them.
 - Via the API (POST /api/jobs/create) the same settings are the optional body fields
@@ -1041,7 +1046,7 @@ router.get('/api/docs', (req, res) => {
             'targetHunter: full wallet address for targeted bounties, address(0) for open bounties',
             'msg.value = max(creatorDeterminationPayment, arbiterDeterminationPayment); for no window pass both equal to the amount and creatorAssessmentWindowSize 0',
             'The window is per submission (starts at prepareSubmission) and must end before submissionDeadline — effective prepare cutoff is submissionDeadline - creatorAssessmentWindowSize',
-            'oracle: creator-chosen settings used verbatim for every evaluation (fee ceiling = arbiter eligibility filter + prepay size; alpha; price-boost base cost and scaling). Validated on-chain: fee > 0 and <= aggregator ceiling, base cost < fee, scaling 1-1000, alpha 0-1000',
+            'oracle: creator-chosen settings used for every evaluation (fee ceiling = arbiter eligibility filter + prepay size; alpha; price-boost base cost and scaling). Validated on-chain at creation: fee > 0 and <= the aggregator ceiling of that moment, base cost < fee, scaling 1-1000, alpha 0-1000. At start they are clamped to the aggregator\'s LIVE ceiling (see effectiveOracleParams) so a later ceiling drop cannot strand prepared submissions',
             'evaluationCid must be a bare CID (46-100 alphanumeric chars) — "bad evaluationCid" otherwise'
           ]
         },
@@ -1102,6 +1107,10 @@ router.get('/api/docs', (req, res) => {
             'Only needed when the resolving tx emitted RefundDeferred(bountyId, submissionId) instead of EthRefunded — i.e. the wallet -> aggregator withdraw chain failed. Resolution itself never depends on it.',
             'Reverts "not resolved" while the submission is still pending, "nothing to recover" if there is no leftover, or with the aggregator\'s own reason if the retry still fails.'
           ]
+        },
+        effectiveOracleParams: {
+          signature: 'effectiveOracleParams(uint256 bountyId) view returns (tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling))',
+          notes: ['The oracle settings startPreparedSubmission will forward RIGHT NOW: the bounty\'s settings clamped to the aggregator\'s live fee ceiling (fee → min(fee, ceiling); base cost → fee-1 if it no longer fits). The stored bounty settings never change; this is what the keeper will see.']
         },
         requiredPrepay: {
           signature: 'requiredPrepay(uint256 bountyId) view returns (uint256)',

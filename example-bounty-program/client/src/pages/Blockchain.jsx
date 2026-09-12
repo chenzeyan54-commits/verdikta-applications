@@ -122,6 +122,7 @@ function Blockchain() {
   "function submissionCount(uint256 bountyId) view returns (uint256)",
   "function canBeClosed(uint256 bountyId) view returns (bool)",
   "function requiredPrepay(uint256 bountyId) view returns (uint256)", // live prepay to attach at start
+  "function effectiveOracleParams(uint256 bountyId) view returns (tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling))", // settings as clamped to the live ceiling
   // Agent-facing views: drive the whole lifecycle with only this ABI
   "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
   "function getBounties(uint256 start, uint256 count) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle)[])", // count capped at MAX_BATCH = 100
@@ -178,7 +179,7 @@ async function createBounty() {
     arbiterDeterminationPayment: payout,
     creatorAssessmentWindowSize: 0n,
     oracle: {                                      // YOUR oracle settings, used for every evaluation
-      maxOracleFee: ethers.parseEther('0.00002'),  // per-arbiter fee ceiling (<= 0.0004 ETH); also the eligibility filter
+      maxOracleFee: ethers.parseEther('0.00002'),  // per-arbiter fee ceiling (<= aggregator ceiling, 0.0004 ETH today; clamped to it at start if it drops); also the eligibility filter
       alpha: 500n,                                 // quality-vs-timeliness blend, 0-1000
       estimatedBaseCost: ethers.parseEther('0.00001'), // < maxOracleFee; 0 disables the price boost
       maxFeeBasedScaling: 3n,                      // 1-1000; 1 disables the price boost
@@ -1010,7 +1011,8 @@ submission-package.zip
               The oracle is ETH-funded. Per-oracle <code>maxOracleFee</code> is ~<strong>0.00002 ETH</strong>{' '}
               (on-chain ceiling 0.0004 ETH); the worst-case prepay returned as <code>ethMaxBudget</code>{' '}
               is ~<strong>0.00024 ETH</strong>. You only pay for what the evaluation actually costs —
-              the rest comes back. Use the API's <code>/estimate-fee</code> endpoint or check the
+              the rest comes back. The bounty's fee block is clamped to the aggregator's live ceiling at
+              start (<code>effectiveOracleParams(bountyId)</code> shows exactly what is forwarded). Use the API's <code>/estimate-fee</code> endpoint or check the
               Verdikta contract's <code>maxTotalFee()</code>.
             </p>
           </div>

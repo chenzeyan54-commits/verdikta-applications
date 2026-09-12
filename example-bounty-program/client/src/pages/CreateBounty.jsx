@@ -1454,7 +1454,7 @@ function CreateBounty({ walletState }) {
           <li>Set payout amount in ETH.</li>
           <li>Set submission window (example: 7 days / 168 hours).</li>
           <li>Rubric (including threshold for selection) is uploaded to IPFS (immutable).</li>
-          <li>Oracle settings (advanced, defaulted): the per-arbiter fee ceiling, selection blend and price-boost parameters are yours and are used for every evaluation of this bounty. Hunters can see them before submitting; keep the fee at or above the class's going rate so enough arbiters are eligible.</li>
+          <li>Oracle settings (advanced, defaulted): the per-arbiter fee ceiling, selection blend and price-boost parameters are yours and are used for every evaluation of this bounty. Hunters can see them before submitting; keep the fee at or above the class's going rate so enough arbiters are eligible. If the oracle network later lowers its fee ceiling below your fee, evaluations still run — the contract clamps your fee (and, if needed, base cost) to the ceiling at start.</li>
           <li>Smart contract locks your ETH in escrow.</li>
           <li>Bounty status becomes OPEN - hunters can submit work before deadline. Hunters must also <em>start</em> oracle evaluation before the deadline; finalizing may happen later.</li>
           <li><strong>If approval window enabled:</strong> Each submission enters a creator review period. You can approve directly (paying the creator approval amount) or let the window expire for oracle evaluation. The window must end before the deadline, so hunters can only submit up to one window-length before it.</li>

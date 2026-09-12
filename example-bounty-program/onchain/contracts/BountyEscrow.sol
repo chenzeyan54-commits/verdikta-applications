@@ -548,7 +548,8 @@ contract BountyEscrow {
         // prepare and start can never strand a prepared submission (which would otherwise
         // have to be re-prepared — a new index, and on windowed bounties a restarted
         // window that may no longer fit before the deadline). Read it via requiredPrepay().
-        uint256 required = verdikta.maxTotalFee(b.oracle.maxOracleFee);
+        OracleParams memory o = _effectiveOracle(b);   // clamped to the aggregator's live ceiling
+        uint256 required = verdikta.maxTotalFee(o.maxOracleFee);
         require(required > 0, "bad budget");
         require(msg.value == required, "wrong eth amount");
         s.ethMaxBudget = required; // record what was actually prepaid
@@ -563,7 +564,6 @@ contract BountyEscrow {
         cids[0] = b.evaluationCid;
         cids[1] = s.hunterCid;
 
-        OracleParams storage o = b.oracle;
         bytes32 aggId = wallet.startEvaluation{value: msg.value}(
             cids,
             ADDENDUM,
@@ -807,7 +807,33 @@ contract BountyEscrow {
     ///         the same figure at prepare time — an estimate; this view is authoritative.
     function requiredPrepay(uint256 bountyId) external view returns (uint256) {
         Bounty storage b = _mustBounty(bountyId);
-        return verdikta.maxTotalFee(b.oracle.maxOracleFee);
+        return verdikta.maxTotalFee(_effectiveOracle(b).maxOracleFee);
+    }
+
+    /// @notice The oracle settings that startPreparedSubmission will actually forward RIGHT NOW.
+    /// @dev Upstream configuration policy: the aggregator's fee ceiling, poll count, bonus
+    ///      multiplier, cluster size and response timeout are owner-settable and may change
+    ///      after a bounty is created. Creation validates the creator's settings against the
+    ///      ceiling of that moment only. At start the escrow reads the live ceiling and CLAMPS:
+    ///        - maxOracleFee     → min(bounty fee, current ceiling)  (the aggregator does this
+    ///                             itself; mirrored here so the quote and the keeper agree)
+    ///        - estimatedBaseCost → lowered to (effective fee − 1) if it no longer sits below
+    ///                             the effective fee (the keeper requires base < fee; without
+    ///                             this a lowered ceiling would make every start revert and
+    ///                             strand prepared submissions)
+    ///        - alpha, maxFeeBasedScaling → unchanged (nothing upstream constrains them)
+    ///      requiredPrepay() is quoted from the effective fee.
+    function effectiveOracleParams(uint256 bountyId) external view returns (OracleParams memory) {
+        return _effectiveOracle(_mustBounty(bountyId));
+    }
+
+    function _effectiveOracle(Bounty storage b) internal view returns (OracleParams memory o) {
+        o = b.oracle;
+        uint256 ceiling = verdikta.maxOracleFee();
+        if (o.maxOracleFee > ceiling) o.maxOracleFee = ceiling;
+        if (o.estimatedBaseCost >= o.maxOracleFee) {
+            o.estimatedBaseCost = o.maxOracleFee > 0 ? o.maxOracleFee - 1 : 0;
+        }
     }
 
     // ------------- Agent-facing views (additive; no state) -------------

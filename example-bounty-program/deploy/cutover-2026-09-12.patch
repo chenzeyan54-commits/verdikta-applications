@@ -24,7 +24,7 @@ index 6bc7dee..b04c794 100644
      maxOracleFeeWei: '20000000000000',      // 0.00002 ETH per oracle call
      estimatedBaseCostWei: '10000000000000', // 0.00001 ETH base cost per evaluation
 diff --git a/client/src/pages/BountyDetails.jsx b/client/src/pages/BountyDetails.jsx
-index a02d3eb..9d4dc3f 100644
+index a02d3eb..bc29761 100644
 --- a/client/src/pages/BountyDetails.jsx
 +++ b/client/src/pages/BountyDetails.jsx
 @@ -67,8 +67,12 @@ const CONFIG = {
@@ -243,7 +243,17 @@ index a02d3eb..9d4dc3f 100644
        setError(err.message || 'Failed to mark submission as timed-out');
        toast.error(`Failed to timeout submission #${submissionId}: ${err.message}`);
      } finally {
-@@ -1558,12 +1690,16 @@ function BountyDetails({ walletState }) {
+@@ -1385,6 +1517,9 @@ function BountyDetails({ walletState }) {
+         toast.error('Cannot start: the bounty submission deadline has passed.');
+       } else if (msg.includes('insufficient funds') || msg.includes('wrong eth amount') || msg.includes('Incorrect ETH')) {
+         toast.error('Could not fund the evaluation. Ensure you have enough ETH for the prepay and gas, then try again.');
++      } else if (msg.includes('evaluation slots full') || msg.includes('evaluations in flight')) {
++        // Concurrency cap (MAX_ACTIVE_EVALUATIONS): retry later, the submission is not lost.
++        toast.warning('This bounty already has the maximum number of evaluations in flight. Retry in a few minutes, once any of them resolves — your submission is kept.');
+       } else if (msg.includes('ACTION_REJECTED') || msg.includes('rejected')) {
+         toast.warning('Transaction was rejected.');
+       } else {
+@@ -1558,12 +1693,16 @@ function BountyDetails({ walletState }) {
        for (const sub of pendingToResolve) {
          const subId = sub.onChainSubmissionId ?? sub.submissionId;
          const ageMin = sub.submittedAt ? getSubmissionAge(sub.submittedAt).toFixed(0) : '?';
@@ -264,7 +274,7 @@ index a02d3eb..9d4dc3f 100644
        const maxTx = pendingToResolve.length + 1; // +1 for close
        confirmMessage += `Up to ${maxTx} transaction(s) may be required.\n\n`;
      }
-@@ -1623,15 +1759,28 @@ function BountyDetails({ walletState }) {
+@@ -1623,15 +1762,28 @@ function BountyDetails({ walletState }) {
                continue;
              }
  
@@ -298,7 +308,7 @@ index a02d3eb..9d4dc3f 100644
              try {
                await contractService.failTimedOutSubmission(onChainId, subId);
                toast.info(`Force-failed submission #${subId} via timeout`);
-@@ -1676,7 +1825,7 @@ function BountyDetails({ walletState }) {
+@@ -1676,7 +1828,7 @@ function BountyDetails({ walletState }) {
          }
  
          if (stillPending.length > 0) {
@@ -307,7 +317,7 @@ index a02d3eb..9d4dc3f 100644
            toast.error(msg);
            setError(msg);
            return;
-@@ -2064,6 +2213,8 @@ function BountyDetails({ walletState }) {
+@@ -2064,6 +2216,8 @@ function BountyDetails({ walletState }) {
                    isPreviewing={previewingSubmissions.size > 0}
                    onFinalize={handleFinalizeSubmission}
                    onFailTimeout={handleFailTimedOutSubmission}
@@ -316,7 +326,7 @@ index a02d3eb..9d4dc3f 100644
                    onCancel={handleCancelSubmission}
                    onStart={handleStartSubmission}
                    onCreatorApprove={handleCreatorApprove}
-@@ -2074,6 +2225,7 @@ function BountyDetails({ walletState }) {
+@@ -2074,6 +2228,7 @@ function BountyDetails({ walletState }) {
                    approvingSubmissions={approvingSubmissions}
                    pollingSubmissions={pollingSubmissions}
                    evaluationResults={evaluationResults}
@@ -324,7 +334,7 @@ index a02d3eb..9d4dc3f 100644
                    disableActions={disableActionsForMissingId}
                    timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
                    walletState={walletState}
-@@ -2456,6 +2608,8 @@ function BountyDetails({ walletState }) {
+@@ -2456,6 +2611,8 @@ function BountyDetails({ walletState }) {
                onClose={handleCloseExpiredBounty}
                onFinalize={handleFinalizeSubmission}
                onFailTimeout={handleFailTimedOutSubmission}
@@ -333,7 +343,7 @@ index a02d3eb..9d4dc3f 100644
                onCancel={handleCancelSubmission}
                onStart={handleStartSubmission}
                finalizingSubmissions={finalizingSubmissions}
-@@ -2464,6 +2618,7 @@ function BountyDetails({ walletState }) {
+@@ -2464,6 +2621,7 @@ function BountyDetails({ walletState }) {
                startingSubmissions={startingSubmissions}
                pollingSubmissions={pollingSubmissions}
                evaluationResults={evaluationResults}
@@ -341,7 +351,7 @@ index a02d3eb..9d4dc3f 100644
                timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
                toast={toast}
              />
-@@ -2483,6 +2638,8 @@ function BountyDetails({ walletState }) {
+@@ -2483,6 +2641,8 @@ function BountyDetails({ walletState }) {
                  jobId={bountyId}
                  walletState={walletState}
                  onFailTimeout={handleFailTimedOutSubmission}
@@ -350,7 +360,7 @@ index a02d3eb..9d4dc3f 100644
                  onFinalize={handleFinalizeSubmission}
                  onCancel={handleCancelSubmission}
                  onStart={handleStartSubmission}
-@@ -2499,6 +2656,7 @@ function BountyDetails({ walletState }) {
+@@ -2499,6 +2659,7 @@ function BountyDetails({ walletState }) {
                  isPolling={pollingSubmissions.has(submission.submissionId)}
                  pollingState={pollingSubmissions.get(submission.submissionId)}
                  evaluationResult={evaluationResults.get(submission.submissionId)}
@@ -358,7 +368,7 @@ index a02d3eb..9d4dc3f 100644
                  disableActions={disableActionsForMissingId}
                  getSubmissionAge={getSubmissionAge}
                  timeoutMinutes={CONFIG.SUBMISSION_TIMEOUT_MINUTES}
-@@ -2910,6 +3068,8 @@ function PendingSubmissionsPanel({
+@@ -2910,6 +3071,8 @@ function PendingSubmissionsPanel({
    isPreviewing,
    onFinalize,
    onFailTimeout,
@@ -367,7 +377,7 @@ index a02d3eb..9d4dc3f 100644
    onCancel,
    onStart,
    onCreatorApprove,
-@@ -2920,6 +3080,7 @@ function PendingSubmissionsPanel({
+@@ -2920,6 +3083,7 @@ function PendingSubmissionsPanel({
    approvingSubmissions,
    pollingSubmissions,
    evaluationResults,
@@ -375,7 +385,7 @@ index a02d3eb..9d4dc3f 100644
    disableActions,
    timeoutMinutes,
    walletState,
-@@ -2942,8 +3103,10 @@ function PendingSubmissionsPanel({
+@@ -2942,8 +3106,10 @@ function PendingSubmissionsPanel({
          const now = Math.floor(Date.now() / 1000);
          const windowOpen = isPendingCreatorApproval && windowEnd > now;
          const windowExpired = isPendingCreatorApproval && windowEnd > 0 && windowEnd <= now;
@@ -388,7 +398,7 @@ index a02d3eb..9d4dc3f 100644
          const isFailing = failingSubmissions.has(s.submissionId);
          const isFinalizing = finalizingSubmissions.has(s.submissionId);
          const isApproving = approvingSubmissions?.has(s.submissionId);
-@@ -3148,16 +3311,23 @@ function PendingSubmissionsPanel({
+@@ -3148,16 +3314,23 @@ function PendingSubmissionsPanel({
                )}
              </div>
  
@@ -415,7 +425,7 @@ index a02d3eb..9d4dc3f 100644
        </p>
      </div>
    );
-@@ -3175,6 +3345,8 @@ function ExpiredBountyActions({
+@@ -3175,6 +3348,8 @@ function ExpiredBountyActions({
    onClose,
    onFinalize,
    onFailTimeout,
@@ -424,7 +434,7 @@ index a02d3eb..9d4dc3f 100644
    onCancel,
    onStart,
    finalizingSubmissions,
-@@ -3183,6 +3355,7 @@ function ExpiredBountyActions({
+@@ -3183,6 +3358,7 @@ function ExpiredBountyActions({
    startingSubmissions,
    pollingSubmissions,
    evaluationResults,
@@ -432,7 +442,7 @@ index a02d3eb..9d4dc3f 100644
    timeoutMinutes,
    toast
  }) {
-@@ -3220,24 +3393,25 @@ function ExpiredBountyActions({
+@@ -3220,24 +3396,25 @@ function ExpiredBountyActions({
                  {pendingSubmissions.map(sub => {
                    const subId = sub.onChainSubmissionId ?? sub.submissionId;
                    const ageMin = sub.submittedAt ? getSubmissionAge(sub.submittedAt) : 0;
@@ -464,7 +474,7 @@ index a02d3eb..9d4dc3f 100644
                </div>
              </div>
            )}
-@@ -3304,6 +3478,8 @@ function SubmissionCard({
+@@ -3304,6 +3481,8 @@ function SubmissionCard({
    jobId,
    walletState,
    onFailTimeout,
@@ -473,7 +483,7 @@ index a02d3eb..9d4dc3f 100644
    onFinalize,
    onCancel,
    onStart,
-@@ -3320,6 +3496,7 @@ function SubmissionCard({
+@@ -3320,6 +3499,7 @@ function SubmissionCard({
    isPolling,
    pollingState,
    evaluationResult,
@@ -481,7 +491,7 @@ index a02d3eb..9d4dc3f 100644
    disableActions,
    getSubmissionAge,
    timeoutMinutes,
-@@ -3358,8 +3535,9 @@ function SubmissionCard({
+@@ -3358,8 +3538,9 @@ function SubmissionCard({
    // Receipts-as-memes: only show for paid winners
    const isPaidWinner = submission.paidWinner === true;
    const ageMinutes = isPending && submission.submittedAt ? getSubmissionAge(submission.submittedAt) : 0;
@@ -493,7 +503,7 @@ index a02d3eb..9d4dc3f 100644
    // Only allow finalize for on-chain submissions (not Prepared)
    const canFinalize = isOnChain && !isPolling;
    const hasEvalReady = evaluationResult?.ready;
-@@ -3859,7 +4037,7 @@ function SubmissionCard({
+@@ -3859,7 +4040,7 @@ function SubmissionCard({
                  borderRadius: '4px',
                  marginBottom: '0.25rem'
                }}>
@@ -502,7 +512,7 @@ index a02d3eb..9d4dc3f 100644
                  Use the button below to mark as failed and refund the ETH prepay.
                </div>
                <button
-@@ -3878,10 +4056,37 @@ function SubmissionCard({
+@@ -3878,10 +4059,37 @@ function SubmissionCard({
              </>
            )}
            
@@ -897,7 +907,7 @@ index 76f2876..f78d81f 100644
          <div className="work-type-badge">{job.workProductType}</div>
        )}
 diff --git a/client/src/pages/SubmitWork.jsx b/client/src/pages/SubmitWork.jsx
-index dcdc149..9b78aee 100644
+index dcdc149..3783da7 100644
 --- a/client/src/pages/SubmitWork.jsx
 +++ b/client/src/pages/SubmitWork.jsx
 @@ -304,17 +304,15 @@ function SubmitWork({ walletState }) {
@@ -923,7 +933,18 @@ index dcdc149..9b78aee 100644
        );
  
        console.log('✅ Submission prepared:', {
-@@ -754,9 +752,10 @@ function SubmitWork({ walletState }) {
+@@ -438,6 +436,10 @@ function SubmitWork({ walletState }) {
+         errorMessage = 'This bounty is restricted to a specific address. Only the targeted wallet can submit.';
+       } else if (errorMessage.includes('deadline passed')) {
+         errorMessage = 'Submission deadline has passed';
++      } else if (errorMessage.includes('evaluation slots full') || errorMessage.includes('evaluations in flight')) {
++        // Concurrency cap at start (256 evaluations in flight). Your prepared submission is kept —
++        // start it again in a few minutes, once any in-flight evaluation resolves.
++        errorMessage = '⏳ This bounty already has the maximum number of evaluations in flight. Your submission is prepared and kept — retry "start" in a few minutes, once any of them resolves.';
+       } else if (errorMessage.includes('not open')) {
+         errorMessage = 'Bounty is not accepting submissions';
+       }
+@@ -754,9 +756,10 @@ function SubmitWork({ walletState }) {
  
          <h3><MessageSquare size={18} className="inline-icon" /> About Your Submission Narrative</h3>
          <p>
@@ -961,10 +982,10 @@ index 0159b03..38c15f0 100644
     * Pre-validate an evaluation CID before creating a bounty
     * @param {Object} data - { evaluationCid, classId }
 diff --git a/client/src/services/contractService.js b/client/src/services/contractService.js
-index 57a3e45..2840a06 100644
+index 57a3e45..b8ea86e 100644
 --- a/client/src/services/contractService.js
 +++ b/client/src/services/contractService.js
-@@ -17,29 +17,132 @@ import { ethers } from 'ethers';
+@@ -17,29 +17,134 @@ import { ethers } from 'ethers';
  import { config, currentNetwork } from '../config';
  
  // BountyEscrow ABI - only the functions we need to call
@@ -1039,6 +1060,7 @@ index 57a3e45..2840a06 100644
 +const REVERT_MESSAGES = [
 +  // Retryable, NOT a failure
 +  ['earlier submission pending', 'An earlier submission is still being evaluated; retry after it resolves (this is not a failure — your result is kept).'],
++  ['evaluation slots full', 'This bounty already has the maximum number of evaluations in flight (256). A slot frees as soon as any of them resolves — retry in a few minutes (this is not a failure; your prepared submission is kept).'],
 +  ['earlier submission unresolved', 'An earlier submission must be resolved first (it is still in evaluation or in its approval window).'],
 +  // Force-fail / finalize routing
 +  ['result available - use finalizesubmission', 'The oracle produced a result for this submission — finalize it instead of force-failing.'],
@@ -1056,7 +1078,7 @@ index 57a3e45..2840a06 100644
 +  ['bad huntercid', 'The submission CID must be a bare IPFS CID (46–100 letters and digits, no path or punctuation).'],
 +  ['bad evaluationcid', 'The evaluation package CID must be a bare IPFS CID (46–100 letters and digits, no path or punctuation).'],
 +  ['evaluationcid mismatch', 'The evaluation CID does not match the bounty\'s stored evaluation package.'],
-+  ['submission limit reached', 'This bounty has reached its limit of 128 submissions.'],
++  ['submission limit reached', 'This windowed bounty has reached its limit of 128 submissions (bounties without a creator window have no such limit).'],
 +  // Creator oracle settings
 +  ['oracle fee above ceiling', 'Max oracle fee is above the aggregator\'s ceiling (0.0004 ETH).'],
 +  ['bad oracle fee', 'Max oracle fee must be greater than 0.'],
@@ -1098,13 +1120,14 @@ index 57a3e45..2840a06 100644
 +/** Revert reasons that mean "retry later", not "the action failed". */
 +export function isRetryableRevert(rawMessage) {
 +  const msg = String(rawMessage || '').toLowerCase();
-+  return msg.includes('earlier submission pending') || msg.includes('verdikta not ready') || msg.includes('evaluation not settled');
++  return msg.includes('earlier submission pending') || msg.includes('verdikta not ready') ||
++    msg.includes('evaluation not settled') || msg.includes('evaluation slots full');
 +}
 +
  // ============================================================================
  // PERFORMANCE: Debounce utility
  // ============================================================================
-@@ -99,6 +202,10 @@ class ContractService {
+@@ -99,6 +204,10 @@ class ContractService {
      // Cache for expensive reads
      this._statusCache = new Map();
      this._statusCacheTTL = 5000; // 5 seconds
@@ -1115,7 +1138,7 @@ index 57a3e45..2840a06 100644
    }
  
    // ==========================================================================
-@@ -226,14 +333,63 @@ class ContractService {
+@@ -226,14 +335,63 @@ class ContractService {
    // ==========================================================================
  
    /**
@@ -1181,7 +1204,7 @@ index 57a3e45..2840a06 100644
      const winHrs = Number(submissionWindowHours);
      if (!Number.isFinite(winHrs) || winHrs <= 0) throw new Error('Submission window (hours) must be > 0');
      const thrNum = Number(threshold);
-@@ -244,6 +400,9 @@ class ContractService {
+@@ -244,6 +402,9 @@ class ContractService {
      // Determine if this is a windowed bounty
      const hasApprovalWindow = creatorAssessmentWindowHours != null && Number(creatorAssessmentWindowHours) > 0;
  
@@ -1191,7 +1214,7 @@ index 57a3e45..2840a06 100644
      try {
        // Encode exact solidity widths
        const now = Math.floor(Date.now() / 1000);
-@@ -257,67 +416,52 @@ class ContractService {
+@@ -257,67 +418,52 @@ class ContractService {
        if ((classId64 & ~mask64) !== 0n) throw new Error('classId exceeds uint64');
        if ((thresh8 & ~mask8) !== 0n) throw new Error('threshold exceeds uint8');
  
@@ -1301,7 +1324,7 @@ index 57a3e45..2840a06 100644
  
        // Dry-run to surface revert reasons
        try {
-@@ -327,11 +471,8 @@ class ContractService {
+@@ -327,11 +473,8 @@ class ContractService {
          const msg = (decoded || e?.message || '').toLowerCase();
          if (msg.includes('no eth') || msg.includes('noeth')) throw new Error('Bounty requires ETH value (msg.value > 0)');
          if (msg.includes('empty evaluationcid') || msg.includes('emptyevaluationcid')) throw new Error('Evaluation CID is empty');
@@ -1315,7 +1338,7 @@ index 57a3e45..2840a06 100644
          throw e;
        }
  
-@@ -372,21 +513,24 @@ class ContractService {
+@@ -372,21 +515,24 @@ class ContractService {
    /**
     * STEP 1: Prepare a submission (deploys EvaluationWallet)
     *
@@ -1351,7 +1374,7 @@ index 57a3e45..2840a06 100644
  
      try {
        console.log('🔍 Preparing submission...', {
-@@ -395,15 +539,20 @@ class ContractService {
+@@ -395,15 +541,20 @@ class ContractService {
          hunterCid: hunterCid?.substring(0, 20) + '...'
        });
  
@@ -1378,7 +1401,7 @@ index 57a3e45..2840a06 100644
        );
  
        console.log('📤 Transaction sent:', tx.hash);
-@@ -438,6 +587,8 @@ class ContractService {
+@@ -438,6 +589,8 @@ class ContractService {
        if (error.code === 'ACTION_REJECTED') {
          throw new Error('Transaction rejected by user');
        }
@@ -1387,7 +1410,7 @@ index 57a3e45..2840a06 100644
        throw error;
      }
    }
-@@ -445,23 +596,37 @@ class ContractService {
+@@ -445,23 +598,37 @@ class ContractService {
    /**
     * STEP 2: Start the prepared submission (triggers Verdikta evaluation).
     *
@@ -1433,17 +1456,19 @@ index 57a3e45..2840a06 100644
  
      try {
        console.log('🔍 Starting submission evaluation...', {
-@@ -478,6 +643,9 @@ class ContractService {
+@@ -478,6 +645,11 @@ class ContractService {
          if (msg.includes('only hunter')) throw new Error('Only the submitting hunter can start this evaluation');
          if (msg.includes('creator window still open')) throw new Error('The creator approval window is still open');
          if (msg.includes('already passed')) throw new Error('Another submission already passed — finalize it first');
 +        if (msg.includes('deadline passed')) throw new Error('The submission deadline has passed — evaluations can no longer be started for this bounty');
++        // "evaluation slots full - retry later": the concurrency cap (MAX_ACTIVE_EVALUATIONS).
++        // Handled by the table below; isRetryableRevert() reports it as retry-later.
 +        const friendly = friendlyRevertMessage(msg);
 +        if (friendly) throw new Error(friendly);
          throw e;
        }
  
-@@ -514,6 +682,21 @@ class ContractService {
+@@ -514,6 +686,21 @@ class ContractService {
      try {
        console.log('🔍 Finalizing submission...', { bountyId, submissionId });
  
@@ -1465,7 +1490,7 @@ index 57a3e45..2840a06 100644
        const tx = await this.contract.finalizeSubmission(bountyId, submissionId);
        console.log('📤 Transaction sent:', tx.hash);
  
-@@ -535,6 +718,9 @@ class ContractService {
+@@ -535,6 +722,9 @@ class ContractService {
        if (error.code === 'ACTION_REJECTED') {
          throw new Error('Transaction rejected by user');
        }
@@ -1475,7 +1500,7 @@ index 57a3e45..2840a06 100644
        throw error;
      }
    }
-@@ -564,11 +750,19 @@ class ContractService {
+@@ -564,11 +754,19 @@ class ContractService {
        if (msg.includes('not pending') || msg.includes('notpending') || msg.includes('not pendingverdikta')) {
          return { success: false, reason: 'already_terminal' };
        }
@@ -1496,7 +1521,7 @@ index 57a3e45..2840a06 100644
      }
  
      // Dry-run passed — send the real transaction
-@@ -605,6 +799,24 @@ class ContractService {
+@@ -605,6 +803,24 @@ class ContractService {
      try {
        console.log('⏱️ Failing timed-out submission...', { bountyId, submissionId });
  
@@ -1521,7 +1546,7 @@ index 57a3e45..2840a06 100644
        const tx = await this.contract.failTimedOutSubmission(bountyId, submissionId);
        console.log('📤 Transaction sent:', tx.hash);
  
-@@ -626,6 +838,53 @@ class ContractService {
+@@ -626,6 +842,53 @@ class ContractService {
        if (error.code === 'ACTION_REJECTED') {
          throw new Error('Transaction rejected by user');
        }
@@ -1575,7 +1600,7 @@ index 57a3e45..2840a06 100644
        throw error;
      }
    }
-@@ -674,6 +933,8 @@ class ContractService {
+@@ -674,6 +937,8 @@ class ContractService {
        if (msg.includes('active evaluation') || msg.includes('activeevaluation')) {
          throw new Error('Cannot close - active evaluations in progress. Finalize them first.');
        }
@@ -1584,7 +1609,7 @@ index 57a3e45..2840a06 100644
  
        throw error;
      }
-@@ -700,8 +961,10 @@ class ContractService {
+@@ -700,8 +965,10 @@ class ContractService {
          if (msg.includes('only creator')) throw new Error('Only the bounty creator can approve submissions');
          if (msg.includes('window expired')) throw new Error('The creator approval window has expired');
          if (msg.includes('not pending creator approval')) throw new Error('Submission is not pending creator approval');
@@ -1596,7 +1621,7 @@ index 57a3e45..2840a06 100644
          throw e;
        }
  
-@@ -803,15 +1066,20 @@ class ContractService {
+@@ -803,15 +1070,20 @@ class ContractService {
  
          return {
            hunter: sub.hunter,
@@ -1619,7 +1644,7 @@ index 57a3e45..2840a06 100644
          };
  
        } catch (error) {
-@@ -841,17 +1109,12 @@ class ContractService {
+@@ -841,17 +1113,12 @@ class ContractService {
      }
  
      try {
@@ -1641,7 +1666,7 @@ index 57a3e45..2840a06 100644
  
        // Status codes: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid, 5=PendingCreatorApproval
        if (statusCode !== 0 && statusCode !== 1) {
-@@ -864,32 +1127,8 @@ class ContractService {
+@@ -864,32 +1131,8 @@ class ContractService {
          return { ready: false };
        }
  
@@ -1676,7 +1701,7 @@ index 57a3e45..2840a06 100644
        let scores, justCids, ok;
        try {
          [scores, justCids, ok] = await verdikta.getEvaluation(verdiktaAggId);
-@@ -931,6 +1170,122 @@ class ContractService {
+@@ -931,6 +1174,122 @@ class ContractService {
      }
    }
  
@@ -1799,7 +1824,7 @@ index 57a3e45..2840a06 100644
    // ==========================================================================
    // CONNECTION STATE
    // ==========================================================================
-@@ -965,6 +1320,7 @@ class ContractService {
+@@ -965,6 +1324,7 @@ class ContractService {
      this.contract = null;
      this.userAddress = null;
      this._readOnlyProvider = null;
@@ -1807,7 +1832,7 @@ index 57a3e45..2840a06 100644
      this.clearCache();
    }
  }
-@@ -1027,7 +1383,8 @@ export async function resolveBountyIdByStateLoose({
+@@ -1027,7 +1387,8 @@ export async function resolveBountyIdByStateLoose({
    const provider = getSharedProvider();
    const abi = [
      "function bountyCount() view returns (uint256)",

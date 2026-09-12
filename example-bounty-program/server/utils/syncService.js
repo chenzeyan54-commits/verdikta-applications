@@ -849,6 +849,7 @@ class SyncService {
             sub.paidWinner = statusIndex === 3;
             if (chainSub.acceptance != null) sub.acceptance = Number(chainSub.acceptance);
             if (chainSub.rejection != null) sub.rejection = Number(chainSub.rejection);
+            if (chainSub.funder && !/^0x0{40}$/i.test(chainSub.funder)) sub.funder = chainSub.funder;
 
             if (before !== chainOnChainStatus) {
               paidHealed++;
@@ -1184,6 +1185,16 @@ class SyncService {
             onChainStatus: 'PendingVerdikta',
             submittedAt: Math.floor(Date.now() / 1000)
           });
+        }
+
+        // Record who attached the prepay (Submission.funder — the refund recipient; not in
+        // the event, so one chain read). Non-fatal: the paid-heal pass fills it in later too.
+        try {
+          const chainSub = await contractService.contract.getSubmission(bountyId, submissionId);
+          const target = sub || job.submissions[job.submissions.length - 1];
+          if (chainSub.funder && !/^0x0{40}$/i.test(chainSub.funder)) target.funder = chainSub.funder;
+        } catch (e) {
+          logger.debug('[event] WorkSubmitted: funder read failed (will heal)', { bountyId, submissionId, msg: e.message });
         }
 
         // Mark bounty as HOT for oracle polling

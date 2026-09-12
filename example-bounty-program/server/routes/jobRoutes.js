@@ -2872,6 +2872,11 @@ router.get('/:jobId/submissions', async (req, res) => {
           score,
           rejection,
           failureReason: sub.failureReason || null,
+          // Payment record (on-chain PassedPaid == paid) and who attached the prepay
+          // (receives the unspent refund) — both mirrored from chain by the sync service.
+          paidWinner: sub.paidWinner === true,
+          funder: sub.funder || null,
+          onChainStatus: sub.onChainStatus || null,
           justificationCids: sub.justificationCids || null,
           hasEvaluationReport,
           evaluationEndpoint: hasEvaluationReport
@@ -5925,6 +5930,7 @@ router.post('/:jobId/submissions/:submissionId/refresh', async (req, res) => {
       }
       localSubmission.finalizedAt = Number(sub.finalizedAt);
       localSubmission.verdiktaAggId = sub.verdiktaAggId;
+      if (sub.funder && !/^0x0{40}$/i.test(sub.funder)) localSubmission.funder = sub.funder;
       localSubmission.failureReason = failureReason;
       localSubmission.paidWinner = paidWinner;
       localSubmission.passedUnpaid = passedUnpaid;

@@ -147,7 +147,7 @@ config.submissionDefaults = {
 // Used as the starting point for bootstrap event replay.
 const deploymentBlocks = {
   'base-sepolia': 46_734_719,  // ETH BountyEscrow v0.5.0 0x1B4F…e08f (lens + wallet clones), 2026-09-12
-  'base':         47_136_166,  // ETH BountyEscrow 0x2Ae2…772D (verified-new hardened code), ~2026-06-10T03:21:19Z
+  'base':         51_224_966,  // ETH BountyEscrow v0.5.0 0xA741…D3f6 (lens + wallet clones), 2026-09-12
 };
 
 config.deploymentBlock = deploymentBlocks[networkKey] || 0;

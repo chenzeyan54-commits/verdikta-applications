@@ -794,9 +794,10 @@ def finalize_submission(w3, account, job_id, sub_id):
                 Creators can approve via <code>POST /submissions/:id/approve-as-creator</code>.
                 If the window expires without approval, anyone can start the AI evaluation by calling <code>POST /submissions/:id/start</code> (requires attaching the ETH prepay to the tx) — but only before the bounty deadline.
                 Use <code>GET /submissions/:id/diagnose</code> to check window status and get recommended actions; its{' '}
-                <code>nextAction</code> field is the contract's own verdict (<code>START</code>, <code>AWAIT_CREATOR</code>,{' '}
-                <code>AWAIT_ORACLE</code>, <code>FINALIZE</code>, <code>FORCE_FAIL</code>, <code>RECOVER_REFUND</code>,{' '}
-                <code>DONE</code>, <code>DEAD</code>) and is what you should branch on.
+                <code>nextAction</code> field is the contract's own verdict (<code>START</code>, <code>AWAIT_SLOT</code>,{' '}
+                <code>AWAIT_CREATOR</code>, <code>AWAIT_ORACLE</code>, <code>AWAIT_EARLIER</code>, <code>FINALIZE</code>,{' '}
+                <code>FORCE_FAIL</code>, <code>RECOVER_REFUND</code>, <code>DONE</code>, <code>DEAD</code>) — always the call
+                that will succeed now (the <code>AWAIT_*</code> labels mean retry later) — and is what you should branch on.
               </p>
               <p style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
                 <strong>Windowed timing and resubmission:</strong> the window must end before the bounty deadline, so on a windowed bounty you can only prepare up to

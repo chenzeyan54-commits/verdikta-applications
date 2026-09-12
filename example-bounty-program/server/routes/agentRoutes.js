@@ -593,8 +593,10 @@ do NOT call contract functions directly unless you know the ABI.
      /start, not after prepare) and "result available - use finalizeSubmission" if
      the oracle did respond. Neither revert loses anything: wait and retry, or finalize.
 
-If finalizeSubmission reverts with "Verdikta not ready", the oracle has not completed.
-Wait, or use /timeout once the aggregator round has timed out (5+ minutes after /start).
+If finalizeSubmission reverts with "Verdikta not ready", the oracle has not answered yet —
+wait. If it reverts with "no oracle result - use failTimedOutSubmission", the round is
+settled with no result and finalize can never succeed — use /timeout (failTimedOutSubmission).
+nextAction tells you which (FINALIZE vs FORCE_FAIL).
 If finalizeSubmission reverts with "earlier submission pending - retry after it resolves"
 (windowed bounty), another hunter's earlier submission is still in evaluation; your
 submission stays PendingVerdikta — retry after that one is finalized or force-failed.
@@ -1078,7 +1080,7 @@ router.get('/api/docs', (req, res) => {
             'REQUIRED after oracle evaluation completes — payment is NOT automatic',
             'If passed threshold: triggers ETH payment to hunter',
             'If below threshold: marks submission as Failed',
-            'If reverts with "Verdikta not ready": oracle has not completed — wait, or use failTimedOutSubmission once the aggregator round has timed out (5+ min after start)',
+            'If reverts with "Verdikta not ready": the oracle has not answered yet — wait. If reverts with "no oracle result - use failTimedOutSubmission": the round is settled with no result — force-fail instead (finalize can never succeed). nextAction says which (FINALIZE vs FORCE_FAIL)',
             'If reverts with "earlier submission pending - retry after it resolves" (windowed bounty): another hunter\'s earlier submission is in evaluation; nothing is written — retry after it resolves',
             'A malformed oracle result (score vector not exactly [DONT_FUND, FUND], or any entry above SCORE_SCALE = 1,000,000) finalizes as Failed with zero scores and refunds the prepay; it never reverts and is never clamped into a pass. The same interpreter drives the "another submission already passed" checks',
             'Emits SubmissionFinalized(bountyId, submissionId, passed, paid, acceptance, rejection, justificationCids) — paid is true only for the winner in that tx (false for Failed, PassedUnpaid, TIMED_OUT)',
@@ -1092,7 +1094,7 @@ router.get('/api/docs', (req, res) => {
             'Tries finalizeEvaluationTimeout on the aggregator, then requires no valid result AND a settled round. Reverts "evaluation not settled" while the round is open (aggregator timeout is 300 s after startPreparedSubmission) and "result available - use finalizeSubmission" if the oracle responded',
             'Marks submission as Failed and refunds the unspent ETH prepay to the hunter. Can never discard a passing score',
             'Anyone can call this',
-            '"Verdikta not ready" from finalizeSubmission means the oracle has not completed — wait, then either finalize (result arrived) or force-fail (round timed out)'
+            '"Verdikta not ready" from finalizeSubmission means the oracle has not answered yet — wait; "no oracle result - use failTimedOutSubmission" means the round is settled with no result — force-fail'
           ]
         },
         closeExpiredBounty: {
@@ -1124,7 +1126,7 @@ router.get('/api/docs', (req, res) => {
         nextAction: {
           signature: 'nextAction(uint256 bountyId, uint256 submissionId) view returns (string)',
           notes: [
-            'The on-chain /diagnose: START (call startPreparedSubmission with requiredPrepay), AWAIT_CREATOR (in its window; only the creator can act), AWAIT_ORACLE (wait), FINALIZE (a result exists), FORCE_FAIL (round settled/timed out with no result), RECOVER_REFUND (resolved but unspent prepay still recoverable), DONE, DEAD (never started and no longer can be).',
+            'The on-chain /diagnose — every label is the call that will SUCCEED now: START (call startPreparedSubmission with requiredPrepay), AWAIT_SLOT (start would revert "evaluation slots full": 256 evaluations in flight — retry once any resolves), AWAIT_CREATOR (in its window; only the creator can act), AWAIT_ORACLE (wait), AWAIT_EARLIER (a PASSING result exists but finalize would revert "earlier submission pending": a lower-index submission by another hunter is still in evaluation — retry once it resolves; anyone may finalize/force-fail it), FINALIZE (a result exists, or the timed-out round has enough late reveals to settle with one; on an Awarded/Closed bounty this only refunds the prepay), FORCE_FAIL (round settled — or will settle — with no result), RECOVER_REFUND (resolved but unspent prepay still recoverable), DONE, DEAD (cannot be started any more: deadline passed, bounty not open, or an in-flight submission already passes).',
             'Also exposed as diagnosis.nextAction on GET /jobs/:id/submissions/:subId/diagnose.'
           ]
         },

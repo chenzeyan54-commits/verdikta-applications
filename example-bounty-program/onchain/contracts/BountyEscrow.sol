@@ -387,7 +387,7 @@ contract BountyEscrow {
     /// @param bountyId The bounty to close
     function closeExpiredBounty(uint256 bountyId) external nonReentrant {
         Bounty storage b = _mustBounty(bountyId);
-        require(b.status == BountyStatus.Open, "not open");
+        require(b.status == BountyStatus.Open, "bounty not open");
         require(block.timestamp >= b.submissionDeadline, "deadline not passed");
 
         // No submissions may be actively being evaluated (O(1) — the pending list is empty).
@@ -574,7 +574,7 @@ contract BountyEscrow {
             // After window expires, anyone can start arbitration and fund the evaluation
             require(block.timestamp > s.creatorWindowEnd, "creator window still open");
         } else {
-            require(s.status == SubmissionStatus.Prepared, "not prepared");
+            require(s.status == SubmissionStatus.Prepared, "already started or resolved");
             require(msg.sender == s.hunter, "only hunter");
         }
 
@@ -651,7 +651,15 @@ contract BountyEscrow {
                 (scores, justCids, ok) = verdikta.getEvaluation(s.verdiktaAggId);
             } catch { /* ignore */ }
         }
-        require(ok, "Verdikta not ready");
+        if (!ok) {
+            // Tell the caller which of the two "no result" cases this is: a round that is
+            // settled with no result can never be finalized — failTimedOutSubmission is the
+            // call (a settle attempt above is rolled back with this revert; force-fail redoes
+            // it). Otherwise the oracle simply has not answered yet.
+            (bool settled, , , , , , , , , ) = verdikta.getAggregationStatus(s.verdiktaAggId);
+            require(!settled, "no oracle result - use failTimedOutSubmission");
+            revert("Verdikta not ready");
+        }
 
         // Leaving PendingVerdikta (every branch below sets a terminal status).
         _removePending(bountyId, submissionId);

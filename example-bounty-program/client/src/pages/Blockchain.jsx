@@ -130,7 +130,7 @@ function Blockchain() {
   "function getSubmissions(uint256 bountyId) view returns (tuple(address hunter, string hunterCid, address evalWallet, bytes32 verdiktaAggId, uint8 status, uint256 acceptance, uint256 rejection, string justificationCids, uint256 submittedAt, uint256 finalizedAt, uint256 ethMaxBudget, uint64 creatorWindowEnd, address funder)[])",
   "function getBounties(uint256 start, uint256 count) view returns (tuple(address creator, string evaluationCid, uint64 requestedClass, uint8 threshold, uint256 payoutWei, uint256 createdAt, uint64 submissionDeadline, uint8 status, address winner, uint256 submissions, address targetHunter, uint256 creatorDeterminationPayment, uint256 arbiterDeterminationPayment, uint64 creatorAssessmentWindowSize, tuple(uint256 maxOracleFee, uint256 alpha, uint256 estimatedBaseCost, uint256 maxFeeBasedScaling) oracle)[])", // count capped at MAX_BATCH = 100
   "function getOracleResult(uint256 bountyId, uint256 submissionId) view returns (bool started, bool hasResult, bool settled, bool failed, uint256[] scores, string justificationCids, uint256 startTimestamp)",
-  "function nextAction(uint256 bountyId, uint256 submissionId) view returns (string)", // START | AWAIT_CREATOR | AWAIT_ORACLE | FINALIZE | FORCE_FAIL | RECOVER_REFUND | DONE | DEAD
+  "function nextAction(uint256 bountyId, uint256 submissionId) view returns (string)", // START | AWAIT_SLOT | AWAIT_CREATOR | AWAIT_ORACLE | AWAIT_EARLIER | FINALIZE | FORCE_FAIL | RECOVER_REFUND | DONE | DEAD
   "function prepareCutoff(uint256 bountyId) view returns (uint256)",                    // last unix second prepareSubmission can succeed
   "function activeEvaluations(uint256 bountyId) view returns (uint256)",   // in-flight evaluations (pending list length)
   "function pendingSubmissionIds(uint256 bountyId) view returns (uint256[])", // ids currently in evaluation (list order, not submission order)
@@ -1092,9 +1092,10 @@ submission-package.zip
               <code>evaluationCid</code>). Read a bounty's submissions with <code>getSubmissions(bountyId)</code>. Before
               preparing, check <code>prepareCutoff(bountyId)</code>; before starting, read <code>requiredPrepay(bountyId)</code>.
               Poll the oracle with <code>getOracleResult(bountyId, submissionId)</code> — no aggregator ABI needed — and ask{' '}
-              <code>nextAction(bountyId, submissionId)</code> what to do: <code>START</code>, <code>AWAIT_CREATOR</code>,{' '}
-              <code>AWAIT_ORACLE</code>, <code>FINALIZE</code>, <code>FORCE_FAIL</code>, <code>RECOVER_REFUND</code>,{' '}
-              <code>DONE</code> or <code>DEAD</code>. You still need your own IPFS pinning and the evaluation-package /
+              <code>nextAction(bountyId, submissionId)</code> what to do: <code>START</code>, <code>AWAIT_SLOT</code>,{' '}
+              <code>AWAIT_CREATOR</code>, <code>AWAIT_ORACLE</code>, <code>AWAIT_EARLIER</code>, <code>FINALIZE</code>,{' '}
+              <code>FORCE_FAIL</code>, <code>RECOVER_REFUND</code>, <code>DONE</code> or <code>DEAD</code> — always the call that
+              will succeed now; the <code>AWAIT_*</code> labels mean retry later. You still need your own IPFS pinning and the evaluation-package /
               work-archive formats (see the developer guide), which is what the API otherwise does for you.
             </p>
           </div>

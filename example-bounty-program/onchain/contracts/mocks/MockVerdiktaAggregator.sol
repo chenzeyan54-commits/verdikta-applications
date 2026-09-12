@@ -159,8 +159,12 @@ contract MockVerdiktaAggregator {
             uint256 startTs
         )
     {
+        // commitPhaseComplete / responseCount / requiredN model "enough reveals arrived":
+        // a staged late result (setTimeoutResult) means the timeout settle will produce a
+        // result, exactly the condition the real aggregator checks (responseCount >= required).
+        bool enough = _timeoutResults[aggId].exists || _results[aggId].exists;
         return (
-            complete[aggId], failed[aggId], false, 0, 0, 0, 0, 0,
+            complete[aggId], failed[aggId], enough, 0, 0, enough ? 1 : 0, 1, 0,
             requesterOf[aggId], startTimestamp[aggId]
         );
     }

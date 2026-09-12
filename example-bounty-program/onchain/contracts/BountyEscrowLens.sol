@@ -68,11 +68,18 @@ contract BountyEscrowLens {
         return "UNKNOWN"; // Should never happen
     }
 
-    /// @notice Check if a bounty is accepting NEW submissions
-    /// @dev Returns true only if Open status AND before deadline
+    /// @notice Would prepareSubmission succeed for this bounty RIGHT NOW (ignoring who calls)?
+    /// @dev Open, before the effective prepare cutoff (see prepareCutoff — on windowed bounties
+    ///      the creator window must still fit before the deadline), and on windowed bounties
+    ///      below MAX_SUBMISSIONS_PER_BOUNTY. Does NOT consider targetHunter: on a targeted
+    ///      bounty only that address can prepare — compare it yourself.
     function isAcceptingSubmissions(uint256 bountyId) external view returns (bool) {
         BountyEscrow.Bounty memory b = escrow.getBounty(bountyId);
-        return b.status == BountyEscrow.BountyStatus.Open && block.timestamp < b.submissionDeadline;
+        if (b.status != BountyEscrow.BountyStatus.Open) return false;
+        if (block.timestamp > _prepareCutoff(b)) return false;
+        if (b.creatorAssessmentWindowSize > 0 &&
+            escrow.submissionCount(bountyId) >= escrow.MAX_SUBMISSIONS_PER_BOUNTY()) return false;
+        return true;
     }
 
     /// @notice Check if a bounty can be closed (deadline passed, no active evals)
@@ -91,7 +98,10 @@ contract BountyEscrowLens {
     ///         end at least two seconds before the deadline (one second to start), so it is
     ///         deadline - window - 2. May already be in the past. 0 if the bounty is not Open.
     function prepareCutoff(uint256 bountyId) external view returns (uint256) {
-        BountyEscrow.Bounty memory b = escrow.getBounty(bountyId);
+        return _prepareCutoff(escrow.getBounty(bountyId));
+    }
+
+    function _prepareCutoff(BountyEscrow.Bounty memory b) internal pure returns (uint256) {
         if (b.status != BountyEscrow.BountyStatus.Open) return 0;
         uint256 d = b.submissionDeadline;
         uint256 w = b.creatorAssessmentWindowSize;
@@ -150,10 +160,12 @@ contract BountyEscrowLens {
 
     /// @notice The oracle's view of a submission, proxied so callers need no aggregator ABI.
     /// @return started    the evaluation has been started (an aggregation id exists)
-    /// @return hasResult  a valid result exists (finalizeSubmission will succeed)
+    /// @return hasResult  a valid result exists (finalizeSubmission will succeed — unless
+    ///                    nextAction says AWAIT_EARLIER: a passing result that must wait for an
+    ///                    earlier in-flight submission)
     /// @return settled    the aggregator round is complete (fulfilled, or timed out and finalized)
     /// @return failed     the round timed out without a result (failTimedOutSubmission will succeed)
-    /// @return scores     raw likelihoods (see BountyEscrow.SCORE_SCALE), empty if no result
+    /// @return scores     raw likelihoods (see escrow.SCORE_SCALE()), empty if no result
     /// @return justificationCids  the result's justification CIDs, empty if no result
     /// @return startTimestamp     when the round was started on the aggregator (0 if not started)
     function getOracleResult(uint256 bountyId, uint256 submissionId)
@@ -174,40 +186,67 @@ contract BountyEscrowLens {
     }
 
     /// @notice What can be done with a submission RIGHT NOW — the on-chain "diagnose".
-    /// @dev Returns one of:
+    /// @dev Every label is the call that will SUCCEED now (not merely the state the submission
+    ///      is in). Returns one of:
     ///   "START"          — startPreparedSubmission is callable (Prepared: by the hunter;
     ///                      expired-window PendingCreatorApproval: by anyone) — attach requiredPrepay()
+    ///   "AWAIT_SLOT"     — start would revert "evaluation slots full": MAX_ACTIVE_EVALUATIONS
+    ///                      evaluations are in flight on this bounty; retry once any resolves
     ///   "AWAIT_CREATOR"  — in its creator window; only the creator can act (creatorApproveSubmission)
     ///   "AWAIT_ORACLE"   — evaluation in flight, no result yet, round not timed out: wait
-    ///   "FINALIZE"       — a result exists: call finalizeSubmission (may say "retry" on windowed
-    ///                      bounties while an earlier submission is still in evaluation)
-    ///   "FORCE_FAIL"     — round settled with no result: call failTimedOutSubmission
+    ///   "AWAIT_EARLIER"  — a PASSING result exists but finalize would revert "earlier submission
+    ///                      pending": a lower-index submission by another hunter is still in
+    ///                      evaluation (payout priority — see BountyEscrow._hasEarlierPendingByOther).
+    ///                      Retry once it resolves (finalize or force-fail it — anyone may)
+    ///   "FINALIZE"       — call finalizeSubmission: a result exists, or the round timed out with
+    ///                      enough late reveals that settling it yields one (finalize settles it).
+    ///                      On an Awarded/Closed bounty this writes PassedUnpaid/Failed and only
+    ///                      refunds the prepay — there is no payout left to win
+    ///   "FORCE_FAIL"     — round settled (or timed out and will settle) with no result: call
+    ///                      failTimedOutSubmission
     ///   "RECOVER_REFUND" — resolved, but unspent prepay is still recoverable: recoverLeftoverEth
     ///   "DONE"           — resolved, nothing left to do
-    ///   "DEAD"           — never started and can no longer be (deadline passed or bounty not open)
+    ///   "DEAD"           — cannot be started (any more): deadline passed, bounty not open, or an
+    ///                      in-flight submission already has a passing result (start would revert
+    ///                      "another submission already passed" — that one, or an earlier one,
+    ///                      will be paid)
     function nextAction(uint256 bountyId, uint256 submissionId) external view returns (string memory) {
         BountyEscrow.Bounty memory b = escrow.getBounty(bountyId);
         BountyEscrow.Submission memory s = escrow.getSubmission(bountyId, submissionId);
         BountyEscrow.SubmissionStatus st = s.status;
+        bool open = b.status == BountyEscrow.BountyStatus.Open;
 
         if (st == BountyEscrow.SubmissionStatus.Prepared ||
             st == BountyEscrow.SubmissionStatus.PendingCreatorApproval) {
             if (st == BountyEscrow.SubmissionStatus.PendingCreatorApproval &&
                 block.timestamp <= s.creatorWindowEnd) {
-                return b.status == BountyEscrow.BountyStatus.Open ? "AWAIT_CREATOR" : "DEAD";
+                return open ? "AWAIT_CREATOR" : "DEAD";
             }
-            if (b.status != BountyEscrow.BountyStatus.Open ||
-                block.timestamp >= b.submissionDeadline) return "DEAD";
+            if (!open || block.timestamp >= b.submissionDeadline) return "DEAD";
+            uint256[] memory pending = escrow.pendingSubmissionIds(bountyId);
+            if (_anyPassing(bountyId, pending, b.threshold)) return "DEAD";
+            if (pending.length >= escrow.MAX_ACTIVE_EVALUATIONS()) return "AWAIT_SLOT";
             return "START";
         }
         if (st == BountyEscrow.SubmissionStatus.PendingVerdikta) {
-            (, , bool ok) = verdikta.getEvaluation(s.verdiktaAggId);
-            if (ok) return "FINALIZE";
-            (bool settled, , , , , , , , , uint256 startTs) = verdikta.getAggregationStatus(s.verdiktaAggId);
+            (uint256[] memory scores, , bool ok) = verdikta.getEvaluation(s.verdiktaAggId);
+            if (ok) {
+                if (open && _passes(scores, b.threshold) &&
+                    _earlierPendingByOther(bountyId, submissionId, s.hunter)) {
+                    return "AWAIT_EARLIER";
+                }
+                return "FINALIZE";
+            }
+            (bool settled, , bool commitDone, , , uint256 responses, uint256 required, , , uint256 startTs) =
+                verdikta.getAggregationStatus(s.verdiktaAggId);
             if (settled) return "FORCE_FAIL";
-            // Not yet settled on-chain, but past the response timeout: failTimedOutSubmission
-            // settles it itself, so it is already callable.
-            if (block.timestamp >= startTs + verdikta.responseTimeoutSeconds()) return "FORCE_FAIL";
+            // Not yet settled on-chain, but past the response timeout: both finalize and
+            // force-fail settle the round themselves. Which one succeeds depends on whether
+            // enough reveals arrived (then settling yields a result) — mirror the aggregator's
+            // finalizeEvaluationTimeout branches.
+            if (block.timestamp >= startTs + verdikta.responseTimeoutSeconds()) {
+                return (commitDone && responses >= required) ? "FINALIZE" : "FORCE_FAIL";
+            }
             return "AWAIT_ORACLE";
         }
         // Resolved: Failed / PassedPaid / PassedUnpaid
@@ -216,5 +255,41 @@ contract BountyEscrowLens {
             return "RECOVER_REFUND";
         }
         return "DONE";
+    }
+
+    // ------------- Internals (mirror the escrow's rules; views only) -------------
+
+    /// @dev Same interpretation as BountyEscrow._scoreVector: a valid two-entry vector with
+    ///      both entries within SCORE_SCALE, passing iff FUND / SCORE_DIVISOR >= threshold.
+    function _passes(uint256[] memory scores, uint256 threshold) internal view returns (bool) {
+        if (scores.length != 2) return false;
+        if (scores[0] > escrow.SCORE_SCALE() || scores[1] > escrow.SCORE_SCALE()) return false;
+        return scores[1] / escrow.SCORE_DIVISOR() >= threshold;
+    }
+
+    /// @dev Does any in-flight evaluation of the bounty already have a passing result?
+    ///      (BountyEscrow._requireNoPassingSubmission's condition.)
+    function _anyPassing(uint256 bountyId, uint256[] memory pending, uint256 threshold)
+        internal view returns (bool)
+    {
+        for (uint256 i = 0; i < pending.length; i++) {
+            bytes32 aggId = escrow.getSubmission(bountyId, pending[i]).verdiktaAggId;
+            (uint256[] memory scores, , bool ok) = verdikta.getEvaluation(aggId);
+            if (ok && _passes(scores, threshold)) return true;
+        }
+        return false;
+    }
+
+    /// @dev Is a lower-index submission by another hunter still in evaluation?
+    ///      (BountyEscrow._hasEarlierPendingByOther's condition.)
+    function _earlierPendingByOther(uint256 bountyId, uint256 submissionId, address hunter)
+        internal view returns (bool)
+    {
+        uint256[] memory pending = escrow.pendingSubmissionIds(bountyId);
+        for (uint256 i = 0; i < pending.length; i++) {
+            uint256 id = pending[i];
+            if (id < submissionId && escrow.getSubmission(bountyId, id).hunter != hunter) return true;
+        }
+        return false;
     }
 }

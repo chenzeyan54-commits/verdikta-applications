@@ -982,10 +982,10 @@ index 0159b03..38c15f0 100644
     * Pre-validate an evaluation CID before creating a bounty
     * @param {Object} data - { evaluationCid, classId }
 diff --git a/client/src/services/contractService.js b/client/src/services/contractService.js
-index 57a3e45..b8ea86e 100644
+index 57a3e45..3458c46 100644
 --- a/client/src/services/contractService.js
 +++ b/client/src/services/contractService.js
-@@ -17,29 +17,134 @@ import { ethers } from 'ethers';
+@@ -17,29 +17,143 @@ import { ethers } from 'ethers';
  import { config, currentNetwork } from '../config';
  
  // BountyEscrow ABI - only the functions we need to call
@@ -1085,7 +1085,7 @@ index 57a3e45..b8ea86e 100644
 +  ['base cost must be below fee', 'Estimated base cost must be below the max oracle fee.'],
 +  ['bad fee scaling', 'Max fee-based scaling must be between 1 and 1000.'],
 +  ['bad alpha', 'Alpha must be between 0 and 1000.'],
-+  ['bad budget', 'The aggregator returned a zero prepay budget for this fee — choose a different max oracle fee.'],
++  ['bad budget', 'The aggregator currently quotes a zero oracle prepay (its fee ceiling may be 0). Nothing to change on your side — wait, or report it.'],
 +  // Lifecycle
 +  ['deadline passed', 'The submission deadline has passed.'],
 +  ['deadline in past', 'Deadline must be in the future.'],
@@ -1095,8 +1095,17 @@ index 57a3e45..b8ea86e 100644
 +  ['bounty is targeted', 'This bounty is targeted at a specific hunter address.'],
 +  ['wrong eth amount', 'Incorrect ETH amount for the evaluation prepay.'],
 +  ['only hunter', 'Only the submitting hunter can start this evaluation.'],
-+  ['not prepared', 'Submission is not in the Prepared state.'],
-+  ['not pending', 'Submission is no longer pending — it has already been finalized.'],
++  ['already started or resolved', 'This submission has already been started (or is already resolved) — nothing to start.'],
++  ['not pending', 'This submission is not in evaluation — it was never started, or it has already been resolved. Check nextAction.'],
++  ['no oracle result', 'The oracle round ended without a result — use "Fail timed-out submission" (failTimedOutSubmission) instead of finalizing.'],
++  ['not resolved', 'The prepay can only be recovered once the submission has resolved (Failed / PassedPaid / PassedUnpaid).'],
++  ['never started', 'This submission was never started, so it holds no oracle prepay to recover.'],
++  ['nothing to recover', 'No unspent prepay is waiting for this submission.'],
++  ['withdraw failed', 'Your wallet rejected the ETH transfer — withdraw from an address that can receive ETH.'],
++  ['nothing to withdraw', 'Nothing is owed to this address on the pull ledger.'],
++  ['unknown function', 'The contract has no such function — check the function name against the merged ABI.'],
++  ['self only', 'lensDelegate is internal plumbing for the contract\'s read views and cannot be called directly.'],
++  ['reentrant', 'Re-entrant call rejected.'],
 +  ['eth must equal max payment', 'The ETH sent must equal the larger of the creator and arbiter payments.'],
 +  ['window required when payments differ', 'Approval window is required when creator and arbiter payments differ.'],
 +  ['no creator payment', 'Creator approval payment must be > 0.'],
@@ -1127,7 +1136,7 @@ index 57a3e45..b8ea86e 100644
  // ============================================================================
  // PERFORMANCE: Debounce utility
  // ============================================================================
-@@ -99,6 +204,10 @@ class ContractService {
+@@ -99,6 +213,10 @@ class ContractService {
      // Cache for expensive reads
      this._statusCache = new Map();
      this._statusCacheTTL = 5000; // 5 seconds
@@ -1138,7 +1147,7 @@ index 57a3e45..b8ea86e 100644
    }
  
    // ==========================================================================
-@@ -226,14 +335,63 @@ class ContractService {
+@@ -226,14 +344,63 @@ class ContractService {
    // ==========================================================================
  
    /**
@@ -1204,7 +1213,7 @@ index 57a3e45..b8ea86e 100644
      const winHrs = Number(submissionWindowHours);
      if (!Number.isFinite(winHrs) || winHrs <= 0) throw new Error('Submission window (hours) must be > 0');
      const thrNum = Number(threshold);
-@@ -244,6 +402,9 @@ class ContractService {
+@@ -244,6 +411,9 @@ class ContractService {
      // Determine if this is a windowed bounty
      const hasApprovalWindow = creatorAssessmentWindowHours != null && Number(creatorAssessmentWindowHours) > 0;
  
@@ -1214,7 +1223,7 @@ index 57a3e45..b8ea86e 100644
      try {
        // Encode exact solidity widths
        const now = Math.floor(Date.now() / 1000);
-@@ -257,67 +418,52 @@ class ContractService {
+@@ -257,67 +427,52 @@ class ContractService {
        if ((classId64 & ~mask64) !== 0n) throw new Error('classId exceeds uint64');
        if ((thresh8 & ~mask8) !== 0n) throw new Error('threshold exceeds uint8');
  
@@ -1324,7 +1333,7 @@ index 57a3e45..b8ea86e 100644
  
        // Dry-run to surface revert reasons
        try {
-@@ -327,11 +473,8 @@ class ContractService {
+@@ -327,11 +482,8 @@ class ContractService {
          const msg = (decoded || e?.message || '').toLowerCase();
          if (msg.includes('no eth') || msg.includes('noeth')) throw new Error('Bounty requires ETH value (msg.value > 0)');
          if (msg.includes('empty evaluationcid') || msg.includes('emptyevaluationcid')) throw new Error('Evaluation CID is empty');
@@ -1338,7 +1347,7 @@ index 57a3e45..b8ea86e 100644
          throw e;
        }
  
-@@ -372,21 +515,24 @@ class ContractService {
+@@ -372,21 +524,24 @@ class ContractService {
    /**
     * STEP 1: Prepare a submission (deploys EvaluationWallet)
     *
@@ -1374,7 +1383,7 @@ index 57a3e45..b8ea86e 100644
  
      try {
        console.log('🔍 Preparing submission...', {
-@@ -395,15 +541,20 @@ class ContractService {
+@@ -395,15 +550,20 @@ class ContractService {
          hunterCid: hunterCid?.substring(0, 20) + '...'
        });
  
@@ -1401,7 +1410,7 @@ index 57a3e45..b8ea86e 100644
        );
  
        console.log('📤 Transaction sent:', tx.hash);
-@@ -438,6 +589,8 @@ class ContractService {
+@@ -438,6 +598,8 @@ class ContractService {
        if (error.code === 'ACTION_REJECTED') {
          throw new Error('Transaction rejected by user');
        }
@@ -1410,7 +1419,7 @@ index 57a3e45..b8ea86e 100644
        throw error;
      }
    }
-@@ -445,23 +598,37 @@ class ContractService {
+@@ -445,23 +607,37 @@ class ContractService {
    /**
     * STEP 2: Start the prepared submission (triggers Verdikta evaluation).
     *
@@ -1456,7 +1465,7 @@ index 57a3e45..b8ea86e 100644
  
      try {
        console.log('🔍 Starting submission evaluation...', {
-@@ -478,6 +645,11 @@ class ContractService {
+@@ -478,6 +654,11 @@ class ContractService {
          if (msg.includes('only hunter')) throw new Error('Only the submitting hunter can start this evaluation');
          if (msg.includes('creator window still open')) throw new Error('The creator approval window is still open');
          if (msg.includes('already passed')) throw new Error('Another submission already passed — finalize it first');
@@ -1468,7 +1477,7 @@ index 57a3e45..b8ea86e 100644
          throw e;
        }
  
-@@ -514,6 +686,21 @@ class ContractService {
+@@ -514,6 +695,21 @@ class ContractService {
      try {
        console.log('🔍 Finalizing submission...', { bountyId, submissionId });
  
@@ -1490,7 +1499,7 @@ index 57a3e45..b8ea86e 100644
        const tx = await this.contract.finalizeSubmission(bountyId, submissionId);
        console.log('📤 Transaction sent:', tx.hash);
  
-@@ -535,6 +722,9 @@ class ContractService {
+@@ -535,6 +731,9 @@ class ContractService {
        if (error.code === 'ACTION_REJECTED') {
          throw new Error('Transaction rejected by user');
        }
@@ -1500,7 +1509,7 @@ index 57a3e45..b8ea86e 100644
        throw error;
      }
    }
-@@ -564,11 +754,19 @@ class ContractService {
+@@ -564,11 +763,24 @@ class ContractService {
        if (msg.includes('not pending') || msg.includes('notpending') || msg.includes('not pendingverdikta')) {
          return { success: false, reason: 'already_terminal' };
        }
@@ -1508,6 +1517,11 @@ index 57a3e45..b8ea86e 100644
 +      // NOT a failure and NOT a force-fail candidate (a result exists and is kept).
 +      if (msg.includes('earlier submission pending')) {
 +        return { success: false, reason: 'earlier_pending', retryable: true, canFallbackToTimeout: false,
++                 message: friendlyRevertMessage(msg) };
++      }
++      // The round is settled with no result: finalize can never succeed — force-fail is the call.
++      if (msg.includes('no oracle result')) {
++        return { success: false, reason: 'oracle_no_result', canFallbackToTimeout: true,
 +                 message: friendlyRevertMessage(msg) };
 +      }
        if (msg.includes('verdikta') || msg.includes('not ready') || msg.includes('notready') || msg.includes('evaluation')) {
@@ -1521,7 +1535,7 @@ index 57a3e45..b8ea86e 100644
      }
  
      // Dry-run passed — send the real transaction
-@@ -605,6 +803,24 @@ class ContractService {
+@@ -605,6 +817,24 @@ class ContractService {
      try {
        console.log('⏱️ Failing timed-out submission...', { bountyId, submissionId });
  
@@ -1546,7 +1560,7 @@ index 57a3e45..b8ea86e 100644
        const tx = await this.contract.failTimedOutSubmission(bountyId, submissionId);
        console.log('📤 Transaction sent:', tx.hash);
  
-@@ -626,6 +842,53 @@ class ContractService {
+@@ -626,6 +856,53 @@ class ContractService {
        if (error.code === 'ACTION_REJECTED') {
          throw new Error('Transaction rejected by user');
        }
@@ -1600,7 +1614,7 @@ index 57a3e45..b8ea86e 100644
        throw error;
      }
    }
-@@ -674,6 +937,8 @@ class ContractService {
+@@ -674,6 +951,8 @@ class ContractService {
        if (msg.includes('active evaluation') || msg.includes('activeevaluation')) {
          throw new Error('Cannot close - active evaluations in progress. Finalize them first.');
        }
@@ -1609,7 +1623,7 @@ index 57a3e45..b8ea86e 100644
  
        throw error;
      }
-@@ -700,8 +965,10 @@ class ContractService {
+@@ -700,8 +979,10 @@ class ContractService {
          if (msg.includes('only creator')) throw new Error('Only the bounty creator can approve submissions');
          if (msg.includes('window expired')) throw new Error('The creator approval window has expired');
          if (msg.includes('not pending creator approval')) throw new Error('Submission is not pending creator approval');
@@ -1621,7 +1635,7 @@ index 57a3e45..b8ea86e 100644
          throw e;
        }
  
-@@ -803,15 +1070,20 @@ class ContractService {
+@@ -803,15 +1084,20 @@ class ContractService {
  
          return {
            hunter: sub.hunter,
@@ -1644,7 +1658,7 @@ index 57a3e45..b8ea86e 100644
          };
  
        } catch (error) {
-@@ -841,17 +1113,12 @@ class ContractService {
+@@ -841,17 +1127,12 @@ class ContractService {
      }
  
      try {
@@ -1666,7 +1680,7 @@ index 57a3e45..b8ea86e 100644
  
        // Status codes: 0=Prepared, 1=PendingVerdikta, 2=Failed, 3=PassedPaid, 4=PassedUnpaid, 5=PendingCreatorApproval
        if (statusCode !== 0 && statusCode !== 1) {
-@@ -864,32 +1131,8 @@ class ContractService {
+@@ -864,32 +1145,8 @@ class ContractService {
          return { ready: false };
        }
  
@@ -1701,7 +1715,7 @@ index 57a3e45..b8ea86e 100644
        let scores, justCids, ok;
        try {
          [scores, justCids, ok] = await verdikta.getEvaluation(verdiktaAggId);
-@@ -931,6 +1174,122 @@ class ContractService {
+@@ -931,6 +1188,122 @@ class ContractService {
      }
    }
  
@@ -1824,7 +1838,7 @@ index 57a3e45..b8ea86e 100644
    // ==========================================================================
    // CONNECTION STATE
    // ==========================================================================
-@@ -965,6 +1324,7 @@ class ContractService {
+@@ -965,6 +1338,7 @@ class ContractService {
      this.contract = null;
      this.userAddress = null;
      this._readOnlyProvider = null;
@@ -1832,7 +1846,7 @@ index 57a3e45..b8ea86e 100644
      this.clearCache();
    }
  }
-@@ -1027,7 +1387,8 @@ export async function resolveBountyIdByStateLoose({
+@@ -1027,7 +1401,8 @@ export async function resolveBountyIdByStateLoose({
    const provider = getSharedProvider();
    const abi = [
      "function bountyCount() view returns (uint256)",

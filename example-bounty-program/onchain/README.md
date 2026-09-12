@@ -49,7 +49,7 @@ See `.env.example`. Required:
 npm run deploy:sepolia     # or deploy:base
 ```
 
-After deployment, the new BountyEscrow address is printed to console and saved to `deployments/`. Update `BOUNTY_ESCROW_ADDRESS_*` in both `server/.env` and `client/.env`, then restart the server and rebuild the client.
+After deployment, the new BountyEscrow address is printed to console and saved to `deployments/`. Update `BOUNTY_ESCROW_ADDRESS_*` in both `server/.env` and `client/.env`, then restart the server and rebuild the client. If the ABI changed, that is not enough — follow the release's cutover runbook in `../deploy/` (currently `../deploy/CUTOVER-2026-09-12.md`), which also applies the off-chain migration patch, bumps `deploymentBlocks`, and resets the job data.
 
 ## Project context
 

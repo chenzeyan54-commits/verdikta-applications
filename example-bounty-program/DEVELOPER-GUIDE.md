@@ -173,6 +173,8 @@ npm run deploy:sepolia     # or deploy:base
 # Deployer key from .env, RPC from hardhat.config.js
 ```
 
+For a **breaking** contract revision (any ABI change) do not deploy in isolation — follow the cutover runbook in `deploy/` for that release (currently `deploy/CUTOVER-2026-09-12.md`): close out the old contract's open bounties, deploy testnet then mainnet, stop services, apply the off-chain migration patch, flip the addresses and `deploymentBlocks`, archive and reset `jobs.json` (bounty IDs restart at 0 on a new contract and `jobId == bountyId`), restart, smoke-test. The runbook has a rollback section.
+
 After deployment:
 1. Note the new BountyEscrow address from console output. The deploy script also auto-writes it to `onchain/deployments/{chainId}-{network}.json`.
 2. Update `BOUNTY_ESCROW_ADDRESS_*` in `server/.env` and `VITE_BOUNTY_ESCROW_ADDRESS_*` in `client/.env` to the new address for this network.
@@ -199,7 +201,7 @@ cmp /tmp/abi_old.json /tmp/abi_new.json && echo "identical ABI — drop-in"
 
 Identical ABI means internal-logic-only changes: safe to deploy against the existing off-chain code.
 
-**The September 2026 revision is NOT drop-in.** It is a breaking release: the contract must be deployed to a new address AND every off-chain ABI copy must flip in the same release (see the cutover patch and checklist). What changed in the interface:
+**The September 2026 revision is NOT drop-in.** It is a breaking release: the contract must be deployed to a new address AND every off-chain ABI copy must flip in the same release. The step-by-step procedure is `deploy/CUTOVER-2026-09-12.md`, and the off-chain code migration is `deploy/cutover-2026-09-12.patch` (21 server/client/script files, verified with `git apply --check` and the server test suite). The patch is applied at cutover with `git apply`, never earlier: the client build-watch publishes any edit to the live site immediately, and the migrated code encodes the new ABI. Until then the migrated code exists in applied form only in a throw-away git worktree (`../example-bounty-program-cutover`, listed in `.git/info/exclude`), which the runbook removes at the end. What changed in the interface:
 
 | Piece | Before | After |
 |---|---|---|

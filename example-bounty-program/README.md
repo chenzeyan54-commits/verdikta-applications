@@ -367,7 +367,7 @@ Open issues and pull requests at [github.com/verdikta/verdikta-applications](htt
 
 ## Changelog
 
-### v0.5.0 (September 2026) — BountyEscrow hardening (breaking contract revision, redeploy + ABI cutover)
+### v0.5.0 (September 2026) — BountyEscrow hardening (breaking contract revision, redeploy + ABI cutover; procedure in `deploy/CUTOVER-2026-09-12.md`)
 - **Breaking ABI:** `createBounty` is one function taking a `CreateParams` struct (no more 5-/8-argument overloads) and includes creator-chosen oracle settings; `prepareSubmission(bountyId, evaluationCid, hunterCid)` — the hunter supplies nothing that reaches the aggregator except their work CID; `getBounty` gained a nested `oracle` struct; `getSubmission` lost the echo fields (`evaluationCid`, `maxOracleFee`, `alpha`, `estimatedBaseCost`, `maxFeeBasedScaling`, `addendum`) and gained `funder`; `SubmissionFinalized` gained `bool paid`; `SubmissionPrepared` reordered (`ethMaxBudget` before the `evaluationCid` string); legacy LINK interface and mock removed
 - Force-fail (`failTimedOutSubmission`) gated on the aggregator's round state instead of a 10-minute timer; it can never discard a passing result
 - Malformed oracle score vectors (wrong length, or any entry above 1,000,000) finalize as `Failed` with a refund instead of reverting or being clamped into a pass; one interpreter serves finalize and the already-passed checks

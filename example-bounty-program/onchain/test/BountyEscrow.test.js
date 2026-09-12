@@ -1,5 +1,5 @@
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const { ethers, network } = require("hardhat");
 const { loadFixture, time } = require("@nomicfoundation/hardhat-network-helpers");
 const { mergedAbi } = require("../deploy/helpers");
 
@@ -3408,14 +3408,20 @@ describe("BountyEscrow", function () {
           await loadFixture(deployBountyEscrowFixture);
         const { bountyId } = await createWindowedBounty(bountyEscrow, creator);
 
-        // Sub 0: creator approves
+        // Sub 0 (hunter) and sub 1 (hunter2) both prepared; creator approves sub 0
         const sub0 = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+        const sub1 = await prepareDefaultSubmission(bountyEscrow, hunter2, bountyId);
         await bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, sub0.submissionId);
+        expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(1); // Awarded
 
-        // Bounty is now Awarded. If sub 1 existed, starting it would fail.
-        // But we can't even prepare sub 1 since bounty is Awarded.
-        const bounty = await bountyEscrow.getBounty(bountyId);
-        expect(bounty.status).to.equal(1); // Awarded
+        // Sub 1's window expires; starting it must fail — the bounty is no longer open
+        await time.increase(WINDOW_SIZE + 1);
+        expect(await bountyEscrow.nextAction(bountyId, sub1.submissionId)).to.equal("DEAD");
+        await expect(
+          bountyEscrow.connect(hunter2).startPreparedSubmission(bountyId, sub1.submissionId, { value: sub1.ethMaxBudget })
+        ).to.be.revertedWith("bounty not open");
+        // ...and nothing further can be prepared
+        await expect(prepareDefaultSubmission(bountyEscrow, hunter2, bountyId)).to.be.revertedWith("bounty not open");
       });
     });
 
@@ -4217,6 +4223,194 @@ describe("BountyEscrow", function () {
       await bountyEscrow.closeExpiredBounty(bountyId);
       expect(await bountyEscrow.getEffectiveBountyStatus(bountyId)).to.equal("CLOSED");
       expect(await bountyEscrow.prepareCutoff(bountyId)).to.equal(0);
+    });
+  });
+  // =========================================================================
+  describe("Coverage: guards and branches no other test reaches", function () {
+    const REENTRANT = ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(["string"], ["reentrant"])
+        .replace("0x", "0x08c379a0")
+    ); // keccak256(Error("reentrant")) — the raw revert data of a nonReentrant rejection
+
+    async function reentrantHunter(bountyEscrow, verdiktaAggregator, bountyId, attackData) {
+      const R = await ethers.getContractFactory("MockReentrantRecipient");
+      const r = await R.deploy();
+      const escrowAddr = await bountyEscrow.getAddress();
+      const [funder] = await ethers.getSigners();
+      await funder.sendTransaction({ to: await r.getAddress(), value: ethers.parseEther("0.01") });
+      await r.prepare(escrowAddr, bountyId, EVAL_CID, mkCid("reenter"));
+      const subId = await r.lastSubId();
+      await r.start(escrowAddr, bountyId, subId);
+      await r.setAttack(escrowAddr, attackData(subId));
+      const sub = await bountyEscrow.getSubmission(bountyId, subId);
+      await verdiktaAggregator.setEvaluation(sub.verdiktaAggId, PASSING_SCORES, JUST_CIDS, true);
+      return { r, subId };
+    }
+
+    it("reentrancy guard: a payout recipient re-entering finalizeSubmission is rejected with 'reentrant' and still paid", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { r, subId } = await reentrantHunter(bountyEscrow, verdiktaAggregator, bountyId,
+        (sid) => bountyEscrow.interface.encodeFunctionData("finalizeSubmission", [bountyId, sid]));
+      const before = await ethers.provider.getBalance(await r.getAddress());
+      const tx = await bountyEscrow.finalizeSubmission(bountyId, subId);
+      await expect(tx).to.emit(bountyEscrow, "PayoutSent").withArgs(bountyId, await r.getAddress(), BOUNTY_WEI);
+      await expect(tx).to.not.emit(bountyEscrow, "PaymentDeferred");
+      expect(await r.attempted()).to.equal(true);
+      expect(await r.attackOk()).to.equal(false);
+      expect(await r.attackReasonHash()).to.equal(REENTRANT);
+      expect((await ethers.provider.getBalance(await r.getAddress())) - before).to.be.greaterThanOrEqual(BOUNTY_WEI);
+      expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(1); // Awarded exactly once
+    });
+
+    it("reentrancy guard: re-entering withdraw() and closeExpiredBounty() from a payout is rejected too", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { r, subId } = await reentrantHunter(bountyEscrow, verdiktaAggregator, bountyId,
+        () => bountyEscrow.interface.encodeFunctionData("withdraw", []));
+      await bountyEscrow.finalizeSubmission(bountyId, subId);
+      expect(await r.attackOk()).to.equal(false);
+      expect(await r.attackReasonHash()).to.equal(REENTRANT);
+
+      const b2 = await createDefaultBounty(bountyEscrow, creator);
+      const s2 = await reentrantHunter(bountyEscrow, verdiktaAggregator, b2.bountyId,
+        () => bountyEscrow.interface.encodeFunctionData("closeExpiredBounty", [b2.bountyId]));
+      await bountyEscrow.finalizeSubmission(b2.bountyId, s2.subId);
+      expect(await s2.r.attackOk()).to.equal(false);
+      expect(await s2.r.attackReasonHash()).to.equal(REENTRANT);
+    });
+
+    it("withdraw(): 'nothing to withdraw' with an empty ledger; 'withdraw failed' when the claimant rejects ETH", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, other } = await loadFixture(deployBountyEscrowFixture);
+      await expect(bountyEscrow.connect(other).withdraw()).to.be.revertedWith("nothing to withdraw");
+
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const Grief = await ethers.getContractFactory("MockRejectingHunter");
+      const grief = await Grief.deploy();
+      const escrowAddr = await bountyEscrow.getAddress();
+      await other.sendTransaction({ to: await grief.getAddress(), value: ethers.parseEther("0.01") });
+      await grief.prepare(escrowAddr, bountyId, EVAL_CID, mkCid("grief"));
+      const subId = await grief.lastSubId();
+      await grief.start(escrowAddr, bountyId, subId);
+      await grief.setRejecting(true);
+      const sub = await bountyEscrow.getSubmission(bountyId, subId);
+      await verdiktaAggregator.setEvaluation(sub.verdiktaAggId, PASSING_SCORES, JUST_CIDS, true);
+      await expect(bountyEscrow.finalizeSubmission(bountyId, subId))
+        .to.emit(bountyEscrow, "PaymentDeferred").withArgs(await grief.getAddress(), BOUNTY_WEI);
+      expect(await bountyEscrow.withdrawable(await grief.getAddress())).to.equal(BOUNTY_WEI);
+      // Still rejecting: the claim itself fails and the ledger is untouched
+      await expect(grief.claim(escrowAddr)).to.be.revertedWith("withdraw failed");
+      expect(await bountyEscrow.withdrawable(await grief.getAddress())).to.equal(BOUNTY_WEI);
+      await grief.setRejecting(false);
+      await expect(grief.claim(escrowAddr)).to.emit(bountyEscrow, "Withdrawn").withArgs(await grief.getAddress(), BOUNTY_WEI);
+      await expect(grief.claim(escrowAddr)).to.be.revertedWith("nothing to withdraw");
+    });
+
+    it("recoverLeftoverEth: 'not resolved' for an unstarted submission, 'never started' for a creator-approved one", async function () {
+      const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, { windowSize: 3600, targetHunter: hunter.address });
+      const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await expect(bountyEscrow.recoverLeftoverEth(bountyId, submissionId)).to.be.revertedWith("not resolved");
+      await bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, submissionId);
+      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(3); // PassedPaid, never started
+      await expect(bountyEscrow.recoverLeftoverEth(bountyId, submissionId)).to.be.revertedWith("never started");
+      expect(await bountyEscrow.nextAction(bountyId, submissionId)).to.equal("DONE");
+    });
+
+    it("'bad budget': a zero aggregator quote is refused at create, prepare and start", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator);
+      const { submissionId } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      await verdiktaAggregator.setFeeMultiplier(0);
+      await expect(createDefaultBounty(bountyEscrow, creator)).to.be.revertedWith("bad budget");
+      await expect(prepareDefaultSubmission(bountyEscrow, hunter, bountyId)).to.be.revertedWith("bad budget");
+      expect(await bountyEscrow.requiredPrepay(bountyId)).to.equal(0);
+      await expect(
+        bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: 0 })
+      ).to.be.revertedWith("bad budget");
+      // Quote restored → the prepared submission is not stranded
+      await verdiktaAggregator.setFeeMultiplier(3);
+      await expect(
+        bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: await bountyEscrow.requiredPrepay(bountyId) })
+      ).to.emit(bountyEscrow, "WorkSubmitted");
+    });
+
+    it("createBounty: 'no arbiter payment' (checked before the ETH-amount rule)", async function () {
+      const { bountyEscrow, creator } = await loadFixture(deployBountyEscrowFixture);
+      const deadline = (await time.latest()) + 86400;
+      await expect(
+        bountyEscrow.connect(creator).createBounty(
+          bountyParams({ creatorPay: BOUNTY_WEI, arbiterPay: 0n, windowSize: 3600 }, deadline), { value: BOUNTY_WEI })
+      ).to.be.revertedWith("no arbiter payment");
+    });
+
+    it("EvaluationWallet: only its escrow may operate it, and it starts at most once", async function () {
+      const { bountyEscrow, verdiktaAggregator, owner, hunter, other } = await loadFixture(deployBountyEscrowFixture);
+      // A wallet created by the escrow rejects strangers
+      const { bountyId } = await createDefaultBounty(bountyEscrow, owner);
+      const { evalWallet } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      const w = await ethers.getContractAt("EvaluationWallet", evalWallet);
+      await expect(w.connect(other).refundLeftoverEth()).to.be.revertedWith("Not bounty");
+      await expect(
+        w.connect(other).startEvaluation([EVAL_CID, HUNTER_CID], "", ALPHA, MAX_ORACLE_FEE, EST_BASE_COST, MAX_FEE_SCALING, CLASS_ID,
+          { value: MAX_ORACLE_FEE * 3n })
+      ).to.be.revertedWith("Not bounty");
+      // A wallet whose "bounty contract" is a test signer can be driven directly
+      const W = await ethers.getContractFactory("EvaluationWallet");
+      const direct = await W.deploy(owner.address, hunter.address, await verdiktaAggregator.getAddress());
+      const args = [[EVAL_CID, HUNTER_CID], "", ALPHA, MAX_ORACLE_FEE, EST_BASE_COST, MAX_FEE_SCALING, CLASS_ID];
+      await direct.connect(owner).startEvaluation(...args, { value: MAX_ORACLE_FEE * 3n });
+      expect(await direct.started()).to.equal(true);
+      await expect(direct.connect(owner).startEvaluation(...args, { value: MAX_ORACLE_FEE * 3n }))
+        .to.be.revertedWith("Already started");
+    });
+
+    it("same block at the window end: creator approval wins over a start regardless of tx order", async function () {
+      const { bountyEscrow, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const WINDOW = 3600;
+      const { bountyId } = await createDefaultBounty(bountyEscrow, creator, { windowSize: WINDOW });
+      const { submissionId, ethMaxBudget } = await prepareDefaultSubmission(bountyEscrow, hunter, bountyId);
+      const windowEnd = (await bountyEscrow.getSubmission(bountyId, submissionId)).creatorWindowEnd;
+
+      await network.provider.send("evm_setAutomine", [false]);
+      try {
+        await time.setNextBlockTimestamp(Number(windowEnd));
+        // Hunter's start is submitted FIRST (higher gas price too), creator's approve second
+        // Explicit gas limits: a failing estimate would otherwise default to the block gas
+        // limit and crowd the second tx out of the block.
+        const startTx = await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: ethMaxBudget, gasPrice: 20_000_000_000n, gasLimit: 700_000 });
+        const approveTx = await bountyEscrow.connect(creator).creatorApproveSubmission(bountyId, submissionId, { gasPrice: 10_000_000_000n, gasLimit: 300_000 });
+        await network.provider.send("evm_mine", []);
+        const startRc = await ethers.provider.getTransactionReceipt(startTx.hash);
+        const approveRc = await ethers.provider.getTransactionReceipt(approveTx.hash);
+        expect(startRc.blockNumber).to.equal(approveRc.blockNumber);
+        expect(startRc.status).to.equal(0);    // "creator window still open" at ts == windowEnd
+        expect(approveRc.status).to.equal(1);
+      } finally {
+        await network.provider.send("evm_setAutomine", [true]);
+      }
+      expect((await bountyEscrow.getBounty(bountyId)).status).to.equal(1); // Awarded
+      expect((await bountyEscrow.getSubmission(bountyId, submissionId)).status).to.equal(3);
+      expect(await bountyEscrow.activeEvaluations(bountyId)).to.equal(0); // the start never took effect
+    });
+
+    it("gas ceilings for the four hot paths (regression guard)", async function () {
+      const { bountyEscrow, verdiktaAggregator, creator, hunter } = await loadFixture(deployBountyEscrowFixture);
+      const deadline = (await time.latest()) + 86400;
+      const cRc = await (await bountyEscrow.connect(creator).createBounty(bountyParams({}, deadline), { value: BOUNTY_WEI })).wait();
+      const bountyId = cRc.logs.find((l) => l.fragment && l.fragment.name === "BountyCreated").args.bountyId;
+      const pTx = await bountyEscrow.connect(hunter).prepareSubmission(bountyId, EVAL_CID, HUNTER_CID);
+      const pRc = await pTx.wait();
+      const submissionId = pRc.logs.find((l) => l.fragment && l.fragment.name === "SubmissionPrepared").args.submissionId;
+      const sRc = await (await bountyEscrow.connect(hunter).startPreparedSubmission(bountyId, submissionId, { value: await bountyEscrow.requiredPrepay(bountyId) })).wait();
+      const aggId = sRc.logs.find((l) => l.fragment && l.fragment.name === "WorkSubmitted").args[2];
+      await verdiktaAggregator.setEvaluation(aggId, PASSING_SCORES, JUST_CIDS, true);
+      const fRc = await (await bountyEscrow.finalizeSubmission(bountyId, submissionId)).wait();
+      // Measured 2026-09-12: create 384k, prepare 650k, start 440k, finalize 191k. Ceilings leave ~15%.
+      expect(cRc.gasUsed).to.be.lessThan(450_000n);
+      expect(pRc.gasUsed).to.be.lessThan(750_000n);
+      expect(sRc.gasUsed).to.be.lessThan(510_000n);
+      expect(fRc.gasUsed).to.be.lessThan(230_000n);
     });
   });
 });

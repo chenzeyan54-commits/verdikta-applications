@@ -138,7 +138,7 @@ function Agents({ walletState }) {
     {
       method: 'PATCH',
       path: '/api/jobs/:jobId/bountyId',
-      description: 'REQUIRED after on-chain deployment. Links the API job to the on-chain bounty by setting onChain=true and reconciling the jobId. Without this call, the bounty may be orphaned when it expires. The sync service can auto-link via evaluationCid within ~5 minutes, but calling this endpoint is instant and reliable.',
+      description: 'REQUIRED after on-chain deployment. Links the API job to the on-chain bounty by setting onChain=true and reconciling the jobId. Without this call, the bounty may be orphaned when it expires. The sync service can auto-link via evaluationCid within ~5 minutes, but calling this endpoint is instant and reliable. Send txHash: the server identifies the job by the receipt (safe with parallel creates whose on-chain ids land out of order) and retries a not-yet-indexed receipt for several seconds; a 409 or 503 with retryAfterSeconds means retry the same call, nothing changed. Read the final jobId from the response.',
       params: 'bountyId (on-chain ID from BountyCreated event), txHash, blockNumber (optional)'
     },
     {

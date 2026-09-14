@@ -1660,24 +1660,36 @@ router.post('/:jobId/submit/approve', async (req, res) => {
 // Load-balanced RPC nodes can lag a block or two behind the receipt a caller just got,
 // so getSubmission may answer the escrow's "bad submissionId" revert for a submission
 // that exists. Retry that one case briefly before believing it; any other error is real.
-async function readChainSubmissionWithRetry(bountyId, submissionId, {
+// Generic form: retry `fn` while it either throws a revert whose reason contains
+// `revertSubstring`, or resolves to null/undefined when `retryOnEmpty` is set (a receipt the
+// node has not indexed yet). Everything else is a real error and is thrown immediately.
+async function readWithLagRetry(fn, { revertSubstring = null, retryOnEmpty = false, label = 'chain read',
   attempts = Number(process.env.CHAIN_READ_RETRIES || 6),
   delayMs = Number(process.env.CHAIN_READ_RETRY_MS || 1500),
 } = {}) {
-  const contract = getContractService().contract;
-  let lastErr;
+  let last;
   for (let i = 1; i <= attempts; i++) {
     try {
-      return await contract.getSubmission(Number(bountyId), Number(submissionId));
+      const v = await fn();
+      if (!(retryOnEmpty && (v === null || v === undefined))) return v;
+      last = null;
     } catch (e) {
-      lastErr = e;
+      last = e;
       const reason = (e.reason || e.shortMessage || e.message || '').toLowerCase();
-      if (!reason.includes('bad submissionid') || i === attempts) throw e;
-      logger.debug('[chain] getSubmission reverted "bad submissionId" — RPC may lag the receipt; retrying', { bountyId, submissionId, attempt: i });
-      await new Promise((r) => setTimeout(r, delayMs));
+      if (!(revertSubstring && reason.includes(revertSubstring))) throw e;
     }
+    if (i === attempts) break;
+    logger.debug(`[chain] ${label}: not visible yet (RPC may lag the receipt); retrying`, { attempt: i });
+    await new Promise((r) => setTimeout(r, delayMs));
   }
-  throw lastErr;
+  if (last instanceof Error) throw last;
+  return last; // null: retried out on an empty result
+}
+
+async function readChainSubmissionWithRetry(bountyId, submissionId, opts = {}) {
+  const contract = getContractService().contract;
+  return readWithLagRetry(() => contract.getSubmission(Number(bountyId), Number(submissionId)),
+    { revertSubstring: 'bad submissionid', label: `getSubmission(${bountyId},${submissionId})`, ...opts });
 }
 
 const SUB_STATUS_MAP = { 0: 'Prepared', 1: 'PENDING_EVALUATION', 2: 'REJECTED', 3: 'APPROVED', 4: 'APPROVED', 5: 'PendingCreatorApproval' };
@@ -5426,18 +5438,25 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     // Verify the txHash actually emitted a BountyCreated event with the claimed bountyId
     // on the current contract. This prevents phantom entries from old/wrong contracts.
     const currentContract = jobStorage.getCurrentContractAddress();
+    let eventEvaluationCid = null; // from the receipt's BountyCreated — identifies the job authoritatively
     if (txHash && currentContract) {
       try {
         const contractService = getContractService();
         const provider = contractService.provider;
-        const receipt = await provider.getTransactionReceipt(txHash);
+        // Lag-tolerant: a load-balanced RPC node can trail the receipt the caller just got
+        // by a block or two and answer null. Retry briefly instead of proceeding unverified
+        // (an unverified claim once let a parallel-create link delete a live sibling job).
+        const receipt = await readWithLagRetry(() => provider.getTransactionReceipt(txHash),
+          { retryOnEmpty: true, label: `getTransactionReceipt(${txHash.slice(0, 10)})` });
 
         if (!receipt) {
-          return res.status(400).json({
+          return res.status(409).json({
             success: false,
-            error: 'Transaction not found on chain',
-            details: `Could not fetch receipt for txHash ${txHash}. The tx may not be confirmed yet.`,
-            fix: 'Wait for transaction confirmation and try again.'
+            code: ErrorCodes.ONCHAIN_TX_NOT_FOUND,
+            error: 'Transaction not visible on chain yet',
+            details: `No receipt for txHash ${txHash} after retrying for several seconds. The tx may still be pending, or the RPC node is behind.`,
+            fix: 'Retry this PATCH in a few seconds with the same body. Nothing was changed.',
+            retryAfterSeconds: 3
           });
         }
 
@@ -5453,6 +5472,7 @@ router.patch('/:jobId/bountyId', async (req, res) => {
             if (parsed?.name === 'BountyCreated') {
               foundBountyId = Number(parsed.args.bountyId);
               emittingContract = log.address.toLowerCase();
+              eventEvaluationCid = parsed.args.evaluationCid || null;
               break;
             }
           } catch {}
@@ -5487,11 +5507,18 @@ router.patch('/:jobId/bountyId', async (req, res) => {
 
         logger.info('[jobs/bountyId] txHash verified', { txHash, foundBountyId, emittingContract });
       } catch (verifyErr) {
-        // If verification fails (e.g., RPC issue), log warning but allow the PATCH to proceed
-        // so we don't break the flow on transient RPC errors. The sync service will catch
-        // mismatches later via the stale-detection sweep.
-        logger.warn('[jobs/bountyId] txHash verification failed (proceeding anyway)', {
+        // Do NOT proceed on an unverified claim: with several bounties created in parallel
+        // the caller's (jobId → bountyId) pairing is exactly what needs checking, and an
+        // unchecked one can renumber or displace a sibling job. Ask for a retry instead.
+        logger.warn('[jobs/bountyId] txHash verification failed — asking the caller to retry', {
           txHash, error: verifyErr.message
+        });
+        return res.status(503).json({
+          success: false,
+          error: 'Could not verify the transaction right now',
+          details: `RPC error while reading txHash ${txHash}: ${verifyErr.message}`,
+          fix: 'Retry this PATCH in a few seconds with the same body. Nothing was changed.',
+          retryAfterSeconds: 3
         });
       }
     }
@@ -5503,7 +5530,8 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     let chainBounty = null;
     try {
       const cs = getContractService();
-      chainBounty = await cs.getBounty(Number(bountyId));
+      chainBounty = await readWithLagRetry(() => cs.getBounty(Number(bountyId)),
+        { revertSubstring: 'bad bountyid', label: `getBounty(${bountyId})` });
     } catch (chainErr) {
       logger.warn('[jobs/bountyId] chain backfill fetch failed (non-fatal, sync will heal later)', {
         bountyId: Number(bountyId), error: chainErr.message
@@ -5517,7 +5545,28 @@ router.patch('/:jobId/bountyId', async (req, res) => {
     const { applyChainBountyFields } = require('../utils/syncService');
     const nowSec = Math.floor(Date.now() / 1000);
     const outcome = await jobStorage.withStorage((store, ctx) => {
-      const freshJob = store.jobs.find(j => j.jobId === parseInt(jobId));
+      // Locate the job. The caller names it by the id it got from POST /jobs/create, but a
+      // sibling's reconcile may already have moved it (parallel creates whose on-chain ids
+      // landed in a different order). The receipt's evaluationCid is the authoritative
+      // identity, so prefer an UNLINKED job carrying that CID when the record at the named
+      // id is not it.
+      let freshJob = store.jobs.find(j => j.jobId === parseInt(jobId));
+      const isUnlinked = (j) => !j.onChain && !j.syncedFromBlockchain && j.status !== 'ORPHANED';
+      if (eventEvaluationCid && (!freshJob || (freshJob.evaluationCid && freshJob.evaluationCid !== eventEvaluationCid))) {
+        const byCid = store.jobs.find(j => isUnlinked(j) && j.evaluationCid === eventEvaluationCid)
+          || store.jobs.find(j => j.evaluationCid === eventEvaluationCid && j.jobId === Number(bountyId));
+        if (byCid) {
+          logger.info('[jobs/bountyId] located job by the receipt evaluationCid (record at the named id is a different job)', {
+            namedJobId: parseInt(jobId), foundJobId: byCid.jobId, bountyId: Number(bountyId)
+          });
+          freshJob = byCid;
+        } else if (freshJob) {
+          // The named record is a different, real job and nothing carries this CID: refuse
+          // rather than relabel someone else's bounty.
+          ctx.skipWrite = true;
+          return { conflict: { collidingEvaluationCid: freshJob.evaluationCid, jobEvaluationCid: eventEvaluationCid, namedRecordIsOtherJob: true } };
+        }
+      }
       if (!freshJob) { ctx.skipWrite = true; return { notFound: true }; }
 
       freshJob.txHash      = txHash;
@@ -5564,13 +5613,23 @@ router.patch('/:jobId/bountyId', async (req, res) => {
               }
             };
           }
-          logger.warn('[jobs/bountyId] removing colliding job', {
-            collidingJobId: colliding.jobId,
-            collidingTitle: colliding.title,
-            collidingStatus: colliding.status,
-            reason: sameEvalCid ? 'same_evaluationCid_duplicate' : 'unsynced_phantom'
-          });
-          store.jobs.splice(collisionIdx, 1);
+          if (sameEvalCid) {
+            // A duplicate record of THIS bounty (create-dedup miss, or a re-link): drop it.
+            logger.warn('[jobs/bountyId] removing colliding duplicate of the same bounty', {
+              collidingJobId: colliding.jobId, collidingTitle: colliding.title, reason: 'same_evaluationCid_duplicate'
+            });
+            store.jobs.splice(collisionIdx, 1);
+          } else {
+            // An UNLINKED sibling (its own createBounty landed in a different order and its
+            // PATCH is in flight or the sync has not reached it). It is a live job, not a
+            // phantom: move it to the id this job vacates instead of deleting it. Its own
+            // PATCH (receipt-verified) will move it again if that is not its final id.
+            const vacated = freshJob.jobId;
+            logger.warn('[jobs/bountyId] swapping ids with an unlinked sibling job', {
+              siblingJobId: colliding.jobId, siblingTitle: colliding.title, siblingMovedTo: vacated
+            });
+            colliding.jobId = vacated;
+          }
         }
 
         freshJob.jobId = Number(bountyId);
@@ -7351,7 +7410,7 @@ async function calculateFeeEstimate(juryNodes, iterations, oracleSettings = null
 }
 
 // Exposed for unit tests only.
-router._chainHelpers = { readChainSubmissionWithRetry, ensureLocalSubmission, submissionRecordFromChain };
+router._chainHelpers = { readWithLagRetry, readChainSubmissionWithRetry, ensureLocalSubmission, submissionRecordFromChain };
 
 module.exports = router;
 

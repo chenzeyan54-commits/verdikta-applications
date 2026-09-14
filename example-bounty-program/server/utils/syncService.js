@@ -174,6 +174,26 @@ async function fetchEvaluationMetadata(evaluationCid) {
  *
  * Returns true if any field was changed.
  */
+/**
+ * Pick the API-created (not yet synced) job that a BountyCreated event belongs to.
+ * evaluationCid is authoritative and is checked FIRST across all candidates; the
+ * creator+deadline heuristic is only a fallback when no CID matches (older clients that
+ * never stored the CID). A single mixed pass used to let a creator+deadline match on an
+ * EARLIER job win over the exact-CID match further down the array — with several bounties
+ * created in parallel by one creator with near-identical deadlines that paired them wrong.
+ */
+function findPendingJobForBountyCreated(jobs, { evaluationCid, creator, deadline }) {
+  const candidates = (jobs || []).filter((j) => !j.syncedFromBlockchain && j.status !== 'ORPHANED');
+  if (evaluationCid) {
+    const byCid = candidates.find((j) => j.evaluationCid === evaluationCid);
+    if (byCid) return byCid;
+  }
+  return candidates.find((j) =>
+    j.creator?.toLowerCase() === creator?.toLowerCase() &&
+    Math.abs((j.submissionCloseTime || 0) - deadline) < 60
+  ) || null;
+}
+
 function applyChainBountyFields(localJob, chainBounty) {
   if (!localJob || !chainBounty) return false;
   let changed = false;
@@ -1051,16 +1071,7 @@ class SyncService {
           }
         }
 
-        const pendingJob = storage.jobs.find(j => {
-          if (j.syncedFromBlockchain) return false;
-          // Skip ORPHANED tombstones — don't revive/renumber a dead record onto
-          // a live on-chain id (mirrors the route dedup guard in jobRoutes.js).
-          if (j.status === 'ORPHANED') return false;
-          if (evaluationCid && j.evaluationCid === evaluationCid) return true;
-          if (j.creator?.toLowerCase() === creator?.toLowerCase() &&
-              Math.abs((j.submissionCloseTime || 0) - deadline) < 60) return true;
-          return false;
-        });
+        const pendingJob = findPendingJobForBountyCreated(storage.jobs, { evaluationCid, creator, deadline });
 
         if (pendingJob) {
           // Link pending job (API-created, not yet on-chain)
@@ -1979,5 +1990,4 @@ module.exports = {
   initializeSyncService,
   getSyncService,
   SyncService,
-  applyChainBountyFields
-};
+  applyChainBountyFields, findPendingJobForBountyCreated };

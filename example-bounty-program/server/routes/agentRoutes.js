@@ -116,6 +116,14 @@ Four recurring anti-patterns that produce false errors:
         bountyId. The job you created as #N may end up as #M if the on-chain
         bountyCount had advanced. Always read jobId from the PATCH response,
         not from your earlier POST response, after linking.
+        Parallel creates are safe (since 2026-09-14): the server identifies your
+        job by the receipt's BountyCreated event (bountyId + evaluationCid), not by
+        the jobId you name, and if a sibling job already occupies the target id it
+        is moved aside, never deleted. Send the txHash. Two responses mean "retry
+        the same PATCH in a few seconds, nothing changed": 409 ONCHAIN_TX_NOT_FOUND
+        (the RPC node has not indexed your receipt yet) and 503 (RPC error); both
+        carry retryAfterSeconds. The server itself retries the receipt read for
+        several seconds first, so no client-side wait after createBounty is needed.
    If your created jobId looks "off", check these mechanisms first. Do NOT
    create an extra on-chain bounty to "fix" the alignment — it will compound
    the drift, not correct it.

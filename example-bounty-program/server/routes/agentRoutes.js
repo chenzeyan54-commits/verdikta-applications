@@ -326,8 +326,10 @@ Flow:
  2. POST /api/jobs/:id/submit/bundle/complete with { "txHash": "0x..." }
     → returns exact step-2 (start) and step-3 (finalize) calldata,
       plus a "parsed" object with submissionId, evalWallet, ethMaxBudget extracted from the receipt.
- 3. POST /api/jobs/:id/submissions/confirm with { submissionId, hunter, hunterCid, evalWallet }
-    so the backend tracks the submission.
+ 3. (Optional) POST /api/jobs/:id/submissions/confirm with { submissionId, hunter, hunterCid, evalWallet }
+    to attach file metadata and list the entry immediately. Not required: /start, /finalize
+    and /approve-as-creator read the submission from chain themselves if the indexer has
+    not caught up, and that read tolerates RPC lag — no client-side wait after the prepare tx.
  4. Broadcast step 2 (startPreparedSubmission — payable: attach the transaction.value the
     /start endpoint returns, which is the live requiredPrepay(bountyId)).
     No LINK approval is needed — the oracle is ETH-funded.
@@ -542,8 +544,9 @@ Step 1 — Prepare:   POST /api/jobs/:id/submit/prepare
                     (ethMaxBudget comes BEFORE the dynamic evaluationCid string, so even a naive
                     (address,uint256) decode of the data reads it. It is the same for every
                     submission to a bounty. Or just use the transaction.value returned by /start.)
-Confirm (API):      POST /api/jobs/:id/submissions/confirm
-                    (registers the submission in the backend so /diagnose etc. work)
+Confirm (API):      POST /api/jobs/:id/submissions/confirm   — OPTIONAL
+                    (bookkeeping: file metadata + immediate listing. The calldata routes
+                    below find the submission on-chain themselves; no wait needed.)
 Step 2 — Start:     POST /api/jobs/:id/submissions/:subId/start
                     (triggers oracle evaluation; payable — attach the returned
                     transaction.value, i.e. the live requiredPrepay(bountyId), as
@@ -905,7 +908,7 @@ router.get('/api/docs', (req, res) => {
       {
         method: 'POST',
         path: '/jobs/:id/submissions/confirm',
-        description: 'Register a submission in the backend AFTER prepareSubmission succeeds on-chain. Call this after step 1 so /diagnose and /submissions reflect the new submission. Idempotent — safe to call multiple times.',
+        description: 'Register a submission in the backend AFTER prepareSubmission succeeds on-chain (optional bookkeeping since 2026-09-14: /start, /finalize and /approve-as-creator read the submission from chain themselves if the indexer has not caught up, so you may call /start right after the prepare receipt with no delay). Call it to attach file metadata / client attribution, or to make /submissions list the entry immediately. Idempotent. The chain read is lag-tolerant (retries the "bad submissionId" revert for a few seconds), so no client-side wait after the prepare tx is needed.',
         contentType: 'application/json',
         fields: [
           'submissionId: integer, from the SubmissionPrepared event on the step-1 receipt (required)',

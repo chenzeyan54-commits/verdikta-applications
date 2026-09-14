@@ -1656,6 +1656,96 @@ router.post('/:jobId/submit/approve', async (req, res) => {
 
 // POST /api/jobs/:jobId/submissions/:submissionId/start
 // Encodes startPreparedSubmission() calldata — triggers oracle evaluation
+// ---- Chain-truth helpers for the submission routes ---------------------------------
+// Load-balanced RPC nodes can lag a block or two behind the receipt a caller just got,
+// so getSubmission may answer the escrow's "bad submissionId" revert for a submission
+// that exists. Retry that one case briefly before believing it; any other error is real.
+async function readChainSubmissionWithRetry(bountyId, submissionId, {
+  attempts = Number(process.env.CHAIN_READ_RETRIES || 6),
+  delayMs = Number(process.env.CHAIN_READ_RETRY_MS || 1500),
+} = {}) {
+  const contract = getContractService().contract;
+  let lastErr;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await contract.getSubmission(Number(bountyId), Number(submissionId));
+    } catch (e) {
+      lastErr = e;
+      const reason = (e.reason || e.shortMessage || e.message || '').toLowerCase();
+      if (!reason.includes('bad submissionid') || i === attempts) throw e;
+      logger.debug('[chain] getSubmission reverted "bad submissionId" — RPC may lag the receipt; retrying', { bountyId, submissionId, attempt: i });
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
+const SUB_STATUS_MAP = { 0: 'Prepared', 1: 'PENDING_EVALUATION', 2: 'REJECTED', 3: 'APPROVED', 4: 'APPROVED', 5: 'PendingCreatorApproval' };
+const SUB_ONCHAIN_STATUS_MAP = { 0: 'Prepared', 1: 'PendingVerdikta', 2: 'Failed', 3: 'PassedPaid', 4: 'PassedUnpaid', 5: 'PendingCreatorApproval' };
+const ZERO_ADDR_RE = /^0x0{40}$/i;
+const ZERO_HASH = '0x' + '0'.repeat(64);
+
+// Build a local submission record from the on-chain struct (the same mapping /confirm
+// applies), with optional caller-supplied extras (files, client attribution).
+function submissionRecordFromChain(job, submissionId, chainSub, extras = {}) {
+  const statusIndex = Number(chainSub.status);
+  const rec = {
+    submissionId: Number(submissionId),
+    hunter: chainSub.hunter,
+    hunterCid: chainSub.hunterCid || extras.hunterCid || null,
+    evalWallet: (chainSub.evalWallet && !ZERO_ADDR_RE.test(chainSub.evalWallet)) ? chainSub.evalWallet : (extras.evalWallet || null),
+    evaluationCid: job.evaluationCid || null,
+    fileCount: extras.fileCount || 0,
+    files: extras.files || [],
+    submittedAt: Number(chainSub.submittedAt) || Math.floor(Date.now() / 1000),
+    status: SUB_STATUS_MAP[statusIndex] || 'UNKNOWN',
+    onChainStatus: SUB_ONCHAIN_STATUS_MAP[statusIndex] || null,
+    creatorWindowEnd: Number(chainSub.creatorWindowEnd) || null,
+    ethMaxBudget: chainSub.ethMaxBudget?.toString() || null,
+    paidWinner: statusIndex === 3,
+    clientType: extras.clientType || 'unknown',
+    clientId: extras.clientId || null,
+  };
+  if (chainSub.verdiktaAggId && chainSub.verdiktaAggId !== ZERO_HASH) rec.verdiktaAggId = chainSub.verdiktaAggId;
+  if (chainSub.funder && !ZERO_ADDR_RE.test(chainSub.funder)) rec.funder = chainSub.funder;
+  return rec;
+}
+
+// Make sure the local job has this submission. If the sync service has not observed the
+// SubmissionPrepared event yet (it polls every ~20 s) and the caller skipped /confirm,
+// read the submission from chain (lag-tolerant) and persist it, so the calldata routes
+// never depend on the indexer. Returns the record, or null if the submission does not
+// exist on-chain either. Mutates `job` (a getJob() copy) so the caller can continue.
+async function ensureLocalSubmission(job, submissionId, extras = {}, opts = {}) {
+  const existing = job.submissions?.find((s) => s.submissionId === Number(submissionId));
+  if (existing) return existing;
+  let chainSub;
+  try {
+    chainSub = await readChainSubmissionWithRetry(job.jobId, submissionId, opts);
+  } catch (e) {
+    const reason = (e.reason || e.shortMessage || e.message || '').toLowerCase();
+    if (reason.includes('bad submissionid')) return null;
+    throw e;
+  }
+  const rec = submissionRecordFromChain(job, submissionId, chainSub, extras);
+  const stored = await jobStorage.withStorage((s, ctx) => {
+    const fresh = s.jobs.find((j) => j.jobId === job.jobId);
+    if (!fresh) { ctx.skipWrite = true; return null; }
+    if (!fresh.submissions) fresh.submissions = [];
+    const dup = fresh.submissions.find((x) => x.submissionId === Number(submissionId));
+    if (dup) { ctx.skipWrite = true; return dup; }
+    fresh.submissions.push(rec);
+    fresh.submissionCount = fresh.submissions.length;
+    return rec;
+  });
+  if (stored) {
+    if (!job.submissions) job.submissions = [];
+    job.submissions.push(stored);
+    logger.info('[submissions] local record created from chain (indexer had not caught up)', { jobId: job.jobId, submissionId });
+  }
+  return stored;
+}
+
 router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
   const { jobId, submissionId } = req.params;
 
@@ -1672,10 +1762,16 @@ router.post('/:jobId/submissions/:submissionId/start', async (req, res) => {
     if (rejectIfNotOnChain(res, job, jobId)) return;
     const onChainBountyId = job.jobId;
     const subId = parseInt(submissionId, 10);
-    const submission = job.submissions?.find(s => s.submissionId === subId);
+    // Local record, or — if the indexer has not caught up and /confirm was skipped — the
+    // on-chain submission persisted on the spot. /confirm is optional bookkeeping now.
+    const submission = await ensureLocalSubmission(job, subId, { clientType: req.clientType, clientId: req.clientId });
 
     if (!submission) {
-      return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
+      return res.status(404).json({
+        success: false,
+        error: `Submission ${submissionId} not found for job ${jobId} — not on-chain either`,
+        hint: 'Use the submissionId from the SubmissionPrepared event of your prepare tx receipt (0-indexed per bounty). If that tx was mined seconds ago, retry: the read is lag-tolerant but bounded.'
+      });
     }
 
     const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
@@ -1829,10 +1925,16 @@ router.post('/:jobId/submissions/:submissionId/finalize', async (req, res) => {
     if (rejectIfNotOnChain(res, job, jobId)) return;
     const onChainBountyId = job.jobId;
     const subId = parseInt(submissionId, 10);
-    const submission = job.submissions?.find(s => s.submissionId === subId);
+    // Local record, or — if the indexer has not caught up and /confirm was skipped — the
+    // on-chain submission persisted on the spot. /confirm is optional bookkeeping now.
+    const submission = await ensureLocalSubmission(job, subId, { clientType: req.clientType, clientId: req.clientId });
 
     if (!submission) {
-      return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
+      return res.status(404).json({
+        success: false,
+        error: `Submission ${submissionId} not found for job ${jobId} — not on-chain either`,
+        hint: 'Use the submissionId from the SubmissionPrepared event of your prepare tx receipt (0-indexed per bounty). If that tx was mined seconds ago, retry: the read is lag-tolerant but bounded.'
+      });
     }
 
     if (submission.hunter && submission.hunter.toLowerCase() !== hunter.toLowerCase()) {
@@ -1962,10 +2064,16 @@ router.post('/:jobId/submissions/:submissionId/approve-as-creator', async (req, 
     if (rejectIfNotOnChain(res, job, jobId)) return;
     const onChainBountyId = job.jobId;
     const subId = parseInt(submissionId, 10);
-    const submission = job.submissions?.find(s => s.submissionId === subId);
+    // Local record, or — if the indexer has not caught up and /confirm was skipped — the
+    // on-chain submission persisted on the spot. /confirm is optional bookkeeping now.
+    const submission = await ensureLocalSubmission(job, subId, { clientType: req.clientType, clientId: req.clientId });
 
     if (!submission) {
-      return res.status(404).json({ success: false, error: `Submission ${submissionId} not found for job ${jobId}` });
+      return res.status(404).json({
+        success: false,
+        error: `Submission ${submissionId} not found for job ${jobId} — not on-chain either`,
+        hint: 'Use the submissionId from the SubmissionPrepared event of your prepare tx receipt (0-indexed per bounty). If that tx was mined seconds ago, retry: the read is lag-tolerant but bounded.'
+      });
     }
 
     // Verify caller is the bounty creator
@@ -4517,9 +4625,9 @@ router.post('/:jobId/submissions/confirm', async (req, res) => {
     // Non-fatal: on RPC failure, we keep the 'Prepared' default and the
     // background sync service / a manual refresh will heal later.
     try {
-      const cs = getContractService();
-      const contract = cs.contract;
-      const chainSub = await contract.getSubmission(Number(jobId), Number(submissionId));
+      // Lag-tolerant: retries the "bad submissionId" revert a few times, since the RPC
+      // node may not have the prepare block the caller's receipt came from yet.
+      const chainSub = await readChainSubmissionWithRetry(jobId, submissionId);
 
       const statusMap = {
         0: 'Prepared',
@@ -7241,6 +7349,9 @@ async function calculateFeeEstimate(juryNodes, iterations, oracleSettings = null
     warning: 'This is an estimate. Actual cost may vary based on network conditions and oracle availability.'
   };
 }
+
+// Exposed for unit tests only.
+router._chainHelpers = { readChainSubmissionWithRetry, ensureLocalSubmission, submissionRecordFromChain };
 
 module.exports = router;
 

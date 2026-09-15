@@ -117,8 +117,9 @@ function AggHistory() {
 
   const isCompleted = outcome === 'COMPLETED';
   const isRunning = outcome?.startsWith('RUNNING') || outcome?.startsWith('IN PROCESS');
-  const outcomeClass = isCompleted ? 'completed' : isRunning ? 'running' : 'failed';
-  const OutcomeIcon = isCompleted ? CheckCircle : isRunning ? Clock : XCircle;
+  const isMalformed = outcome?.startsWith('LIKELY MALFORMED');
+  const outcomeClass = isCompleted ? 'completed' : isRunning ? 'running' : isMalformed ? 'malformed' : 'failed';
+  const OutcomeIcon = isCompleted ? CheckCircle : isRunning ? Clock : isMalformed ? AlertTriangle : XCircle;
 
   return (
     <div className="agg-history">

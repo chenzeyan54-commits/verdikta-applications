@@ -151,6 +151,12 @@
   color: #f59e0b;
 }
 
+.outcome-banner.malformed {
+  background: rgba(107, 114, 128, 0.1);
+  border: 1px solid rgba(107, 114, 128, 0.3);
+  color: #6b7280;
+}
+
 /* Oracle slots table */
 .agg-history .slots-table {
   overflow-x: auto;

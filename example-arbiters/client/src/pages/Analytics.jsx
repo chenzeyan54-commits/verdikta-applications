@@ -238,7 +238,7 @@ const renderReliabilitySection = (windowLabel, hData, hLoading, hError, alertsBy
                 <th className="tooltip-header" title="Times this operator was polled (OracleSelected) across the window">Polled</th>
                 <th className="tooltip-header" title="Commits received, and commits ÷ times polled">Commits</th>
                 <th className="tooltip-header" title="Reveals recorded, and reveals ÷ commits. Low here despite commits = the node commits but doesn't reveal.">Reveals</th>
-                <th className="tooltip-header" title="Times this operator's arbiters were to blame for a failed/timed-out evaluation. An eval needs 4 commits then 3 reveals; when it fails, each (operator, jobId) slot that didn't commit — or that committed but didn't reveal — is charged here.">Blameworthy</th>
+                <th className="tooltip-header" title="Times this operator's arbiters were to blame for a failed/timed-out evaluation. An eval needs 4 commits then 3 reveals; when it fails, each (operator, jobId) slot that didn't commit — or that committed but didn't reveal — is charged here. Rounds where no arbiter committed are treated as likely malformed requests and not charged.">Blameworthy</th>
               </tr>
             </thead>
             <tbody>
@@ -539,7 +539,8 @@ function Analytics() {
     labels: trend.map(d => (d.daysAgo === 0 ? 'now' : `${d.daysAgo}d`)),
     datasets: [
       { label: 'Fulfilled', data: trend.map(d => d.fulfilled), backgroundColor: COLORS.active, stack: 's' },
-      { label: 'Failed', data: trend.map(d => d.failed), backgroundColor: COLORS.blocked, stack: 's' }
+      { label: 'Failed', data: trend.map(d => d.failed), backgroundColor: COLORS.blocked, stack: 's' },
+      { label: 'Likely malformed', data: trend.map(d => d.malformed || 0), backgroundColor: COLORS.inactive, stack: 's' }
     ]
   } : null;
   const dailyChartOptions = {
@@ -820,7 +821,7 @@ function Analytics() {
 
       {/* Oracle Eval Success Rate Section */}
       <section className="analytics-section">
-        <h2 title="Share of oracle evaluation requests that completed successfully (a FulfillAIEvaluation event) over the look-back window. The rest failed or timed out without enough commits/reveals."><Activity size={20} className="inline-icon" /> Oracle Eval Success Rate</h2>
+        <h2 title="Share of oracle evaluation requests that completed successfully (a FulfillAIEvaluation event) over the look-back window. The rest failed or timed out without enough commits/reveals. Rounds where no arbiter committed at all are counted separately as likely malformed and excluded from the success rate."><Activity size={20} className="inline-icon" /> Oracle Eval Success Rate</h2>
         <div className="section-content">
           {healthLoading && !healthData ? (
             <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
@@ -849,8 +850,15 @@ function Analytics() {
                   <span className="health-stat-value" style={{ color: COLORS.blocked }}>{healthData.success.unfulfilled}</span>
                   <span className="health-stat-label">Failed / timed out</span>
                 </div>
+                <div
+                  className="health-stat"
+                  title="Requests where not a single selected arbiter committed. Every arbiter rejecting the same request usually means the request itself is unusable (e.g. a CID that isn't a valid archive or a manifest that fails validation), so these count as neither successes nor failures and no arbiter is blamed."
+                >
+                  <span className="health-stat-value" style={{ color: COLORS.inactive }}>{healthData.success.likelyMalformed ?? 0}</span>
+                  <span className="health-stat-label">Likely malformed</span>
+                </div>
                 {dailyChartData && (
-                  <div className="health-chart" title={`Fulfilled (green) vs failed (red) evaluations per day — last ${healthData.windowDays} days`}>
+                  <div className="health-chart" title={`Fulfilled (green) vs failed (red) vs likely malformed (grey) evaluations per day — last ${healthData.windowDays} days`}>
                     <div className="health-chart-canvas"><Bar data={dailyChartData} options={dailyChartOptions} /></div>
                     <span className="health-stat-label">{healthData.windowDays}-day trend</span>
                   </div>

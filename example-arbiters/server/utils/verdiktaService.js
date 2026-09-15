@@ -1197,7 +1197,7 @@ class VerdiktaService {
     const evals = {}; // aggIdLower → { fulfilled, slots: { pollIndexStr → { operator, committed, revealRequested, revealed } } }
     const evalFor = (aggId) => {
       const k = (aggId || '').toLowerCase();
-      if (!evals[k]) evals[k] = { fulfilled: false, slots: {} };
+      if (!evals[k]) evals[k] = { fulfilled: false, requestBlock: null, slots: {} };
       return evals[k];
     };
     const slotFor = (aggId, pollIndex, operator) => {
@@ -1223,7 +1223,7 @@ class VerdiktaService {
     // Index = days ago (0 = most recent ~24h). Bucketed by block offset
     // (~43200 blocks/day on Base) so no per-event timestamp lookups are needed.
     const BLOCKS_PER_DAY = 43200;
-    const daily = Array.from({ length: days }, () => ({ requests: 0, fulfilled: 0 }));
+    const daily = Array.from({ length: days }, () => ({ requests: 0, fulfilled: 0, malformed: 0 }));
     const dayOff = (blk) => Math.floor((latest - blk) / BLOCKS_PER_DAY);
     // Build the chunk list up-front, then fetch a few at a time. The chunk size
     // is capped by the provider (10k on Infura), so a 14-day window is ~60
@@ -1276,7 +1276,7 @@ class VerdiktaService {
       let p;
       try { p = parse(log); } catch { continue; }
       switch (p.name) {
-        case 'RequestAIEvaluation': { requests++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].requests++; evalFor(p.args.aggRequestId); break; }
+        case 'RequestAIEvaluation': { requests++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].requests++; evalFor(p.args.aggRequestId).requestBlock = log.blockNumber; break; }
         case 'FulfillAIEvaluation': { fulfilled++; const o = dayOff(log.blockNumber); if (o >= 0 && o < days) daily[o].fulfilled++; fulfillTxHashes.add(log.transactionHash.toLowerCase()); evalFor(p.args.aggRequestId).fulfilled = true; break; }
         case 'OracleSelected': bump(p.args.oracle, 'selected'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.oracle); break;
         case 'CommitReceived': bump(p.args.operator, 'commits'); slotFor(p.args.aggRequestId, p.args.pollIndex, p.args.operator).committed = true; commitRevealLogs.push({ kind: 'commit', txHash: log.transactionHash, operator: p.args.operator, blockNumber: log.blockNumber }); break;
@@ -1306,10 +1306,28 @@ class VerdiktaService {
       const e = blameByOp[k].evals[aggId] || (blameByOp[k].evals[aggId] = { stage, slots: 0 });
       e.slots++;
     };
+    // A round where NO selected arbiter committed is set aside as likely
+    // malformed rather than blamed: every arbiter rejecting the same request
+    // points at the request itself (e.g. a CID that isn't a valid archive, or a
+    // manifest that fails validation), not at the arbiters. These rounds are
+    // excluded from both the fulfilled and the failed tallies.
+    let likelyMalformed = 0;
+    const likelyMalformedAggIds = [];
     for (const [aggId, ev] of Object.entries(evals)) {
       if (ev.fulfilled) continue; // succeeded — no blame
       const slots = Object.values(ev.slots);
       const commitCount = slots.filter((s) => s.committed).length;
+      if (commitCount === 0) {
+        // Only tally rounds whose request is in the window, so the count stays a
+        // subset of `requests` (the same basis as fulfilled/unfulfilled).
+        if (ev.requestBlock != null) {
+          likelyMalformed++;
+          likelyMalformedAggIds.push(aggId);
+          const o = dayOff(ev.requestBlock);
+          if (o >= 0 && o < days) daily[o].malformed++;
+        }
+        continue;
+      }
       if (commitCount < COMMITS_REQUIRED) {
         // Failed at the commit stage: blame every selected slot that didn't commit.
         for (const s of slots) if (!s.committed) dockBlame(s.operator, aggId, 'commit');
@@ -1491,9 +1509,10 @@ class VerdiktaService {
       .sort((a, b) => b.timesSelected - a.timesSelected || b.commits - a.commits);
 
     // Daily trend, oldest → newest (today last). failed ≈ requests not fulfilled
-    // that day (request→fulfill happens within minutes, so same-day).
+    // that day (request→fulfill happens within minutes, so same-day), minus the
+    // likely-malformed rounds, which get their own series.
     const dailyTrend = daily
-      .map((d, i) => ({ daysAgo: i, fulfilled: d.fulfilled, failed: Math.max(0, d.requests - d.fulfilled) }))
+      .map((d, i) => ({ daysAgo: i, fulfilled: d.fulfilled, failed: Math.max(0, d.requests - d.fulfilled - d.malformed), malformed: d.malformed }))
       .reverse();
 
     return {
@@ -1514,8 +1533,12 @@ class VerdiktaService {
       success: {
         requests,
         fulfilled,
-        unfulfilled: Math.max(0, requests - fulfilled),
-        successRatePct: pct(fulfilled, requests),
+        // Failed/timed out despite at least one commit (likely-malformed excluded).
+        unfulfilled: Math.max(0, requests - fulfilled - likelyMalformed),
+        likelyMalformed,       // no arbiter committed — probably a bad request, not a node failure
+        likelyMalformedAggIds,
+        // Rate over the rounds arbiters could actually act on.
+        successRatePct: pct(fulfilled, requests - likelyMalformed),
       },
       dailyTrend,
       operators,
@@ -1714,6 +1737,9 @@ class VerdiktaService {
     if (fulfillment) outcome = 'COMPLETED';
     else if (isEarly) outcome = `IN PROCESS (${failPhase} phase, ${elapsedMinutes}m elapsed)`;
     else if (elapsedMinutes === null) outcome = 'RUNNING';
+    // No arbiter committed at all: the request itself was most likely unusable
+    // (same rule as the likely-malformed tally in getOracleHealth).
+    else if (committedSlots.length === 0) outcome = 'LIKELY MALFORMED (no arbiter committed)';
     else outcome = `FAILED (${failPhase} phase)`;
 
     const analysis = {

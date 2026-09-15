@@ -3944,6 +3944,49 @@ const upload = multer({
 }).array('files', 10);
 
 /**
+ * Translate a multer upload error (wrong field name, too many files, oversized
+ * file, rejected type) into a 400 with a fix hint. These are client mistakes;
+ * without this they fell through to the generic 500 INTERNAL_ERROR and agents
+ * read "check server health" as a site outage.
+ * @returns {boolean} true if the error was an upload-shape error and a response was sent
+ */
+function sendUploadError(res, error) {
+  const maxMB = MAX_FILE_SIZE / (1024 * 1024);
+  let details, fix;
+  if (error instanceof multer.MulterError) {
+    switch (error.code) {
+      case 'LIMIT_UNEXPECTED_FILE':
+        details = `Unexpected multipart field "${error.field || '?'}". Files must be sent under the field name "files".`;
+        fix = 'Use the field name "files" for every attachment (repeat it for multiple files): curl -F "files=@a.txt" -F "files=@b.md" -F "hunter=0x..."';
+        break;
+      case 'LIMIT_FILE_COUNT':
+        details = 'More than 10 files were attached.';
+        fix = 'Attach at most 10 files per submission; combine small files or drop non-essential ones.';
+        break;
+      case 'LIMIT_FILE_SIZE':
+        details = `A file exceeds the ${maxMB}MB per-file limit.`;
+        fix = `Reduce the file below ${maxMB}MB or split it into smaller files (10 files max).`;
+        break;
+      default:
+        details = error.message;
+        fix = 'Send a multipart/form-data body with attachments under the field name "files" and the hunter address under "hunter".';
+    }
+  } else if (typeof error?.message === 'string' && error.message.startsWith('Invalid file type')) {
+    details = error.message;
+    fix = 'Submit readable files (text/code/markdown, PDF, .docx, images, JSON/CSV). Do not attach archives or executables.';
+  } else {
+    return false;
+  }
+  sendError(res, 400, {
+    code: ErrorCodes.SUBMISSION_BAD_UPLOAD,
+    message: 'Upload rejected',
+    details,
+    fix
+  });
+  return true;
+}
+
+/**
  * Flag work-product files the oracle would silently skip (archives/binaries),
  * which yields a score of 0 with no upload-time error. Checks extension + mimetype,
  * then sniffs leading bytes to catch renamed/generic-mimetype archives (e.g. a .zip
@@ -4335,6 +4378,7 @@ router.post('/:jobId/submit/dry-run', async (req, res) => {
 
   } catch (error) {
     logger.error('[jobs/submit/dry-run] error', { msg: error.message });
+    if (sendUploadError(res, error)) return;
     if (error.message.includes('not found')) {
       return sendError(res, 404, {
         code: ErrorCodes.BOUNTY_NOT_FOUND,
@@ -4528,6 +4572,7 @@ router.post('/:jobId/submit', async (req, res) => {
 
   } catch (error) {
     logger.error('[jobs/submit] error', { msg: error.message });
+    if (sendUploadError(res, error)) return;
     if (error.message.includes('not found')) {
       return sendError(res, 404, {
         code: ErrorCodes.BOUNTY_NOT_FOUND,
@@ -5040,6 +5085,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
 
   } catch (error) {
     logger.error('[bundle] error', { msg: error.message });
+    if (sendUploadError(res, error)) return;
     if (error.message.includes('not found')) {
       return sendError(res, 404, {
         code: ErrorCodes.BOUNTY_NOT_FOUND,

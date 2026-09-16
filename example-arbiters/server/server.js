@@ -56,4 +56,11 @@ app.listen(PORT, () => {
       'base-sepolia': new URL(getRpcUrl('base-sepolia')).host,
     });
   } catch (_) { /* diagnostic only — never block startup */ }
+  // Keep the oracle-health scans (the slow part of /analytics) warm so page
+  // loads never wait on the archive-log scan. See utils/oracleHealthLoader.js.
+  try {
+    require('./utils/oracleHealthLoader').startWarmer();
+  } catch (err) {
+    logger.error('oracle-health warmer failed to start', { msg: err.message });
+  }
 });

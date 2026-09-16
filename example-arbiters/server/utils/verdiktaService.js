@@ -1227,8 +1227,10 @@ class VerdiktaService {
     const dayOff = (blk) => Math.floor((latest - blk) / BLOCKS_PER_DAY);
     // Build the chunk list up-front, then fetch a few at a time. The chunk size
     // is capped by the provider (10k on Infura), so a 14-day window is ~60
-    // queries — serial that is a minute of wall clock, and /refresh warms four
-    // windows. Ordering doesn't matter: every tally below is a sum or an OR.
+    // queries — serial that is a minute of wall clock, and the background
+    // warmer (utils/oracleHealthLoader.js) re-runs it for every network ×
+    // window on a timer. Ordering doesn't matter: every tally below is a sum
+    // or an OR.
     const ranges = [];
     for (let to = latest; to >= floor; ) {
       const from = Math.max(floor, to - CHUNK + 1);

@@ -21,7 +21,7 @@ const { validateRubric, validateJuryNodes, isValidFileType, MAX_FILE_SIZE,
         parseFeeToWei, extractEvaluationWarnings } = require('../utils/validation');
 const { getVerdiktaService, isVerdiktaServiceAvailable } = require('../utils/verdiktaService');
 const { validateBounty, IssueSeverity, IssueType, chainStatusIssue } = require('../utils/bountyValidator');
-const { getContractService } = require('../utils/contractService');
+const { getContractService, RESOLVE_GAS_LIMIT_FALLBACK, RESOLVE_GAS_NOTE } = require('../utils/contractService');
 const { sendError, ErrorCodes } = require('../utils/apiErrors');
 const { SUBMISSION_PREPARED_ABI, submissionPreparedEvent } = require('../utils/submissionEvents');
 
@@ -284,6 +284,19 @@ function withTimeout(p, ms, label='operation') {
     p,
     new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms))
   ]);
+}
+
+/**
+ * Gas guidance for a resolve call (finalize / force-fail): live estimateGas + margin via
+ * the contract service, or the safe fallback when the service is down or the call would
+ * revert right now. Never throws — see ContractService.estimateResolveGas for the why.
+ */
+async function resolveGasGuidance(data, from) {
+  try {
+    return await getContractService().estimateResolveGas({ data, from });
+  } catch (err) {
+    return { gasLimit: RESOLVE_GAS_LIMIT_FALLBACK.toString(), estimatedGas: null, source: 'fallback', reason: err.message };
+  }
 }
 async function pinJsonToPinata(contentObj, name = 'verdikta-json') {
   const PINATA_BASE = (process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud').replace(/\/+$/,'');
@@ -2022,14 +2035,18 @@ router.post('/:jobId/submissions/:submissionId/finalize', async (req, res) => {
       logger.debug('[submit/finalize] warnings fetch skipped', { msg: warnErr.message });
     }
 
+    const gas = await resolveGasGuidance(calldata, hunter);
+
     const response = {
       success: true,
       transaction: {
         to: contractAddress,
         data: calldata,
         value: '0',
-        chainId: config.chainId
-      }
+        chainId: config.chainId,
+        gasLimit: gas.gasLimit
+      },
+      gas: { ...gas, note: RESOLVE_GAS_NOTE }
     };
 
     if (oracleResult) {
@@ -5035,7 +5052,7 @@ router.post('/:jobId/submit/bundle', async (req, res) => {
         dataTemplate: 'finalizeSubmission({BOUNTY_ID}, {SUBMISSION_ID})',
         value: '0',
         chainId,
-        gasLimit: 300000,
+        gasLimit: Number(RESOLVE_GAS_LIMIT_FALLBACK),
         note: 'Only call after GET /api/jobs/:id/submissions/:submissionId shows EVALUATED_PASSED or EVALUATED_FAILED'
       },
       contracts: {
@@ -5286,7 +5303,7 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
           data: finalizeData,
           value: '0',
           chainId,
-          gasLimit: 300000
+          gasLimit: Number(RESOLVE_GAS_LIMIT_FALLBACK)
         },
         confirm: confirmBlock,
         tips: [
@@ -5326,7 +5343,7 @@ router.post('/:jobId/submit/bundle/complete', async (req, res) => {
         data: finalizeData,
         value: '0',
         chainId,
-        gasLimit: 300000
+        gasLimit: Number(RESOLVE_GAS_LIMIT_FALLBACK)
       },
       confirm: confirmBlock,
       tips: [
@@ -6334,19 +6351,14 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
     const onChainBountyId = job.jobId;
     const onChainSubmissionId = submission.onChainSubmissionId ?? submission.submissionId;
 
-    // Check status - must be pending evaluation
-    const status = (submission.status || '').toLowerCase();
-    const isPending = status === 'pending' ||
-                      status === 'pendingverdikta' ||
-                      status === 'pending_evaluation';
-
-    if (!isPending) {
-      return res.status(400).json({
-        success: false,
-        canTimeout: false,
-        error: 'Submission not pending',
-        details: `Submission status is "${submission.status}". Only submissions with PENDING_EVALUATION status can be timed out.`,
-        currentStatus: submission.status
+    // No local-status gate here: the ON-CHAIN status read below is the only one that
+    // matters. The local record can lag or be relabeled — /refresh marks a still-pending
+    // submission on an EXPIRED bounty as REJECTED / ORACLE_TIMEOUT for the GUI — and
+    // gating on it turned bounties 56/57 (base, 2026-09-16) into a dead end: chain said
+    // PendingVerdikta, this endpoint said "Submission not pending".
+    if ((submission.status || '').toUpperCase() !== 'PENDING_EVALUATION') {
+      logger.info('[timeout] local status not pending — deferring to chain', {
+        jobId, submissionId, localStatus: submission.status, onChainStatus: submission.onChainStatus
       });
     }
 
@@ -6440,26 +6452,32 @@ router.post('/:jobId/submissions/:submissionId/timeout', async (req, res) => {
       onChainSubmissionId
     ]);
 
+    const gas = await resolveGasGuidance(calldata);
+
     logger.info('[timeout] conditions met', {
       jobId,
       submissionId,
       onChainBountyId,
       onChainSubmissionId,
-      elapsedSeconds
+      elapsedSeconds,
+      gasLimit: gas.gasLimit,
+      gasSource: gas.source
     });
 
     return res.json({
       success: true,
       canTimeout: true,
-      message: 'Aggregator round settled with no result — the submission can be force-failed. Execute the transaction to trigger the refund.',
+      message: `Aggregator round settled with no result — the submission can be force-failed. Execute the transaction to trigger the refund. Send it with transaction.gasLimit (${gas.gasLimit}) — this call settles the oracle round and needs ~2M gas; a hand-picked lower limit fails with no revert reason.`,
       forceFail: gate,
       // Ready-to-sign transaction object for bots
       transaction: {
         to: contractAddress,
         data: calldata,
         value: '0',
-        chainId: config.chainId
+        chainId: config.chainId,
+        gasLimit: gas.gasLimit
       },
+      gas: { ...gas, note: RESOLVE_GAS_NOTE },
       // Human-readable contract call info
       contractCall: {
         method: 'failTimedOutSubmission',

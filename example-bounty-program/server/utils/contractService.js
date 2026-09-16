@@ -133,6 +133,14 @@ function computeCanBeClosed(bountyStruct) {
   return now > deadline;
 }
 
+// Gas guidance for the two "resolve" calls (finalizeSubmission / failTimedOutSubmission).
+// See ContractService.estimateResolveGas for why 300k is NOT enough: settling a timed-out
+// 6-oracle round inside the call costs ~2M gas (measured 1.97M on Base mainnet).
+const RESOLVE_GAS_LIMIT_FALLBACK = 2_500_000n;
+const RESOLVE_GAS_LIMIT_MIN = 300_000n;
+const RESOLVE_GAS_MARGIN_PCT = 25n;
+const RESOLVE_GAS_NOTE = 'finalizeSubmission and failTimedOutSubmission may need >2M gas: when the oracle round has timed out they settle it on the aggregator (per-oracle penalties + prepay refund) inside a try/catch. With a smaller limit that inner call runs out of gas, the catch swallows it, and the tx fails with no revert reason (gasUsed == gasLimit) even though eth_call/estimateGas pass. Use this gasLimit or your own estimateGas + margin; never hard-code a lower value.';
+
 class ContractService {
   constructor(providerUrl, contractAddress) {
     this.provider = new ethers.JsonRpcProvider(providerUrl);
@@ -307,6 +315,43 @@ class ContractService {
       this._responseTimeoutSeconds = Number(await aggregator.responseTimeoutSeconds());
     }
     return this._responseTimeoutSeconds;
+  }
+
+  /**
+   * Gas limit for a resolve call (finalizeSubmission / failTimedOutSubmission).
+   *
+   * WHY THIS EXISTS: both calls try `verdikta.finalizeEvaluationTimeout(aggId)` inside a
+   * try/catch before checking the round. When the round has timed out that inner call
+   * settles it — timeout penalties for every selected oracle plus the prepay refund —
+   * and costs ~2M gas on a 6-oracle round. If the caller hard-codes a smaller limit the
+   * inner call runs out of gas, the catch swallows it, and the outer call dies too (no
+   * revert reason, gasUsed == gasLimit). eth_call / estimateGas pass because they are
+   * not capped, so an agent sees "simulation OK, tx reverts every time". Bounties 56/57
+   * on Base mainnet (2026-09-16) were stuck exactly this way at 800k / 1M / 1.5M.
+   *
+   * Returns { gasLimit (string), estimatedGas (string|null), source: 'estimate'|'fallback',
+   * reason? } — estimate + margin when the node can simulate the call, otherwise the
+   * RESOLVE_GAS_LIMIT_FALLBACK (which covers the settle path). Never throws.
+   */
+  async estimateResolveGas({ data, value = 0n, from } = {}, { timeoutMs = 8000 } = {}) {
+    const fallback = { gasLimit: RESOLVE_GAS_LIMIT_FALLBACK.toString(), estimatedGas: null, source: 'fallback' };
+    if (!data) return { ...fallback, reason: 'no calldata' };
+    try {
+      const tx = { to: this.contractAddress, data, value };
+      if (from && ethers.isAddress(from)) tx.from = from;
+      const estimated = await Promise.race([
+        this.provider.estimateGas(tx),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('estimateGas timed out')), timeoutMs))
+      ]);
+      const withMargin = (BigInt(estimated) * (100n + RESOLVE_GAS_MARGIN_PCT)) / 100n;
+      const gasLimit = withMargin > RESOLVE_GAS_LIMIT_MIN ? withMargin : RESOLVE_GAS_LIMIT_MIN;
+      return { gasLimit: gasLimit.toString(), estimatedGas: BigInt(estimated).toString(), source: 'estimate' };
+    } catch (err) {
+      // A revert here ("Verdikta not ready", "evaluation not settled", …) or an RPC
+      // hiccup: hand back the safe fallback and say why — the caller's own gate decides
+      // whether the tx is callable at all.
+      return { ...fallback, reason: err.reason || err.shortMessage || err.message };
+    }
   }
 
   /**
@@ -662,6 +707,8 @@ function getContractService() {
 
 module.exports = {
   initializeContractService,
+  RESOLVE_GAS_LIMIT_FALLBACK,
+  RESOLVE_GAS_NOTE,
   getContractService,
   ContractService,
   normalizeOracleSettings,

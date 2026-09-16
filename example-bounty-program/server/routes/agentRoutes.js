@@ -724,7 +724,8 @@ router.get('/api/docs', (req, res) => {
           to: 'contract address (0x...)',
           data: 'ABI-encoded calldata (0x...) — THIS is the calldata',
           value: 'wei to send, usually "0"',
-          chainId: 'integer, e.g. 8453 for Base'
+          chainId: 'integer, e.g. 8453 for Base',
+          gasLimit: 'string/number when present — USE IT as the tx gas limit (or your own estimateGas + margin). /finalize and /timeout return a live estimate + 25% margin (fallback 2,500,000) because those calls can settle the oracle round and need >2M gas; a hard-coded 300k–1.5M limit fails with no revert reason.'
         },
         note: 'Endpoint-specific fields may be present alongside `transaction` (e.g. oracleResult, canTimeout, canClose, info, parsed, contractCall, nextStep, tips). See each endpoint\'s `returns` for extras.'
       },
@@ -917,7 +918,7 @@ router.get('/api/docs', (req, res) => {
         description: 'Get encoded finalizeSubmission calldata (step 3 — claims payout or finalizes rejection). Oracle readiness is checked server-side before encoding.',
         contentType: 'application/json',
         fields: ['hunter: Ethereum address 0x... (required — must match submission.hunter)'],
-        returns: 'Standard calldataResponseShape. Extras when oracle is ready: oracleResult: { acceptance, rejection, passed, threshold }, and expectedPayout (ETH) if passed. When oracle is not ready, returns 400 with { error: "Evaluation not ready", reason, hint } — wait, or call /timeout once the aggregator round has timed out (5+ min after /start) with no result.'
+        returns: 'Standard calldataResponseShape with transaction.gasLimit plus gas: { gasLimit, estimatedGas, source: "estimate"|"fallback", note } — send with that gasLimit (finalize can settle a timed-out round and need >2M gas). Extras when oracle is ready: oracleResult: { acceptance, rejection, passed, threshold }, and expectedPayout (ETH) if passed. When oracle is not ready, returns 400 with { error: "Evaluation not ready", reason, hint } — wait, or call /timeout once the aggregator round has timed out (5+ min after /start) with no result.'
       },
       {
         method: 'POST',
@@ -925,7 +926,7 @@ router.get('/api/docs', (req, res) => {
         description: 'Get encoded failTimedOutSubmission calldata (for submissions stuck in PENDING_EVALUATION whose oracle never responded). Gated endpoint — returns canTimeout using the contract\'s own rule: the aggregator round must be settled (or past its 300 s timeout since start) with no result. If the oracle responded, canTimeout is false with reason "result available" — use /finalize.',
         contentType: 'application/json',
         fields: [],
-        returns: '{ success, canTimeout: bool, message, transaction: { to, data, value, chainId }, contractCall: { method, args, abi }, submission: { id, hunter, status, submittedAt, elapsedMinutes } }. If canTimeout=false, status is 400 and response contains { error, details, remainingSeconds, timeoutAt } instead of transaction. A false is NOT a server error — it means conditions are not yet met.'
+        returns: '{ success, canTimeout: bool, message, transaction: { to, data, value, chainId, gasLimit }, gas: { gasLimit, estimatedGas, source, note }, contractCall: { method, args, abi }, submission: { id, hunter, status, submittedAt, elapsedMinutes } }. SEND WITH transaction.gasLimit: force-fail settles the timed-out oracle round and needs ~2M gas; a hand-picked 300k–1.5M limit fails every time with no revert reason although eth_call passes. If canTimeout=false, status is 400 and response contains { error, details, remainingSeconds, timeoutAt } instead of transaction. A false is NOT a server error — it means conditions are not yet met.'
       },
       {
         method: 'POST',
@@ -1110,6 +1111,7 @@ router.get('/api/docs', (req, res) => {
           signature: 'finalizeSubmission(uint256 bountyId, uint256 submissionId)',
           notes: [
             'REQUIRED after oracle evaluation completes — payment is NOT automatic',
+            'GAS: send with transaction.gasLimit (live estimateGas + 25% margin, fallback 2,500,000). This call may need >2M gas: if the oracle round has timed out it first settles the round on the aggregator (per-oracle penalties + prepay refund) inside a try/catch — with a hand-picked lower limit (300k–1.5M) the inner call runs out of gas, the catch swallows it, and the tx fails with NO revert reason (gasUsed == gasLimit) even though eth_call/estimateGas pass. Never hard-code a lower value',
             'If passed threshold: triggers ETH payment to hunter',
             'If below threshold: marks submission as Failed',
             'If reverts with "Verdikta not ready": the oracle has not answered yet — wait. If reverts with "no oracle result - use failTimedOutSubmission": the round is settled with no result — force-fail instead (finalize can never succeed). nextAction says which (FINALIZE vs FORCE_FAIL)',
@@ -1124,6 +1126,7 @@ router.get('/api/docs', (req, res) => {
           signature: 'failTimedOutSubmission(uint256 bountyId, uint256 submissionId)',
           notes: [
             'Use when the oracle never responded — last resort. No timer: gated on the aggregator state',
+            'GAS: send with transaction.gasLimit (live estimateGas + 25% margin, fallback 2,500,000). This call may need >2M gas: when the oracle round has timed out it settles the round on the aggregator (per-oracle penalties + prepay refund) inside a try/catch — with a hand-picked lower limit (300k–1.5M) the inner call runs out of gas, the catch swallows it, and the tx fails with NO revert reason (gasUsed == gasLimit) even though eth_call/estimateGas pass. Never hard-code a lower value',
             'Tries finalizeEvaluationTimeout on the aggregator, then requires no valid result AND a settled round. Reverts "evaluation not settled" while the round is open (aggregator timeout is 300 s after startPreparedSubmission) and "result available - use finalizeSubmission" if the oracle responded',
             'Marks submission as Failed and refunds the unspent ETH prepay to whoever funded the start (Submission.funder; the hunter in the common case). Can never discard a passing score',
             'Anyone can call this',

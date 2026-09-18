@@ -174,7 +174,9 @@ this endpoint is authoritative — the sync service has not yet observed the cha
 
 The "linkage" field is the agent-friendly diagnostic for ID drift between API
 and chain. Shape: { state, onChain, syncedFromBlockchain, detail, fix?,
-mismatch?, correctJobId? }. state values:
+mismatch?, correctJobId? }. Optional keys are OMITTED when absent (never
+null) — "fix" is a string whenever present; it is missing for state=linked.
+state values:
   - linked            → jobId == on-chain bountyId, safe to use everywhere.
   - patched-not-synced → PATCH /bountyId ran; sync will confirm shortly. OK.
   - not-on-chain      → job exists in the API but createBounty never ran or
@@ -766,7 +768,7 @@ router.get('/api/docs', (req, res) => {
         method: 'GET',
         path: '/jobs/:id/onchain-status',
         description: 'Authoritative on-chain snapshot, ABI-decoded server-side. Use when the cached /jobs/:id view may be stale, or to diagnose ID drift via the "linkage" field. IMPORTANT: :id is the on-chain bountyId, not the API jobId — they only match for linked jobs. Use /api/jobs/lookup first if you are not sure.',
-        returns: '{ success, bountyId, requiredPrepay (wei to attach at start, read live), prepareCutoff (last unix second prepare can succeed), status, rawStatus, creator, winner, payoutWei, payoutEth, submissionDeadline, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, linkage: { state, onChain, syncedFromBlockchain, detail, fix?, mismatch?, correctJobId?, idDriftWarning? }, fetchedAt, note }. linkage.state ∈ { linked | patched-not-synced | not-on-chain | mismatch | untracked }. 404 responses for missing on-chain bounties include localJobExists/localJobLinked flags and a fix pointing at /api/jobs/lookup.'
+        returns: '{ success, bountyId, requiredPrepay (wei to attach at start, read live), prepareCutoff (last unix second prepare can succeed), status, rawStatus, creator, winner, payoutWei, payoutEth, submissionDeadline, deadlinePassed, submissionCount, isAcceptingSubmissions, canBeClosed, targetHunter, evaluationCid, classId, threshold, linkage: { state, onChain, syncedFromBlockchain, detail, fix?, mismatch?, correctJobId?, idDriftWarning? }, fetchedAt, note }. linkage.state ∈ { linked | patched-not-synced | not-on-chain | mismatch | untracked }. linkage.fix is a string when present and is OMITTED (not null) when state is linked — type it as optional, not nullable. 404 responses for missing on-chain bounties include localJobExists/localJobLinked flags and a fix pointing at /api/jobs/lookup.'
       },
       {
         method: 'GET',

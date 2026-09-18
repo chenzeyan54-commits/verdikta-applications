@@ -1342,8 +1342,9 @@ function buildLinkageReport(job, options = {}) {
       state: 'linked',
       onChain: true,
       syncedFromBlockchain: true,
-      detail: 'Sync service has confirmed this job matches an on-chain bounty with the same id.',
-      fix: null
+      detail: 'Sync service has confirmed this job matches an on-chain bounty with the same id.'
+      // No `fix` key: the field is optional (`fix?`) and is OMITTED — never null —
+      // when nothing needs doing, so strict clients can type it as `string | undefined`.
     };
   }
   if (job.onChain) {

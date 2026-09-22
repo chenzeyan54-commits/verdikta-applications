@@ -370,6 +370,142 @@
   color: #ef4444;
 }
 
+/* Timing scatter plot */
+.timing-scatter {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.scatter-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.25rem;
+}
+
+.scatter-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.scatter-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.scatter-swatch.hollow {
+  background: var(--bg);
+  border: 2px solid;
+  box-sizing: border-box;
+}
+
+.scatter-wrap {
+  position: relative;
+}
+
+.scatter-wrap svg {
+  display: block;
+  height: auto;
+}
+
+.scatter-rowline,
+.scatter-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.scatter-ylabel {
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+  font-size: 11px;
+  fill: var(--text-secondary);
+}
+
+.scatter-xlabel {
+  font-size: 10px;
+  fill: var(--text-secondary);
+}
+
+.scatter-xtitle {
+  font-size: 10px;
+  fill: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.scatter-hit {
+  outline: none;
+}
+
+/* All marks are pointer-transparent: the svg root resolves hover by nearest
+   group, so no mark can shadow a neighbour's hit area. */
+.scatter-wrap svg * {
+  pointer-events: none;
+}
+
+.scatter-wrap svg {
+  cursor: crosshair;
+}
+
+.scatter-refline {
+  stroke-width: 1.5;
+  opacity: 0.6;
+}
+
+.scatter-count {
+  font-size: 9px;
+  font-weight: 700;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.scatter-linekey.vertical {
+  width: 2px;
+  height: 12px;
+}
+
+.scatter-tooltip {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 12px));
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.scatter-tooltip.below {
+  transform: translate(-50%, 12px);
+}
+
+.scatter-tooltip-value {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.scatter-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+}
+
+.scatter-linekey {
+  display: inline-block;
+  width: 12px;
+  height: 2px;
+}
+
 /* Fulfillment section */
 .fulfillment-details {
   display: flex;

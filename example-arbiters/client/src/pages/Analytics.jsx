@@ -260,6 +260,160 @@ const renderReliabilitySection = (windowLabel, hData, hLoading, hError, alertsBy
   </section>
 );
 
+// ---- Response Timing section (per-window). Commit time = seconds from the
+// request landing on-chain to the operator's commit; reveal time = seconds from
+// the reveal request dispatched to the slot to the operator's reveal. Both come
+// from block deltas (Base: fixed 2s blocks), so they are exact to the block.
+const TIMING_COLORS = { commit: '#2a78d6', reveal: '#eb6834' };
+
+const fmtSec = (v) => {
+  if (v == null) return '—';
+  const s = Math.round(v);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}m ${String(r).padStart(2, '0')}s`;
+};
+
+// avg · min · max seconds with the average emphasized.
+const secTriple = (t) => {
+  if (!t || !t.count) return <span className="gas-muted">—</span>;
+  return (
+    <span className="gas-triple">
+      <strong className="med">{fmtSec(t.avgSec)}</strong> · {fmtSec(t.minSec)} · {fmtSec(t.maxSec)}
+    </span>
+  );
+};
+
+// Tick step (seconds) giving roughly 4–8 ticks across the axis.
+const niceTickStep = (maxSeconds) => {
+  const steps = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+  for (const st of steps) if (maxSeconds / st <= 8) return st;
+  return 3600 * Math.ceil(maxSeconds / 3600 / 8);
+};
+
+// Deterministic pseudo-random in [0,1) from an index, so the vertical jitter
+// of a dot is stable across renders.
+const jitter = (i) => ((i * 9301 + 49297) % 233280) / 233280;
+
+// Cluster (strip) chart: one row per operator, every commit and reveal as a
+// translucent dot at its response time. Dense by design — no hover layer; the
+// table above carries the numbers. Extreme outliers would flatten the cluster,
+// so the axis stops at the 98th percentile when the max is far beyond it and
+// the overflow dots are pinned to the right edge as small arrows.
+function TimingCluster({ timing }) {
+  const ops = timing?.operators || [];
+  const pts = timing?.points || [];
+  if (!ops.length || !pts.length) return null;
+
+  const secs = pts.map((p) => p[2]).sort((a, b) => a - b);
+  const max = secs[secs.length - 1];
+  const p98 = secs[Math.floor(0.98 * (secs.length - 1))];
+  const clamp = max > 2.5 * Math.max(p98, 10);
+  const axisMaxRaw = Math.max(10, clamp ? p98 : max);
+  const tick = niceTickStep(axisMaxRaw);
+  const axisMax = Math.ceil(axisMaxRaw / tick) * tick;
+  const overflow = pts.filter((p) => p[2] > axisMax).length;
+
+  const margin = { top: 10, right: 22, bottom: 36, left: 112 };
+  const rowH = 30;
+  const width = 720;
+  const plotW = width - margin.left - margin.right;
+  const plotH = ops.length * rowH;
+  const height = margin.top + plotH + margin.bottom;
+  const xScale = (v) => margin.left + (Math.min(v, axisMax) / axisMax) * plotW;
+  const yRow = (i) => margin.top + i * rowH + rowH / 2;
+  const ticks = [];
+  for (let v = 0; v <= axisMax; v += tick) ticks.push(v);
+
+  return (
+    <div className="timing-cluster">
+      <div className="timing-legend">
+        <span className="timing-legend-item"><span className="timing-swatch" style={{ background: TIMING_COLORS.commit }} />Commit (after request)</span>
+        <span className="timing-legend-item"><span className="timing-swatch" style={{ background: TIMING_COLORS.reveal }} />Reveal (after reveal request)</span>
+        <span className="timing-legend-note">{pts.length.toLocaleString()} responses</span>
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" role="img" aria-label="Commit and reveal response times per operator">
+        {ops.map((o, i) => (
+          <g key={o.operator}>
+            <line x1={margin.left} x2={margin.left + plotW} y1={yRow(i)} y2={yRow(i)} className="timing-rowline" />
+            <text x={margin.left - 8} y={yRow(i)} className="timing-ylabel" dominantBaseline="middle" textAnchor="end">{shortAddr(o.operator)}</text>
+          </g>
+        ))}
+        {ticks.map((v) => (
+          <g key={v}>
+            <line x1={xScale(v)} x2={xScale(v)} y1={margin.top} y2={margin.top + plotH} className="timing-grid" />
+            <text x={xScale(v)} y={margin.top + plotH + 16} className="timing-xlabel" textAnchor="middle">{fmtSec(v)}</text>
+          </g>
+        ))}
+        <text x={margin.left + plotW / 2} y={height - 4} className="timing-xtitle" textAnchor="middle">
+          response time{clamp ? ` (axis capped at 98th percentile; ${overflow} slower response${overflow === 1 ? '' : 's'} pinned at right)` : ''}
+        </text>
+        {pts.map((p, i) => {
+          const [oi, kind, sec] = p;
+          const color = kind === 'c' ? TIMING_COLORS.commit : TIMING_COLORS.reveal;
+          const cy = yRow(oi) + (jitter(i) - 0.5) * (rowH - 10);
+          if (sec > axisMax) {
+            const x = margin.left + plotW + 4;
+            return <path key={i} d={`M${x},${cy - 4} L${x + 7},${cy} L${x},${cy + 4} Z`} fill={color} fillOpacity={0.8} />;
+          }
+          return <circle key={i} cx={xScale(sec)} cy={cy} r={3} fill={color} fillOpacity={0.5} />;
+        })}
+      </svg>
+    </div>
+  );
+}
+
+const renderTimingSection = (windowLabel, hData, hLoading, hError) => (
+  <section className="analytics-section">
+    <h2 title="How quickly each operator responds. Commit time = seconds from the evaluation request landing on-chain to this operator's commit. Reveal time = seconds from the reveal request being dispatched to the operator's reveal. Measured in whole blocks (2s each on Base)."><Clock size={20} className="inline-icon" /> Response Timing · {windowLabel}</h2>
+    <div className="section-content">
+      {hLoading && !hData ? (
+        <div className="loading"><div className="spinner"></div><p>Scanning aggregator events…</p></div>
+      ) : hError ? (
+        <div className="info-banner"><AlertTriangle size={16} /><span>{hError}</span></div>
+      ) : hData?.scanFailed ? (
+        <ScanFailedBanner hData={hData} />
+      ) : hData && !hData.timing ? (
+        <div className="empty-state"><Clock size={32} /><p>Timing data is still being collected — refresh shortly.</p></div>
+      ) : hData?.timing?.operators?.length > 0 ? (
+        <>
+          <div className="stats-table timing-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Operator</th>
+                  <th className="tooltip-header" title="Commits with a measurable time (the request was inside the window)">Commits</th>
+                  <th className="tooltip-header" title="Seconds from the request landing on-chain to this operator's commit: average · min · max">Commit time (avg · min · max)</th>
+                  <th className="tooltip-header" title="Reveals with a measurable time (the reveal request was inside the window)">Reveals</th>
+                  <th className="tooltip-header" title="Seconds from the reveal request dispatched to the slot to this operator's reveal: average · min · max">Reveal time (avg · min · max)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {hData.timing.operators.map((o) => (
+                  <tr key={o.operator}>
+                    <td><code>{shortAddr(o.operator)}</code></td>
+                    <td>{o.commit.count}</td>
+                    <td>{secTriple(o.commit)}</td>
+                    <td>{o.reveal.count}</td>
+                    <td>{secTriple(o.reveal)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <TimingCluster timing={hData.timing} />
+          <p className="health-footnote">
+            Every commit and reveal in the window is one dot; its position is the operator's response time. Times are whole blocks (2s each on Base). Commit time is measured from the evaluation request; reveal time from the reveal request dispatched to that arbiter.
+          </p>
+        </>
+      ) : (
+        <div className="empty-state"><Clock size={32} /><p>No oracle activity in the window</p></div>
+      )}
+    </div>
+  </section>
+);
+
 // Gas-tracking display helpers (commit vs reveal gas per arbiter response).
 const GAS_COLORS = { commit: '#3b82f6', reveal: '#8b5cf6' };
 const fmtGas = (n) => (n == null ? '—' : Math.round(n).toLocaleString());
@@ -878,6 +1032,10 @@ function Analytics() {
       {/* Operator Reliability — 14-day and 24-hour windows */}
       {renderReliabilitySection('Last 14 days', healthData, healthLoading, healthError, alertsByOp)}
       {renderReliabilitySection('Last 24 hours', health24Data, health24Loading, health24Error, alertsByOp)}
+
+      {/* Response Timing — same two windows, table + cluster chart */}
+      {renderTimingSection('Last 14 days', healthData, healthLoading, healthError)}
+      {renderTimingSection('Last 24 hours', health24Data, health24Loading, health24Error)}
 
       {/* Gas per Commit / Reveal Section */}
       <section className="analytics-section">

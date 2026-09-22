@@ -334,6 +334,42 @@
   opacity: 1;
 }
 
+/* Timing table */
+.agg-history .timing-hint {
+  margin: -0.25rem 0 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.agg-history .timing-table .timing-cell {
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
+  font-size: 0.72rem;
+}
+
+.agg-history .timing-table .timing-block {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.agg-history .timing-table .timing-time {
+  color: var(--text-secondary);
+  margin-top: 0.15rem;
+}
+
+.agg-history .timing-table .timing-offset {
+  color: var(--primary);
+  font-weight: 600;
+  margin-top: 0.15rem;
+}
+
+.agg-history .timing-table .timing-failed .timing-block {
+  color: #ef4444;
+}
+
 /* Fulfillment section */
 .fulfillment-details {
   display: flex;

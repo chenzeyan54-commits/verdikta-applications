@@ -305,7 +305,10 @@ function AggHistory() {
           <div className="fulfillment-details">
             <div className="detail-row">
               <span className="detail-label">Block:</span>
-              <span className="detail-value">{requestEvent.block}</span>
+              <span className="detail-value">
+                {requestEvent.block}
+                {requestEvent.timestamp ? ` (${formatTime(requestEvent.timestamp)})` : ''}
+              </span>
             </div>
             <div className="detail-row">
               <span className="detail-label">Tx Hash:</span>
@@ -406,6 +409,69 @@ function AggHistory() {
         </div>
       )}
 
+      {/* Timing: block numbers + timestamps of each arbiter's lifecycle events */}
+      {slots && slots.length > 0 && slots.some(s => s.timing) && (
+        <div className="analytics-section">
+          <h2><Clock size={20} /> Timing</h2>
+          <p className="timing-hint">
+            Block and time of each event per arbiter. The offset (+m:ss) is measured from the request
+            {requestEvent?.timestamp ? ` at ${formatTime(requestEvent.timestamp)}` : ''}.
+          </p>
+          <div className="slots-table timing-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Slot</th>
+                  <th>Arbiter Addr</th>
+                  <th>Job ID</th>
+                  <th>Selected</th>
+                  <th>Commit</th>
+                  <th>Reveal Req</th>
+                  <th>Reveal</th>
+                </tr>
+              </thead>
+              <tbody>
+                {slots.map(slot => {
+                  const t = slot.timing || {};
+                  const revealEvt = t.reveal || t.failure;
+                  const revealFailed = !t.reveal && !!t.failure;
+                  return (
+                    <tr key={`t-${slot.slot}`}>
+                      <td>{slot.slot}</td>
+                      <td className="oracle-cell">
+                        <a
+                          href={`${networkConfig.explorer}/address/${slot.oracle}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="oracle-link"
+                        >
+                          {slot.oracle.slice(0, 8)}...{slot.oracle.slice(-4)}
+                          <ExternalLink size={10} />
+                        </a>
+                      </td>
+                      <td className="oracle-cell" title={slot.jobId || ''}>
+                        {slot.jobId ? (
+                          <span className="jobid-cell">
+                            {slot.jobId.slice(0, 8)}...{slot.jobId.slice(-4)}
+                            <button className="copy-icon-btn" onClick={() => handleCopy(slot.jobId, `tjob-${slot.slot}`)}>
+                              {copied === `tjob-${slot.slot}` ? <CheckCircle size={11} className="icon-ok" /> : <Copy size={11} />}
+                            </button>
+                          </span>
+                        ) : '-'}
+                      </td>
+                      <TimingCell evt={t.selected} base={requestEvent?.timestamp} />
+                      <TimingCell evt={t.commit} base={requestEvent?.timestamp} />
+                      <TimingCell evt={t.revealRequest} base={requestEvent?.timestamp} />
+                      <TimingCell evt={revealEvt} base={requestEvent?.timestamp} failed={revealFailed} />
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Fulfillment */}
       {fulfillment && (
         <div className="analytics-section">
@@ -432,7 +498,12 @@ function AggHistory() {
             )}
             <div className="detail-row">
               <span className="detail-label">Block:</span>
-              <span className="detail-value">{fulfillment.block}</span>
+              <span className="detail-value">
+                {fulfillment.block}
+                {fulfillment.timestamp ? ` (${formatTime(fulfillment.timestamp)}` : ''}
+                {fulfillment.timestamp && requestEvent?.timestamp ? `, ${formatOffset(fulfillment.timestamp - requestEvent.timestamp)} after request` : ''}
+                {fulfillment.timestamp ? ')' : ''}
+              </span>
             </div>
             <div className="detail-row">
               <span className="detail-label">Tx Hash:</span>
@@ -452,6 +523,57 @@ function AggHistory() {
       )}
 
     </div>
+  );
+}
+
+/** Format a unix timestamp (seconds) as a local date/time string. */
+function formatTime(ts) {
+  if (!ts) return '';
+  return new Date(ts * 1000).toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
+
+/** Format a duration in seconds as +m:ss (or +h:mm:ss beyond an hour). */
+function formatOffset(seconds) {
+  if (seconds == null || Number.isNaN(seconds)) return '';
+  const sign = seconds < 0 ? '-' : '+';
+  const abs = Math.abs(Math.round(seconds));
+  const h = Math.floor(abs / 3600);
+  const m = Math.floor((abs % 3600) / 60);
+  const s = abs % 60;
+  const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
+  return `${sign}${h > 0 ? `${h}:` : ''}${mm}:${String(s).padStart(2, '0')}`;
+}
+
+/**
+ * Timing cell: block number (linked to the tx), wall-clock time, and offset
+ * from the request. `evt` is { block, timestamp, txHash } or null.
+ */
+function TimingCell({ evt, base, failed }) {
+  if (!evt || evt.block == null) {
+    return <td><span className="icon-na">-</span></td>;
+  }
+  const offset = (base && evt.timestamp) ? formatOffset(evt.timestamp - base) : null;
+  return (
+    <td className={`timing-cell${failed ? ' timing-failed' : ''}`} title={evt.txHash || ''}>
+      <div className="timing-block">
+        {evt.txHash ? (
+          <a
+            href={`${networkConfig.explorer}/tx/${evt.txHash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="oracle-link"
+          >
+            #{evt.block} <ExternalLink size={10} />
+          </a>
+        ) : `#${evt.block}`}
+        {failed && <XCircle size={12} className="icon-fail" title="Reveal rejected" />}
+      </div>
+      <div className="timing-time">{evt.timestamp ? formatTime(evt.timestamp) : 'time unavailable'}</div>
+      {offset && <div className="timing-offset">{offset}</div>}
+    </td>
   );
 }
 

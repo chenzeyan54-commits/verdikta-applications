@@ -137,6 +137,23 @@ class VerdiktaService {
     return out;
   }
 
+  // Resolve unix timestamps (seconds) for a set of block numbers. Duplicates and
+  // null/undefined entries are ignored; a block whose header can't be fetched is
+  // left out of the result (callers treat a missing entry as "unknown").
+  async _getBlockTimestamps(blockNumbers) {
+    const unique = [...new Set(blockNumbers.filter(b => Number.isInteger(b)))];
+    const out = {};
+    await Promise.all(unique.map(async (bn) => {
+      try {
+        const blk = await this._withRetry(() => this.provider.getBlock(bn), `getBlock[${bn}]`);
+        if (blk && blk.timestamp != null) out[bn] = Number(blk.timestamp);
+      } catch (err) {
+        logger.warn('Failed to fetch block timestamp', { block: bn, msg: err.message });
+      }
+    }));
+    return out;
+  }
+
   /**
    * Get ReputationKeeper contract instance (lazy-loaded)
    */
@@ -820,7 +837,19 @@ class VerdiktaService {
         tooManyScores: false,
         wrongScoreCount: false,
         tooFewScores: false,
-        scores: null
+        scores: null,
+        // Timing (block numbers + tx hashes of each lifecycle event; timestamps
+        // are filled in from block headers in step 8b)
+        selectedBlock: log.blockNumber,
+        selectedTx: log.transactionHash,
+        commitBlock: null,
+        commitTx: null,
+        revealRequestBlock: null,
+        revealRequestTx: null,
+        revealBlock: null,
+        revealTx: null,
+        failureBlock: null,
+        failureTx: null
       };
     }
 
@@ -845,14 +874,28 @@ class VerdiktaService {
         const slot = Number(parsed.args.pollIndex);
         logger.info(`  ${eventNames[i]} slot=${slot}`, { args: Object.keys(parsed.args) });
         if (!slotMap[slot]) continue;
+        const entry = slotMap[slot];
         switch (eventNames[i]) {
-          case 'CommitReceived': slotMap[slot].committed = true; break;
-          case 'RevealRequestDispatched': slotMap[slot].revealRequested = true; break;
-          case 'RevealHashMismatch': slotMap[slot].hashMismatch = true; break;
-          case 'InvalidRevealFormat': slotMap[slot].invalidFormat = true; break;
-          case 'RevealTooManyScores': slotMap[slot].tooManyScores = true; break;
-          case 'RevealWrongScoreCount': slotMap[slot].wrongScoreCount = true; break;
-          case 'RevealTooFewScores': slotMap[slot].tooFewScores = true; break;
+          case 'CommitReceived':
+            entry.committed = true;
+            entry.commitBlock = log.blockNumber;
+            entry.commitTx = log.transactionHash;
+            break;
+          case 'RevealRequestDispatched':
+            entry.revealRequested = true;
+            entry.revealRequestBlock = log.blockNumber;
+            entry.revealRequestTx = log.transactionHash;
+            break;
+          case 'RevealHashMismatch': entry.hashMismatch = true; break;
+          case 'InvalidRevealFormat': entry.invalidFormat = true; break;
+          case 'RevealTooManyScores': entry.tooManyScores = true; break;
+          case 'RevealWrongScoreCount': entry.wrongScoreCount = true; break;
+          case 'RevealTooFewScores': entry.tooFewScores = true; break;
+        }
+        // Any reveal-failure event marks when the (rejected) reveal landed
+        if (eventNames[i] !== 'CommitReceived' && eventNames[i] !== 'RevealRequestDispatched') {
+          entry.failureBlock = log.blockNumber;
+          entry.failureTx = log.transactionHash;
         }
       }
     }
@@ -868,6 +911,8 @@ class VerdiktaService {
       logger.info(`  Response slot=${slot}`, { args: Object.keys(parsed.args) });
       if (!slotMap[slot]) continue;
       slotMap[slot].revealOK = true;
+      slotMap[slot].revealBlock = log.blockNumber;
+      slotMap[slot].revealTx = log.transactionHash;
     }
 
     // 7. Check for EvaluationFailed and FulfillAIEvaluation
@@ -892,6 +937,32 @@ class VerdiktaService {
 
     // 8. Build slots array and analysis
     const slots = Object.values(slotMap).sort((a, b) => a.slot - b.slot);
+
+    // 8b. Resolve block timestamps for every lifecycle event block (request,
+    // per-slot selected/commit/reveal-request/reveal/failure, fulfillment).
+    // Events cluster in a handful of blocks, so this is a few getBlock calls.
+    const blockTimestamps = await this._getBlockTimestamps([
+      requestEvent?.block,
+      fulfillment?.block,
+      ...slots.flatMap(s => [s.selectedBlock, s.commitBlock, s.revealRequestBlock, s.revealBlock, s.failureBlock])
+    ]);
+    const tsOf = (block) => (block != null && blockTimestamps[block] != null) ? blockTimestamps[block] : null;
+    if (requestEvent) requestEvent.timestamp = tsOf(requestEvent.block);
+    if (fulfillment) fulfillment.timestamp = tsOf(fulfillment.block);
+    for (const s of slots) {
+      s.timing = {
+        selected: { block: s.selectedBlock, timestamp: tsOf(s.selectedBlock), txHash: s.selectedTx },
+        commit: s.commitBlock != null ? { block: s.commitBlock, timestamp: tsOf(s.commitBlock), txHash: s.commitTx } : null,
+        revealRequest: s.revealRequestBlock != null ? { block: s.revealRequestBlock, timestamp: tsOf(s.revealRequestBlock), txHash: s.revealRequestTx } : null,
+        reveal: s.revealBlock != null ? { block: s.revealBlock, timestamp: tsOf(s.revealBlock), txHash: s.revealTx } : null,
+        failure: s.failureBlock != null ? { block: s.failureBlock, timestamp: tsOf(s.failureBlock), txHash: s.failureTx } : null
+      };
+      delete s.selectedBlock; delete s.selectedTx;
+      delete s.commitBlock; delete s.commitTx;
+      delete s.revealRequestBlock; delete s.revealRequestTx;
+      delete s.revealBlock; delete s.revealTx;
+      delete s.failureBlock; delete s.failureTx;
+    }
     const totalSlots = slots.length;
     const committedSlots = slots.filter(s => s.committed);
     const revealedSlots = slots.filter(s => s.revealOK);

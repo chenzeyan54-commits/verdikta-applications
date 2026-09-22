@@ -1293,7 +1293,7 @@ function Analytics() {
                   </div>
                   <div className="config-item">
                     <span className="config-label">Max Oracle Fee</span>
-                    <span className="config-value">{data.system.aggregatorConfig.maxOracleFee} LINK</span>
+                    <span className="config-value">{data.system.aggregatorConfig.maxOracleFee} ETH</span>
                   </div>
                 </div>
               </div>

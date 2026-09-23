@@ -15,6 +15,7 @@
 
 import { ethers } from 'ethers';
 import { config, currentNetwork } from '../config';
+import { selectInjectedProvider, withTimeout, CONNECT_TIMEOUT_MS } from './injectedProvider';
 
 // BountyEscrow ABI - only the functions we need to call
 // (September 2026 revision: struct createBounty, 3-arg prepareSubmission, per-bounty
@@ -266,8 +267,8 @@ class ContractService {
           chainId: currentNetwork.chainId,
           name: currentNetwork.name,
         });
-      } else if (window.ethereum) {
-        this._readOnlyProvider = new ethers.BrowserProvider(window.ethereum);
+      } else if (selectInjectedProvider()) {
+        this._readOnlyProvider = new ethers.BrowserProvider(selectInjectedProvider());
       }
     }
     return this._readOnlyProvider;
@@ -303,16 +304,25 @@ class ContractService {
   }
 
   async _doConnect() {
-    if (!window.ethereum) {
-      throw new Error('MetaMask not installed. Please install MetaMask to continue.');
+    // Same provider-selection logic as walletService (EIP-6963 first) so a
+    // transaction never goes to a different wallet than the one in the header.
+    const injected = selectInjectedProvider();
+    if (!injected) {
+      const err = new Error('No wallet extension detected. Please install MetaMask to continue.');
+      err.code = 'VERDIKTA_NO_PROVIDER';
+      throw err;
     }
 
     try {
-      // Request account access
-      await window.ethereum.request({ method: 'eth_requestAccounts' });
+      // Request account access (bounded so a stuck wallet surfaces as an error)
+      await withTimeout(
+        injected.request({ method: 'eth_requestAccounts' }),
+        CONNECT_TIMEOUT_MS,
+        'eth_requestAccounts'
+      );
 
       // Create provider and signer (ONCE)
-      this.provider = new ethers.BrowserProvider(window.ethereum);
+      this.provider = new ethers.BrowserProvider(injected);
       this.signer = await this.provider.getSigner();
       this.userAddress = await this.signer.getAddress();
 
@@ -1353,8 +1363,9 @@ class ContractService {
  */
 let sharedProvider = null;
 function getSharedProvider() {
-  if (!sharedProvider && window.ethereum) {
-    sharedProvider = new ethers.BrowserProvider(window.ethereum);
+  const injected = selectInjectedProvider();
+  if (!sharedProvider && injected) {
+    sharedProvider = new ethers.BrowserProvider(injected);
   }
   return sharedProvider;
 }
@@ -1363,9 +1374,8 @@ function getSharedProvider() {
  * Derive bountyId from a known tx hash by parsing the event
  */
 export async function deriveBountyIdFromTx(txHash, escrowAddress) {
-  if (!window.ethereum) throw new Error('Wallet not available');
-  
   const provider = getSharedProvider();
+  if (!provider) throw new Error('Wallet not available');
   const iface = new ethers.Interface([
     "event BountyCreated(uint256 indexed bountyId, address indexed creator, string evaluationCid, uint64 classId, uint8 threshold, uint256 payoutWei, uint64 submissionDeadline)"
   ]);
@@ -1397,9 +1407,8 @@ export async function resolveBountyIdByStateLoose({
   deadlineToleranceSec = 300,
   lookback = 1000
 }) {
-  if (!window.ethereum) throw new Error("Wallet not available");
-  
   const provider = getSharedProvider();
+  if (!provider) throw new Error('Wallet not available');
   const abi = [
     "function bountyCount() view returns (uint256)",
     // Full Bounty tuple (incl. trailing `oracle` struct); positional reads b[0]/b[1]/b[6] below are unchanged.

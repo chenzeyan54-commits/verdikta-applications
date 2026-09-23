@@ -49,12 +49,7 @@ function AppContent() {
     }
   }, []);
 
-  const [walletState, setWalletState] = useState({
-    isConnected: false,
-    address: null,
-    chainId: null,
-    isCorrectNetwork: false
-  });
+  const [walletState, setWalletState] = useState(() => walletService.getState());
 
   // Subscribe to wallet state changes and try to reconnect on mount
   useEffect(() => {
@@ -88,15 +83,20 @@ function AppContent() {
       await walletService.connect();
       // State will be updated via subscription
     } catch (error) {
-      console.error('Failed to connect wallet:', error);
-      toast.error(`Failed to connect wallet: ${error.message}`);
+      // walletService already logged the raw error + diagnostics and set
+      // lastError (rendered persistently in the header). The toast is just a
+      // nudge toward it, so keep it short but visible for longer than default.
+      const explained = walletService.lastError;
+      toast.error(explained?.message || `Failed to connect wallet: ${error?.message || error}`, 8000);
     }
   };
 
   const handleDisconnect = () => {
-    walletService.disconnect();
+    walletService.disconnect({ revoke: true });
     // State will be updated via subscription
   };
+
+  const handleDismissError = () => walletService.clearError();
 
   return (
     <>
@@ -106,6 +106,7 @@ function AppContent() {
         walletState={walletState}
         onConnect={handleConnect}
         onDisconnect={handleDisconnect}
+        onDismissError={handleDismissError}
       />
 
       <main className="main-content">

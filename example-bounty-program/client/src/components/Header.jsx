@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Target, Wallet, LogOut, Check, Menu, X } from 'lucide-react';
+import { Target, Wallet, LogOut, Check, Menu, X, AlertTriangle, Loader2 } from 'lucide-react';
 import { walletService } from '../services/wallet';
 import { currentNetwork } from '../config';
 import { apiService } from '../services/api';
@@ -11,8 +11,9 @@ import './Header.css';
 // actions are rare and on-chain state changes slowly.
 const ACTION_REQUIRED_POLL_MS = 60_000;
 
-function Header({ walletState, onConnect, onDisconnect }) {
-  const { isConnected, address, chainId } = walletState;
+function Header({ walletState, onConnect, onDisconnect, onDismissError }) {
+  const { isConnected, address, chainId, connecting, lastError } = walletState;
+  const [showDiag, setShowDiag] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [actionRequiredCount, setActionRequiredCount] = useState(0);
   const location = useLocation();
@@ -103,9 +104,15 @@ function Header({ walletState, onConnect, onDisconnect }) {
 
           <div className="header-right">
             {!isConnected ? (
-              <button onClick={onConnect} className="btn btn-primary btn-with-icon">
-                <Wallet size={18} />
-                Connect Wallet
+              <button
+                onClick={onConnect}
+                className="btn btn-primary btn-with-icon"
+                disabled={!!connecting}
+                aria-busy={!!connecting}
+                title={connecting ? 'Waiting for your wallet — check for a wallet prompt' : 'Connect your wallet'}
+              >
+                {connecting ? <Loader2 size={18} className="spin" /> : <Wallet size={18} />}
+                {connecting ? 'Connecting… check your wallet' : 'Connect Wallet'}
               </button>
             ) : (
               <div className="wallet-info">
@@ -128,6 +135,43 @@ function Header({ walletState, onConnect, onDisconnect }) {
           </div>
         </div>
       </div>
+
+      {/* Persistent, actionable connection error. A 2-second toast was too
+          easy to miss — this stays until dismissed or the next attempt. */}
+      {!isConnected && lastError && (
+        <div className="wallet-notice" role="alert">
+          <div className="wallet-notice-body">
+            <AlertTriangle size={18} className="wallet-notice-icon" />
+            <div className="wallet-notice-text">
+              <strong>{lastError.message}</strong>
+              {lastError.hint && <span className="wallet-notice-hint">{lastError.hint}</span>}
+              <span className="wallet-notice-actions">
+                {lastError.link && (
+                  <a href={lastError.link.href} target="_blank" rel="noopener noreferrer">
+                    {lastError.link.label}
+                  </a>
+                )}
+                <button type="button" className="link-button" onClick={() => setShowDiag(d => !d)}>
+                  {showDiag ? 'Hide details' : 'Show details'}
+                </button>
+              </span>
+              {showDiag && (
+                <pre className="wallet-notice-diag">
+                  {JSON.stringify(walletService.getDiagnostics(), null, 2)}
+                </pre>
+              )}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="wallet-notice-dismiss"
+            aria-label="Dismiss"
+            onClick={() => { setShowDiag(false); onDismissError && onDismissError(); }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
     </header>
   );
 }

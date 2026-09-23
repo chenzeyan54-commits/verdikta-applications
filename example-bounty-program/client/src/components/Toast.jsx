@@ -30,8 +30,10 @@ const TOAST_CONFIG = {
   },
 };
 
-// Default duration in milliseconds
+// Default duration in milliseconds. Errors stay longer: 2s was short enough
+// that users looking at their wallet toolbar icon missed the message entirely.
 const DEFAULT_DURATION = 2000;
+const ERROR_DURATION = 6000;
 
 /**
  * Individual Toast component
@@ -99,7 +101,7 @@ export function ToastProvider({ children }) {
   // Convenience methods for each toast type
   const toast = useCallback((message, duration) => addToast(message, 'info', duration), [addToast]);
   toast.success = useCallback((message, duration) => addToast(message, 'success', duration), [addToast]);
-  toast.error = useCallback((message, duration) => addToast(message, 'error', duration), [addToast]);
+  toast.error = useCallback((message, duration = ERROR_DURATION) => addToast(message, 'error', duration), [addToast]);
   toast.warning = useCallback((message, duration) => addToast(message, 'warning', duration), [addToast]);
   toast.info = useCallback((message, duration) => addToast(message, 'info', duration), [addToast]);
   toast.dismiss = dismissToast;

@@ -302,6 +302,8 @@ const jitter = (i) => ((i * 9301 + 49297) % 233280) / 233280;
 // so the axis stops at the 98th percentile when the max is far beyond it and
 // the overflow dots are pinned to the right edge as small arrows.
 function TimingCluster({ timing }) {
+  const [hover, setHover] = useState(null);
+  const svgRef = useRef(null);
   const ops = timing?.operators || [];
   const pts = timing?.points || [];
   if (!ops.length || !pts.length) return null;
@@ -326,14 +328,60 @@ function TimingCluster({ timing }) {
   const ticks = [];
   for (let v = 0; v <= axisMax; v += tick) ticks.push(v);
 
+  // Average markers: one per operator per kind (commit / reveal) with a value.
+  const markers = [];
+  ops.forEach((o, i) => {
+    for (const kind of ['commit', 'reveal']) {
+      const st = o[kind];
+      if (st && st.count > 0 && st.avgSec != null) {
+        markers.push({ operator: o.operator, kind, avg: st.avgSec, sd: st.stdDevSec, n: st.count, cx: xScale(st.avgSec), cy: yRow(i), clipped: st.avgSec > axisMax });
+      }
+    }
+  });
+
+  // Hover resolves to the nearest marker (viewBox units) from the svg root, so
+  // two markers close together can't shadow each other.
+  const MARKER_HOVER_RADIUS = 12;
+  const onPointerMove = (e) => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const px = (e.clientX - rect.left) * (width / rect.width);
+    const py = (e.clientY - rect.top) * (height / rect.height);
+    let best = null, bestD = Infinity;
+    markers.forEach((m, mi) => { const d = Math.hypot(m.cx - px, m.cy - py); if (d < bestD) { bestD = d; best = mi; } });
+    if (best !== null && bestD <= MARKER_HOVER_RADIUS) {
+      if (!hover || hover.mi !== best) setHover({ mi: best, m: markers[best] });
+    } else if (hover) {
+      setHover(null);
+    }
+  };
+
   return (
     <div className="timing-cluster">
       <div className="timing-legend">
         <span className="timing-legend-item"><span className="timing-swatch" style={{ background: TIMING_COLORS.commit }} />Commit (after request)</span>
         <span className="timing-legend-item"><span className="timing-swatch" style={{ background: TIMING_COLORS.reveal }} />Reveal (after reveal request)</span>
-        <span className="timing-legend-note">{pts.length.toLocaleString()} responses</span>
+        <span className="timing-legend-item">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+            <circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
+            <path d="M4.2,4.2 L9.8,9.8 M9.8,4.2 L4.2,9.8" stroke="currentColor" strokeWidth="1.6" />
+          </svg>
+          Average (hover for std dev)
+        </span>
+        <span className="timing-legend-note">{pts.length.toLocaleString()} samples</span>
       </div>
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" role="img" aria-label="Commit and reveal response times per operator">
+      <div className="timing-cluster-wrap">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        role="img"
+        aria-label="Commit and reveal response times per operator"
+        ref={svgRef}
+        onPointerMove={onPointerMove}
+        onPointerLeave={() => setHover(null)}
+      >
         {ops.map((o, i) => (
           <g key={o.operator}>
             <line x1={margin.left} x2={margin.left + plotW} y1={yRow(i)} y2={yRow(i)} className="timing-rowline" />
@@ -359,7 +407,35 @@ function TimingCluster({ timing }) {
           }
           return <circle key={i} cx={xScale(sec)} cy={cy} r={3} fill={color} fillOpacity={0.5} />;
         })}
+        {/* Average markers: circle with an X, drawn over the dots */}
+        {markers.map((m, mi) => {
+          const color = TIMING_COLORS[m.kind];
+          const r = hover && hover.mi === mi ? 7 : 6;
+          const k = r * 0.55;
+          return (
+            <g key={`${m.operator}-${m.kind}`} className="timing-avg" tabIndex={0}
+              onFocus={() => setHover({ mi, m })} onBlur={() => setHover(null)}>
+              <circle cx={m.cx} cy={m.cy} r={r + 2} fill="var(--bg)" />
+              <circle cx={m.cx} cy={m.cy} r={r} fill="var(--bg)" stroke={color} strokeWidth={2} />
+              <path d={`M${m.cx - k},${m.cy - k} L${m.cx + k},${m.cy + k} M${m.cx + k},${m.cy - k} L${m.cx - k},${m.cy + k}`} stroke={color} strokeWidth={2} />
+            </g>
+          );
+        })}
       </svg>
+      {hover && (
+        <div
+          className={`timing-tooltip${hover.m.cy < height / 2 ? ' below' : ''}`}
+          style={{ left: `${(hover.m.cx / width) * 100}%`, top: `${(hover.m.cy / height) * 100}%` }}
+        >
+          <div className="timing-tooltip-value">avg {fmtSec(hover.m.avg)}</div>
+          <div className="timing-tooltip-row">
+            <span className="timing-swatch" style={{ background: TIMING_COLORS[hover.m.kind] }} />
+            {hover.m.kind === 'commit' ? 'Commit' : 'Reveal'} · σ {hover.m.sd != null ? fmtSec(hover.m.sd) : '—'} · n={hover.m.n}
+          </div>
+          <div className="timing-tooltip-row">{shortAddr(hover.m.operator)}{hover.m.clipped ? ' · beyond axis' : ''}</div>
+        </div>
+      )}
+      </div>
     </div>
   );
 }

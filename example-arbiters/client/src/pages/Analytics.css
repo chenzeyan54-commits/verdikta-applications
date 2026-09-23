@@ -674,3 +674,40 @@
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
+.analytics .timing-cluster-wrap {
+  position: relative;
+}
+.analytics .timing-cluster svg * {
+  pointer-events: none;
+}
+.analytics .timing-avg {
+  outline: none;
+}
+.analytics .timing-tooltip {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 14px));
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 2;
+}
+.analytics .timing-tooltip.below {
+  transform: translate(-50%, 14px);
+}
+.analytics .timing-tooltip-value {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.analytics .timing-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+}

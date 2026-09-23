@@ -1375,10 +1375,19 @@ class VerdiktaService {
       }
     }
     const summarizeSecs = (arr) => {
-      if (!arr.length) return { count: 0, avgSec: null, minSec: null, maxSec: null };
+      if (!arr.length) return { count: 0, avgSec: null, minSec: null, maxSec: null, stdDevSec: null };
       let sum = 0, min = Infinity, max = -Infinity;
       for (const v of arr) { sum += v; if (v < min) min = v; if (v > max) max = v; }
-      return { count: arr.length, avgSec: Math.round((sum / arr.length) * 10) / 10, minSec: min, maxSec: max };
+      const mean = sum / arr.length;
+      let sq = 0;
+      for (const v of arr) sq += (v - mean) * (v - mean);
+      return {
+        count: arr.length,
+        avgSec: Math.round(mean * 10) / 10,
+        minSec: min,
+        maxSec: max,
+        stdDevSec: Math.round(Math.sqrt(sq / arr.length) * 10) / 10, // population std dev
+      };
     };
     const timingOperators = Object.values(timingByOp)
       .map((t) => ({ operator: t.operator, commit: summarizeSecs(t.commit), reveal: summarizeSecs(t.reveal) }))

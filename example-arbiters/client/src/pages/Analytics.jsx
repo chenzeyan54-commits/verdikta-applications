@@ -454,6 +454,122 @@ function TimingCluster({ timing }) {
   );
 }
 
+// Daily average commit / reveal time over the window: one dot per day that has
+// samples, dots joined by a line, with a crosshair tooltip on the nearest day.
+function TimingDailyChart({ daily, generatedAt }) {
+  const [hoverIdx, setHoverIdx] = useState(null);
+  const svgRef = useRef(null);
+  if (!daily || daily.length < 2) return null;
+  const anyData = daily.some((d) => d.avgCommitSec != null || d.avgRevealSec != null);
+  if (!anyData) return null;
+
+  const margin = { top: 12, right: 20, bottom: 30, left: 56 };
+  const width = 720;
+  const plotH = 118; // ~25% shorter than the original 170
+  const height = margin.top + plotH + margin.bottom;
+  const plotW = width - margin.left - margin.right;
+  const n = daily.length;
+  const xAt = (i) => margin.left + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+
+  const vals = daily.flatMap((d) => [d.avgCommitSec, d.avgRevealSec]).filter((v) => v != null);
+  const yMaxRaw = Math.max(10, ...vals);
+  const yTick = niceTickStep(yMaxRaw * 1.6); // ~4–5 ticks: the plot is short
+  const yMax = Math.ceil(yMaxRaw / yTick) * yTick;
+  const yAt = (v) => margin.top + plotH - (v / yMax) * plotH;
+  const yTicks = [];
+  for (let v = 0; v <= yMax; v += yTick) yTicks.push(v);
+
+  // Day labels: the newest bucket is today (relative to when the scan ran).
+  const anchor = generatedAt ? new Date(generatedAt) : new Date();
+  const labelFor = (d) => {
+    const dt = new Date(anchor.getTime() - d.daysAgo * 86400000);
+    return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  };
+
+  const linePath = (key) => {
+    let path = '';
+    let pen = false;
+    daily.forEach((d, i) => {
+      const v = d[key];
+      if (v == null) return;
+      path += `${pen ? 'L' : 'M'}${xAt(i).toFixed(1)},${yAt(v).toFixed(1)} `;
+      pen = true;
+    });
+    return path;
+  };
+
+  const onPointerMove = (e) => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width) return;
+    const px = (e.clientX - rect.left) * (width / rect.width);
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < n; i++) { const d = Math.abs(xAt(i) - px); if (d < bestD) { bestD = d; best = i; } }
+    if (hoverIdx !== best) setHoverIdx(best);
+  };
+
+  const h = hoverIdx != null ? daily[hoverIdx] : null;
+  const series = [
+    { key: 'avgCommitSec', countKey: 'commits', label: 'Commit', color: TIMING_COLORS.commit },
+    { key: 'avgRevealSec', countKey: 'reveals', label: 'Reveal', color: TIMING_COLORS.reveal },
+  ];
+
+  return (
+    <div className="timing-daily">
+      <div className="timing-legend">
+        <span className="timing-legend-item"><span className="timing-linekey" style={{ background: TIMING_COLORS.commit }} />Avg commit time</span>
+        <span className="timing-legend-item"><span className="timing-linekey" style={{ background: TIMING_COLORS.reveal }} />Avg reveal time</span>
+        <span className="timing-legend-note">per day · all operators</span>
+      </div>
+      <div className="timing-cluster-wrap">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          width="100%"
+          role="img"
+          aria-label="Average commit and reveal time per day"
+          ref={svgRef}
+          onPointerMove={onPointerMove}
+          onPointerLeave={() => setHoverIdx(null)}
+        >
+          {yTicks.map((v) => (
+            <g key={v}>
+              <line x1={margin.left} x2={margin.left + plotW} y1={yAt(v)} y2={yAt(v)} className="timing-grid" />
+              <text x={margin.left - 8} y={yAt(v)} className="timing-ylabel timing-ylabel-num" dominantBaseline="middle" textAnchor="end">{fmtSec(v)}</text>
+            </g>
+          ))}
+          {daily.map((d, i) => (
+            <text key={i} x={xAt(i)} y={margin.top + plotH + 16} className="timing-xlabel" textAnchor="middle">{labelFor(d)}</text>
+          ))}
+          {h && <line x1={xAt(hoverIdx)} x2={xAt(hoverIdx)} y1={margin.top} y2={margin.top + plotH} className="timing-crosshair" />}
+          {series.map((sr) => (
+            <g key={sr.key}>
+              <path d={linePath(sr.key)} fill="none" stroke={sr.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+              {daily.map((d, i) => d[sr.key] != null && (
+                <circle key={i} cx={xAt(i)} cy={yAt(d[sr.key])} r={hoverIdx === i ? 5 : 4} fill={sr.color} stroke="var(--bg)" strokeWidth={2} />
+              ))}
+            </g>
+          ))}
+        </svg>
+        {h && (
+          <div
+            className="timing-tooltip below"
+            style={{ left: `${(xAt(hoverIdx) / width) * 100}%`, top: `${(margin.top / height) * 100}%` }}
+          >
+            <div className="timing-tooltip-value">{labelFor(h)}</div>
+            {series.map((sr) => (
+              <div key={sr.key} className="timing-tooltip-row">
+                <span className="timing-linekey" style={{ background: sr.color }} />
+                {h[sr.key] != null ? <><strong>{fmtSec(h[sr.key])}</strong>&nbsp;{sr.label} · n={h[sr.countKey]}</> : <>{sr.label}: no samples</>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const renderTimingSection = (windowLabel, hData, hLoading, hError) => (
   <section className="analytics-section">
     <h2 title="How quickly each operator responds. Commit time = seconds from the evaluation request landing on-chain to this operator's commit. Reveal time = seconds from the reveal request being dispatched to the operator's reveal. Measured in whole blocks (2s each on Base)."><Clock size={20} className="inline-icon" /> Response Timing · {windowLabel}</h2>
@@ -508,6 +624,7 @@ const renderTimingSection = (windowLabel, hData, hLoading, hError) => (
           <p className="health-footnote">
             Every commit and reveal in the window is one dot; its position is the operator's response time. Times are whole blocks (2s each on Base). Commit time is measured from the evaluation request; reveal time from the reveal request dispatched to that arbiter.
           </p>
+          {hData.windowDays > 1 && <TimingDailyChart daily={hData.timing.daily} generatedAt={hData.generatedAt} />}
         </>
       ) : (
         <div className="empty-state"><Clock size={32} /><p>No oracle activity in the window</p></div>

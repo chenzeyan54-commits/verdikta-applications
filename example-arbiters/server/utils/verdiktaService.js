@@ -1360,6 +1360,9 @@ class VerdiktaService {
       if (!timingByOp[k]) timingByOp[k] = { operator: ethers.getAddress(operator), commit: [], reveal: [] };
       return timingByOp[k];
     };
+    // Daily buckets (index = days ago, same block-offset bucketing as `daily`)
+    // for the per-day average commit / reveal time series.
+    const timingDaily = Array.from({ length: days }, () => ({ cSum: 0, cN: 0, rSum: 0, rN: 0 }));
     for (const ev of Object.values(evals)) {
       for (const sl of Object.values(ev.slots)) {
         if (!sl.operator) continue;
@@ -1367,13 +1370,29 @@ class VerdiktaService {
         // anchor — and it survives when the RequestAIEvaluation log is missing.
         const anchor = ev.requestBlock != null ? ev.requestBlock : sl.selectedBlock;
         if (sl.commitBlock != null && anchor != null && sl.commitBlock >= anchor) {
-          timingFor(sl.operator).commit.push((sl.commitBlock - anchor) * BLOCK_SECONDS);
+          const sec = (sl.commitBlock - anchor) * BLOCK_SECONDS;
+          timingFor(sl.operator).commit.push(sec);
+          const o = dayOff(sl.commitBlock);
+          if (o >= 0 && o < days) { timingDaily[o].cSum += sec; timingDaily[o].cN++; }
         }
         if (sl.revealBlock != null && sl.revealReqBlock != null && sl.revealBlock >= sl.revealReqBlock) {
-          timingFor(sl.operator).reveal.push((sl.revealBlock - sl.revealReqBlock) * BLOCK_SECONDS);
+          const sec = (sl.revealBlock - sl.revealReqBlock) * BLOCK_SECONDS;
+          timingFor(sl.operator).reveal.push(sec);
+          const o = dayOff(sl.revealBlock);
+          if (o >= 0 && o < days) { timingDaily[o].rSum += sec; timingDaily[o].rN++; }
         }
       }
     }
+    // Oldest → newest (today last), matching dailyTrend / gasDaily.
+    const timingDailySeries = timingDaily
+      .map((b, i) => ({
+        daysAgo: i,
+        commits: b.cN,
+        reveals: b.rN,
+        avgCommitSec: b.cN ? Math.round((b.cSum / b.cN) * 10) / 10 : null,
+        avgRevealSec: b.rN ? Math.round((b.rSum / b.rN) * 10) / 10 : null,
+      }))
+      .reverse();
     const summarizeSecs = (arr) => {
       if (!arr.length) return { count: 0, avgSec: null, minSec: null, maxSec: null, stdDevSec: null };
       let sum = 0, min = Infinity, max = -Infinity;
@@ -1607,6 +1626,7 @@ class VerdiktaService {
         blockSeconds: BLOCK_SECONDS,
         operators: timingOperators,
         points: timingPoints,
+        daily: timingDailySeries, // per-day avg commit / reveal seconds, oldest → newest
       },
       gas: {
         scan: gasSummary,            // receipt-collection/backfill meta

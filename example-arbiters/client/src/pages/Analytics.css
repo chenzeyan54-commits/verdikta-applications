@@ -711,3 +711,7 @@
   gap: 0.35rem;
   margin-top: 0.15rem;
 }
+.analytics .timing-total-row td {
+  border-top: 2px solid var(--border);
+  background: var(--bg-subtle, #f9fafb);
+}

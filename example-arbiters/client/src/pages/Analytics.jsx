@@ -285,6 +285,20 @@ const secTriple = (t) => {
   );
 };
 
+// Cumulative commit / reveal stats across every operator, from the raw
+// samples (so the average is sample-weighted, not an average of averages).
+const overallTiming = (timing) => {
+  const acc = { commit: [], reveal: [] };
+  for (const [, kind, sec] of timing?.points || []) acc[kind === 'c' ? 'commit' : 'reveal'].push(sec);
+  const summarize = (arr) => {
+    if (!arr.length) return { count: 0, avgSec: null, minSec: null, maxSec: null };
+    let sum = 0, min = Infinity, max = -Infinity;
+    for (const v of arr) { sum += v; if (v < min) min = v; if (v > max) max = v; }
+    return { count: arr.length, avgSec: Math.round((sum / arr.length) * 10) / 10, minSec: min, maxSec: max };
+  };
+  return { commit: summarize(acc.commit), reveal: summarize(acc.reveal) };
+};
+
 // Tick step (seconds) giving roughly 4–8 ticks across the axis.
 const niceTickStep = (maxSeconds) => {
   const steps = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
@@ -475,6 +489,18 @@ const renderTimingSection = (windowLabel, hData, hLoading, hError) => (
                     <td>{secTriple(o.reveal)}</td>
                   </tr>
                 ))}
+                {(() => {
+                  const all = overallTiming(hData.timing);
+                  return (
+                    <tr className="timing-total-row" title="All operators combined. The average is over every sample, not an average of the per-operator averages.">
+                      <td><strong>All operators</strong></td>
+                      <td><strong>{all.commit.count}</strong></td>
+                      <td>{secTriple(all.commit)}</td>
+                      <td><strong>{all.reveal.count}</strong></td>
+                      <td>{secTriple(all.reveal)}</td>
+                    </tr>
+                  );
+                })()}
               </tbody>
             </table>
           </div>

@@ -616,18 +616,34 @@ function TimingScatter({ slots, requestTimestamp }) {
   for (const p of points) p.x = p.ts - base;
 
   // Group points that land on exactly the same spot (same arbiter, same
-  // timestamp) so one hover shows every event stacked there.
+  // timestamp, same kind) so one hover shows every event stacked there.
+  // Kind is part of the key: an arbiter holding several slots can have one
+  // slot's reveal land in the same block as another slot's commit, and a
+  // mixed group would draw one colour on top of the other, hiding an event.
   const groups = [];
   const groupIndex = new Map();
   for (const p of points) {
-    const key = `${p.arbiter}|${p.ts}`;
+    const key = `${p.arbiter}|${p.ts}|${p.kind}`;
     if (!groupIndex.has(key)) {
       groupIndex.set(key, groups.length);
-      groups.push({ arbiter: p.arbiter, ts: p.ts, x: p.x, items: [] });
+      groups.push({ arbiter: p.arbiter, ts: p.ts, x: p.x, kind: p.kind, items: [] });
     }
     groups[groupIndex.get(key)].items.push(p);
   }
   for (const g of groups) g.items.sort((a, b) => a.slot - b.slot);
+
+  // Where a commit group and a reveal group coincide (same arbiter + instant),
+  // nudge them apart vertically so both dots stay visible and hoverable.
+  const COINCIDENT_DY = 6;
+  const spotCount = new Map();
+  for (const g of groups) {
+    const spot = `${g.arbiter}|${g.ts}`;
+    spotCount.set(spot, (spotCount.get(spot) || 0) + 1);
+  }
+  for (const g of groups) {
+    const shared = spotCount.get(`${g.arbiter}|${g.ts}`) > 1;
+    g.dy = shared ? (g.kind === 'commit' ? -COINCIDENT_DY : COINCIDENT_DY) : 0;
+  }
 
   // Y: unique arbiters in first-seen slot order
   const arbiters = [];
@@ -653,7 +669,7 @@ function TimingScatter({ slots, requestTimestamp }) {
 
   for (const g of groups) {
     g.cx = xScale(g.x);
-    g.cy = yScale(arbiters.indexOf(g.arbiter));
+    g.cy = yScale(arbiters.indexOf(g.arbiter)) + g.dy;
   }
 
   // Hover is resolved by nearest group to the pointer (in viewBox units), not

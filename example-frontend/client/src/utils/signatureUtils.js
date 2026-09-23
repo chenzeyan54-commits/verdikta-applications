@@ -1,5 +1,6 @@
 // client/src/utils/signatureUtils.js
 import { ethers } from 'ethers';
+import { selectInjectedProvider } from './injectedProvider';
 
 /**
  * Creates a message for signing
@@ -27,12 +28,12 @@ This signature authorizes the above action.`;
  */
 export async function requestSignature(action, data = {}) {
   try {
-    if (!window.ethereum) {
+    const ethereum = selectInjectedProvider();
+    if (!ethereum) {
       throw new Error('No wallet detected. Please install MetaMask.');
     }
 
     // Get the connected account
-    const ethereum = window.ethereum?.providers?.find(p => p.isMetaMask) ?? window.ethereum;
     const provider = new ethers.BrowserProvider(ethereum);
     const signer = await provider.getSigner();
     const address = await signer.getAddress();

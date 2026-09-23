@@ -1,6 +1,7 @@
 /* global BigInt */
 // src/pages/RunQuery.js
 import React, { useState, useEffect, useCallback } from 'react';
+import { selectInjectedProvider } from '../utils/injectedProvider';
 // Import ethers from ethers v6 (we no longer import BigNumber)
 import { ethers, parseUnits } from 'ethers';
 import { getNetworkConfig } from '../utils/contractUtils';
@@ -33,13 +34,10 @@ const getFirstCid = (cidString) => {
  * 3 → fallback to public RPC
  */
 function getReadOnlyProvider(networkKey = 'base_sepolia') {
-  // 1. look for MetaMask in the multi‑provider array
-  const injected = window.ethereum?.providers?.find(p => p.isMetaMask);
-  if (injected) return new ethers.BrowserProvider(injected);
-
-  // 2. single injected provider (does not work with Brave) 
-  if (window.ethereum && window.ethereum.isBraveWallet === false) 
-    return new ethers.BrowserProvider(window.ethereum);
+  // 1./2. injected wallet (EIP-6963 first, MetaMask preferred; Brave Wallet
+  //       is skipped because its provider does not serve reads reliably)
+  const injected = selectInjectedProvider();
+  if (injected && !injected.isBraveWallet) return new ethers.BrowserProvider(injected);
 
   // 3. no wallet at all – use public RPC for selected network
   const networkConfig = getNetworkConfig(networkKey);
@@ -252,7 +250,7 @@ function RunQuery({
     try {
       setWithdrawing(true);
       const networkToUse = selectedNetwork || 'base_sepolia';
-      const ethereum = window.ethereum?.providers?.find(p => p.isMetaMask) ?? window.ethereum;
+      const ethereum = selectInjectedProvider();
       if (!ethereum) throw new Error('No Ethereum wallet detected. Please install MetaMask.');
       let provider = new ethers.BrowserProvider(ethereum);
       provider = await ensureCorrectNetwork(provider, networkToUse);
@@ -296,7 +294,7 @@ const debugContractIssues = async () => {
       console.log('📋 Last Error Details:', lastError);
     }
     
-    const provider = new ethers.BrowserProvider(window.ethereum);
+    const provider = new ethers.BrowserProvider(selectInjectedProvider());
     const contractDebugger = new ContractDebugger(provider, contractAddress, walletAddress);
     
     // Get actual parameters from current state
@@ -358,7 +356,7 @@ const handleRunQuery = async () => {
     console.log('📍 Using network:', networkToUse);
 
     // 1) Ensure wallet is on the selected network (base or base_sepolia)
-    const ethereum = window.ethereum?.providers?.find(p => p.isMetaMask) ?? window.ethereum;
+    const ethereum = selectInjectedProvider();
     if (!ethereum) {
       throw new Error('No Ethereum wallet detected. Please install MetaMask.');
     }

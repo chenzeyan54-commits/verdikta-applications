@@ -7,11 +7,19 @@ import './utils/crypto-polyfill';
 import React, { useState, useEffect, useCallback } from 'react';
 import { Chart, CategoryScale, LinearScale, BarElement } from 'chart.js';
 import './App.css';
-import { ethers, parseEther } from 'ethers'; // ethers v6 import
+import { parseEther } from 'ethers'; // ethers v6 import
 import { createClient } from './services/verdiktaClient';
 import { fetchContracts } from './utils/contractManagementService';
 import { modelProviderService } from './services/modelProviderService';
 import { getNetworkConfig } from './utils/contractUtils';
+import {
+  selectInjectedProvider,
+  refreshDiscovery,
+  walletEnvironment,
+  withTimeout,
+  explainWalletError,
+  CONNECT_TIMEOUT_MS,
+} from './utils/injectedProvider';
 import RunQuery from './pages/RunQuery';
 import JurySelection from './pages/JurySelection';
 import QueryDefinition from './pages/QueryDefinition';
@@ -201,12 +209,13 @@ function App() {
     localStorage.setItem('selectedNetwork', newNetwork);
     toast.info(`Switched to ${getNetworkLabel(newNetwork)}`);
 
-    // If wallet is connected, prompt MetaMask to switch networks
-    if (isConnected && window.ethereum) {
+    // If wallet is connected, prompt the wallet to switch networks
+    const injected = selectInjectedProvider();
+    if (isConnected && injected) {
       try {
         const targetNetwork = getNetworkConfig(newNetwork);
 
-        await window.ethereum.request({
+        await injected.request({
           method: 'wallet_switchEthereumChain',
           params: [{ chainId: targetNetwork.chainIdHex }],
         });
@@ -217,7 +226,7 @@ function App() {
           try {
             const targetNetwork = getNetworkConfig(newNetwork);
 
-            await window.ethereum.request({
+            await injected.request({
               method: 'wallet_addEthereumChain',
               params: [{
                 chainId: targetNetwork.chainIdHex,
@@ -464,34 +473,93 @@ function App() {
     }
   }, [currentCid]);
 
+  // Wallet connect UX state: pending flag (button feedback) + last structured
+  // error (persistent notice under the header with diagnostics).
+  const [walletConnecting, setWalletConnecting] = useState(false);
+  const [walletError, setWalletError] = useState(null);
+  const [showWalletDiag, setShowWalletDiag] = useState(false);
+
   const connectWallet = async () => {
+    if (walletConnecting) return;
+    setWalletConnecting(true);
+    setWalletError(null);
+    const env = walletEnvironment();
+    // Always log — a screenshot of the console is the cheapest bug report.
+    console.info('[wallet] connect attempt', env);
     try {
-      console.log('Connecting wallet...');
-      if (!window.ethereum) {
-        alert('Please install MetaMask!');
-        return;
+      // EIP-6963 discovery first so MetaMask is used even when another
+      // extension (Brave Wallet, Phantom, Coinbase…) overwrote window.ethereum.
+      await refreshDiscovery();
+      const ethereum = selectInjectedProvider();
+      if (!ethereum) {
+        const err = new Error('No wallet extension detected.');
+        err.code = 'VERDIKTA_NO_PROVIDER';
+        throw err;
       }
-      // const provider = new ethers.BrowserProvider(window.ethereum);
-      const ethereum = window.ethereum?.providers?.find(p => p.isMetaMask) ?? window.ethereum;
-      const provider = new ethers.BrowserProvider(ethereum);
-      const accounts = await provider.send('eth_requestAccounts', []);
+      // Bounded: a wallet that never answers (hidden prompt, stuck extension)
+      // must surface as an error rather than an eternal silence.
+      const accounts = await withTimeout(
+        ethereum.request({ method: 'eth_requestAccounts' }),
+        CONNECT_TIMEOUT_MS,
+        'eth_requestAccounts'
+      );
       console.log('Accounts:', accounts);
+      if (!accounts || accounts.length === 0) throw new Error('Wallet returned no accounts.');
       const address = accounts[0];
       setWalletAddress(address);
       setIsConnected(true);
-      console.log('Wallet connected:', address);
-      window.ethereum.on('accountsChanged', (accounts) => {
-        if (accounts.length === 0) {
-          setIsConnected(false);
-          setWalletAddress('');
-        } else {
-          setWalletAddress(accounts[0]);
-        }
-      });
+      console.info('[wallet] connected', { address });
+      if (typeof ethereum.on === 'function') {
+        ethereum.on('accountsChanged', (accounts) => {
+          if (accounts.length === 0) {
+            setIsConnected(false);
+            setWalletAddress('');
+          } else {
+            setWalletAddress(accounts[0]);
+          }
+        });
+      }
     } catch (error) {
-      console.error('Error connecting to MetaMask:', error);
-      alert('Failed to connect to MetaMask.');
+      const explained = explainWalletError(error, env);
+      console.error('[wallet] connect failed:', error, explained);
+      setWalletError(explained);
+      toast.error(explained.message, { autoClose: 8000 });
+    } finally {
+      setWalletConnecting(false);
     }
+  };
+
+  const renderWalletNotice = () => {
+    if (isConnected || !walletError) return null;
+    return (
+      <div className="wallet-notice" role="alert">
+        <div className="wallet-notice-text">
+          <strong>{walletError.message}</strong>
+          {walletError.hint && <span className="wallet-notice-hint">{walletError.hint}</span>}
+          <span className="wallet-notice-actions">
+            {walletError.link && (
+              <a href={walletError.link.href} target="_blank" rel="noopener noreferrer">
+                {walletError.link.label}
+              </a>
+            )}
+            <button type="button" className="link-button" onClick={() => setShowWalletDiag(d => !d)}>
+              {showWalletDiag ? 'Hide details' : 'Show details'}
+            </button>
+          </span>
+          {showWalletDiag && (
+            <pre className="wallet-notice-diag">{JSON.stringify(walletEnvironment(), null, 2)}</pre>
+          )}
+        </div>
+        <button
+          type="button"
+          className="wallet-notice-dismiss"
+          aria-label="Dismiss"
+          onClick={() => { setShowWalletDiag(false); setWalletError(null); }}
+        >
+          ×
+        </button>
+      </div>
+    );
   };
 
   const renderHeader = () => (
@@ -624,12 +692,19 @@ function App() {
               <span className="connection-status">Connected</span>
             </div>
           ) : (
-            <button className="connect-wallet" onClick={connectWallet}>
-              Connect Wallet
+            <button
+              className="connect-wallet"
+              onClick={connectWallet}
+              disabled={walletConnecting}
+              aria-busy={walletConnecting}
+              title={walletConnecting ? 'Waiting for your wallet — check for a wallet prompt' : 'Connect your wallet'}
+            >
+              {walletConnecting ? 'Connecting… check your wallet' : 'Connect Wallet'}
             </button>
           )}
         </div>
       </div>
+      {renderWalletNotice()}
     </header>
   );
 

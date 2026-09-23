@@ -1,5 +1,6 @@
 // src/utils/contractUtils.js
 import { ethers } from 'ethers';
+import { selectInjectedProvider } from './injectedProvider';
 
 /* Network config selected by REACT_APP_NETWORK = 'base' | 'base_sepolia' */
 const NETWORKS = {
@@ -118,7 +119,8 @@ export async function debugContract(contract) {
  * @returns {Promise<Object>} Updated provider
  */
 export async function ensureCorrectNetwork(provider, networkKey = DEFAULT_NET_KEY) {
-  if (typeof window === 'undefined' || !window.ethereum) return provider;
+  const injected = typeof window === 'undefined' ? null : selectInjectedProvider();
+  if (!injected) return provider;
 
   const targetNetwork = getNetworkConfig(networkKey);
   const network = await provider.getNetwork();
@@ -128,13 +130,13 @@ export async function ensureCorrectNetwork(provider, networkKey = DEFAULT_NET_KE
   if (network.chainId.toString() !== targetNetwork.chainId.toString()) {
     console.log(`Not on ${targetNetwork.name}, attempting to switch...`);
     try {
-      await window.ethereum.request({
+      await injected.request({
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: targetNetwork.chainIdHex }],
       });
     } catch (switchError) {
       if (switchError && switchError.code === 4902) {
-        await window.ethereum.request({
+        await injected.request({
           method: 'wallet_addEthereumChain',
           params: [{
             chainId: targetNetwork.chainIdHex,
@@ -151,10 +153,10 @@ export async function ensureCorrectNetwork(provider, networkKey = DEFAULT_NET_KE
 
     return new Promise((resolve) => {
       const handleNetworkChange = () => {
-        window.ethereum.removeListener('chainChanged', handleNetworkChange);
-        setTimeout(() => resolve(new ethers.BrowserProvider(window.ethereum)), 800);
+        injected.removeListener('chainChanged', handleNetworkChange);
+        setTimeout(() => resolve(new ethers.BrowserProvider(injected)), 800);
       };
-      window.ethereum.on('chainChanged', handleNetworkChange);
+      injected.on('chainChanged', handleNetworkChange);
     });
   }
   return provider;

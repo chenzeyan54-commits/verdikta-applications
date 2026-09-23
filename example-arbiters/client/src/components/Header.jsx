@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Scale, Wallet, LogOut } from 'lucide-react';
+import { Scale, Wallet, LogOut, AlertTriangle, X } from 'lucide-react';
 import { useNetwork, NETWORKS } from '../context/NetworkContext';
 import { useWallet } from '../context/WalletContext';
 import { useToast } from './Toast';
@@ -10,14 +11,20 @@ const formatAddress = (addr) =>
 
 function Header() {
   const { selectedNetwork, setNetwork } = useNetwork();
-  const { isConnected, address, connecting, isMetaMaskInstalled, connect, disconnect } = useWallet();
+  const {
+    isConnected, address, connecting, isMetaMaskInstalled, lastError,
+    connect, disconnect, clearError, getDiagnostics,
+  } = useWallet();
   const toast = useToast();
+  const [showDiag, setShowDiag] = useState(false);
 
   const handleConnect = async () => {
     try {
       await connect();
     } catch (err) {
-      toast.error(err.message || 'Failed to connect wallet');
+      // walletService logged the raw error + diagnostics and set lastError
+      // (rendered persistently below). The toast is a nudge toward it.
+      toast.error(err?.message || 'Failed to connect wallet', 8000);
     }
   };
 
@@ -64,9 +71,15 @@ function Header() {
               </button>
             </div>
           ) : isMetaMaskInstalled ? (
-            <button className="btn-connect" onClick={handleConnect} disabled={connecting}>
+            <button
+              className="btn-connect"
+              onClick={handleConnect}
+              disabled={connecting}
+              aria-busy={!!connecting}
+              title={connecting ? 'Waiting for your wallet — check for a wallet prompt' : 'Connect your wallet'}
+            >
               <Wallet size={14} />
-              {connecting ? 'Connecting…' : 'Connect Wallet'}
+              {connecting ? 'Connecting… check your wallet' : 'Connect Wallet'}
             </button>
           ) : (
             <a
@@ -81,6 +94,40 @@ function Header() {
           )}
         </div>
       </div>
+
+      {/* Persistent, actionable connection error (a short toast is easy to miss). */}
+      {!isConnected && lastError && (
+        <div className="wallet-notice" role="alert">
+          <div className="wallet-notice-body">
+            <AlertTriangle size={18} className="wallet-notice-icon" />
+            <div className="wallet-notice-text">
+              <strong>{lastError.message}</strong>
+              {lastError.hint && <span className="wallet-notice-hint">{lastError.hint}</span>}
+              <span className="wallet-notice-actions">
+                {lastError.link && (
+                  <a href={lastError.link.href} target="_blank" rel="noopener noreferrer">
+                    {lastError.link.label}
+                  </a>
+                )}
+                <button type="button" className="link-button" onClick={() => setShowDiag(d => !d)}>
+                  {showDiag ? 'Hide details' : 'Show details'}
+                </button>
+              </span>
+              {showDiag && (
+                <pre className="wallet-notice-diag">{JSON.stringify(getDiagnostics(), null, 2)}</pre>
+              )}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="wallet-notice-dismiss"
+            aria-label="Dismiss"
+            onClick={() => { setShowDiag(false); clearError(); }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
     </header>
   );
 }

@@ -33,10 +33,13 @@ export function WalletProvider({ children }) {
 
   const value = {
     ...state,
-    connecting,
-    isMetaMaskInstalled: walletService.isMetaMaskInstalled(),
+    connecting: connecting || !!state.connecting,
+    isMetaMaskInstalled: state.hasProvider ?? walletService.isMetaMaskInstalled(),
     connect,
-    disconnect: () => walletService.disconnect(),
+    // User-initiated: also revoke the site permission so the next Connect prompts.
+    disconnect: () => walletService.disconnect({ revoke: true }),
+    clearError: () => walletService.clearError(),
+    getDiagnostics: () => walletService.getDiagnostics(),
     switchChain: (chain) => walletService.switchChain(chain),
     getSigner: () => walletService.getSigner(),
   };

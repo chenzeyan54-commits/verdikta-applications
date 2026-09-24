@@ -203,18 +203,18 @@ export function explainWalletError(error, env = walletEnvironment()) {
     if (env.mobile) {
       return {
         code,
-        message: 'No wallet detected in this browser.',
-        hint: 'On a phone, open this site inside the MetaMask app (Browser tab) or another wallet app with a built-in browser.',
-        link: { href: 'https://metamask.io/download/', label: 'Get MetaMask' },
+        message: 'No wallet found in this browser.',
+        hint: 'Phone browsers cannot run wallet extensions. Open this site from inside a wallet app that has a built-in browser, such as MetaMask, Trust Wallet or Coinbase Wallet.',
+        link: { href: 'https://metamask.io/download/', label: 'Get a wallet app' },
       };
     }
     return {
       code,
-      message: 'No wallet extension detected.',
+      message: 'No browser wallet detected.',
       hint: firefox
-        ? 'Firefox disables extensions in Private Windows by default. Open about:addons → MetaMask → set "Run in Private Windows" to Allow, or use a normal window. Also confirm MetaMask is installed and enabled.'
-        : 'Install MetaMask (or another EIP-6963 wallet) and reload. If it is installed, check it is enabled for this site and not blocked in a private/incognito window.',
-      link: { href: 'https://metamask.io/download/', label: 'Get MetaMask' },
+        ? 'This site works with any browser wallet extension (MetaMask, Rabby, Coinbase Wallet, Brave Wallet, OKX and others). Firefox turns extensions off in Private Windows by default: open about:addons, pick your wallet and set "Run in Private Windows" to Allow, or use a normal window.'
+        : 'This site works with any browser wallet extension (MetaMask, Rabby, Coinbase Wallet, Brave Wallet, OKX and others). Install one and reload. If one is installed, check it is enabled and not blocked in a private/incognito window.',
+      link: { href: 'https://metamask.io/download/', label: 'Get a wallet (MetaMask)' },
     };
   }
 
@@ -231,8 +231,8 @@ export function explainWalletError(error, env = walletEnvironment()) {
       code: -32002,
       message: 'A wallet prompt is already open and waiting for you.',
       hint: firefox
-        ? 'Firefox opens the MetaMask prompt as a separate window — it may be hidden behind this one. Click the MetaMask icon in the toolbar to bring it forward.'
-        : 'Click the MetaMask icon in your browser toolbar to find the pending request and approve it.',
+        ? 'Firefox opens the wallet prompt as a separate window — it may be hidden behind this one. Click your wallet\'s icon in the toolbar to bring it forward.'
+        : 'Click your wallet\'s icon in the browser toolbar to find the pending request and approve it.',
     };
   }
 
@@ -241,7 +241,7 @@ export function explainWalletError(error, env = walletEnvironment()) {
       code,
       message: `The wallet (${env.selectedProvider}) did not respond.`,
       hint: firefox
-        ? 'Check for a MetaMask window hidden behind the browser (click the toolbar icon). If there is none, the extension may be stuck: disable and re-enable it in about:addons, or restart Firefox.'
+        ? 'Check for a wallet window hidden behind the browser (click your wallet\'s toolbar icon). If there is none, the extension may be stuck: disable and re-enable it in about:addons, or restart Firefox.'
         : 'Click the wallet icon in your toolbar to look for a pending prompt. If there is none, the extension may be stuck: disable and re-enable it, or restart the browser.',
     };
   }

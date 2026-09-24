@@ -87,9 +87,10 @@ function Header() {
               href="https://metamask.io/download/"
               target="_blank"
               rel="noopener noreferrer"
+              title="Any browser wallet extension works (MetaMask, Rabby, Coinbase Wallet, Brave Wallet, OKX). This link installs MetaMask."
             >
               <Wallet size={14} />
-              Install MetaMask
+              Install a wallet
             </a>
           )}
         </div>

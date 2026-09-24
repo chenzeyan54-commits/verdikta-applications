@@ -51,6 +51,14 @@ ChartJS.register(
   Legend
 );
 
+// Chart text/grid colours follow the theme (CSS can't reach canvas drawing).
+const prefersDark = typeof window !== 'undefined'
+  && typeof window.matchMedia === 'function'
+  && window.matchMedia('(prefers-color-scheme: dark)').matches;
+ChartJS.defaults.color = prefersDark ? '#94a3b8' : '#64748b';
+ChartJS.defaults.borderColor = prefersDark ? 'rgba(148, 163, 184, 0.18)' : 'rgba(0, 0, 0, 0.1)';
+ChartJS.defaults.elements.arc.borderColor = prefersDark ? '#1e293b' : '#ffffff';
+
 // Chart color palette
 const COLORS = {
   active: '#22c55e',

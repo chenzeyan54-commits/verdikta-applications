@@ -11,14 +11,14 @@
 
 /* Passed Theme */
 .justification-display.passed {
-  background-color: #f1f8f4;
-  border: 2px solid #4caf50;
+  background-color: var(--success-light);
+  border: 2px solid var(--success);
 }
 
 /* Failed Theme */
 .justification-display.failed {
-  background-color: #fff8f0;
-  border: 2px solid #ff9800;
+  background-color: var(--warning-light);
+  border: 2px solid var(--warning);
 }
 
 /* ============================================================================
@@ -41,11 +41,11 @@
 }
 
 .justification-display.passed .justification-toggle {
-  color: #2e7d32;
+  color: var(--success-dark);
 }
 
 .justification-display.failed .justification-toggle {
-  color: #e65100;
+  color: var(--warning-dark);
 }
 
 .justification-toggle:hover {
@@ -118,7 +118,7 @@
 
 .score-label {
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
   font-weight: 500;
 }
 
@@ -129,16 +129,16 @@
 }
 
 .score-value.passed {
-  color: #2e7d32;
+  color: var(--success-dark);
 }
 
 .score-value.failed {
-  color: #e65100;
+  color: var(--warning-dark);
 }
 
 .threshold-label {
   font-size: 0.85rem;
-  color: #888;
+  color: var(--gray-400);
 }
 
 .metadata-badge {
@@ -150,7 +150,7 @@
   border-radius: 12px;
   font-size: 0.75rem;
   font-weight: 600;
-  color: #555;
+  color: var(--gray-600);
   margin-left: 0.5rem;
 }
 
@@ -167,15 +167,15 @@
 }
 
 .verdict.passed {
-  background-color: #c8e6c9;
-  color: #1b5e20;
-  border: 1px solid #81c784;
+  background-color: var(--success-border);
+  color: var(--success-dark);
+  border: 1px solid var(--success);
 }
 
 .verdict.failed {
   background-color: #ffe0b2;
-  color: #e65100;
-  border: 1px solid #ffb74d;
+  color: var(--warning-dark);
+  border: 1px solid var(--warning);
 }
 
 /* ============================================================================
@@ -194,8 +194,8 @@
 
 .nav-button {
   padding: 0.4rem 0.875rem;
-  background-color: white;
-  border: 1px solid #ddd;
+  background-color: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.875rem;
@@ -204,8 +204,8 @@
 }
 
 .nav-button:hover:not(:disabled) {
-  background-color: #f5f5f5;
-  border-color: #999;
+  background-color: var(--bg-secondary);
+  border-color: var(--gray-400);
 }
 
 .nav-button:disabled {
@@ -215,7 +215,7 @@
 
 .page-indicator {
   font-size: 0.875rem;
-  color: #666;
+  color: var(--text-secondary);
   font-weight: 500;
 }
 
@@ -238,12 +238,12 @@
 
 .cid-label {
   font-weight: 600;
-  color: #666;
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
 .cid-link {
-  color: #1976d2;
+  color: var(--info);
   text-decoration: none;
   flex: 1;
   font-family: 'Courier New', monospace;
@@ -264,13 +264,13 @@
 }
 
 .justification-text {
-  background-color: white;
+  background-color: var(--bg);
   padding: 1.25rem;
   border-radius: 6px;
   border: 1px solid rgba(0, 0, 0, 0.08);
   line-height: 1.7;
   font-size: 0.95rem;
-  color: #333;
+  color: var(--text);
   white-space: pre-wrap;
   word-wrap: break-word;
   max-height: 600px;
@@ -283,17 +283,17 @@
 }
 
 .justification-text::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: var(--gray-100);
   border-radius: 4px;
 }
 
 .justification-text::-webkit-scrollbar-thumb {
-  background: #888;
+  background: var(--gray-400);
   border-radius: 4px;
 }
 
 .justification-text::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: var(--gray-600);
 }
 
 /* ============================================================================
@@ -309,14 +309,14 @@
   justify-content: center;
   padding: 2rem;
   text-align: center;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .loading-state .spinner {
   width: 40px;
   height: 40px;
-  border: 4px solid #f3f3f3;
-  border-top: 4px solid #4caf50;
+  border: 4px solid var(--gray-100);
+  border-top: 4px solid var(--success);
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-bottom: 1rem;
@@ -333,13 +333,13 @@
 }
 
 .error-state {
-  color: #d32f2f;
+  color: var(--danger-dark);
 }
 
 .error-state button {
   margin-top: 1rem;
   padding: 0.5rem 1rem;
-  background-color: #f44336;
+  background-color: var(--danger);
   color: white;
   border: none;
   border-radius: 4px;
@@ -348,12 +348,12 @@
 }
 
 .error-state button:hover {
-  background-color: #d32f2f;
+  background-color: var(--danger-dark);
 }
 
 .empty-state {
   font-style: italic;
-  color: #999;
+  color: var(--gray-400);
 }
 
 /* ============================================================================
@@ -368,7 +368,7 @@
 .footer-note {
   margin: 0;
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
   line-height: 1.5;
   font-style: italic;
 }

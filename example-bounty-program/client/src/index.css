@@ -30,9 +30,9 @@ code {
 
 .md-image-placeholder {
   display: inline-block;
-  background: #f3f4f6;
-  border: 1px dashed #9ca3af;
-  color: #374151;
+  background: var(--gray-100);
+  border: 1px dashed var(--gray-400);
+  color: var(--gray-600);
   font-size: 0.85em;
   padding: 2px 6px;
   border-radius: 4px;
@@ -40,6 +40,6 @@ code {
   word-break: break-all;
 }
 .md-image-placeholder a {
-  color: #1d4ed8;
+  color: var(--info-dark);
   text-decoration: underline;
 }

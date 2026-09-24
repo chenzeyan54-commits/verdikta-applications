@@ -9,7 +9,7 @@
 }
 
 .class-description {
-  color: #666;
+  color: var(--text-secondary);
   margin-bottom: 1rem;
 }
 
@@ -23,20 +23,20 @@
 }
 
 .class-status.status-active {
-  background-color: #dcfce7;
-  color: #166534;
+  background-color: var(--success-light);
+  color: var(--success-dark);
 }
 
 .class-status.status-deprecated {
-  background-color: #fef3c7;
-  color: #92400e;
+  background-color: var(--warning-light);
+  color: var(--warning-dark);
 }
 
 .back-link {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: #3b82f6;
+  color: var(--info);
   text-decoration: none;
   font-size: 0.9rem;
 }
@@ -58,7 +58,7 @@
 }
 
 .section-summary {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.9rem;
   margin-bottom: 0.75rem;
 }
@@ -72,27 +72,27 @@
 .class-table th,
 .class-table td {
   padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border);
   text-align: left;
 }
 
 .class-table th {
-  background-color: #f9fafb;
+  background-color: var(--bg-secondary);
   font-weight: 600;
   font-size: 0.8rem;
   text-transform: uppercase;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .class-table code {
   font-size: 0.85rem;
-  background-color: #f3f4f6;
+  background-color: var(--gray-100);
   padding: 1px 4px;
   border-radius: 3px;
 }
 
 .class-table a {
-  color: #3b82f6;
+  color: var(--info);
   text-decoration: none;
 }
 
@@ -101,7 +101,7 @@
 }
 
 .class-table tr.group-start td {
-  border-top: 2px solid #9ca3af;
+  border-top: 2px solid var(--gray-400);
 }
 
 .loading-state,
@@ -109,9 +109,9 @@
 .empty-state {
   padding: 2rem;
   text-align: center;
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .error-state {
-  color: #dc2626;
+  color: var(--danger);
 }

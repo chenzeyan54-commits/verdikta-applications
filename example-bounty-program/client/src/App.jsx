@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { initializeContractService, getContractService } from './services/contractService';
-import { config } from './config';
+import { config, currentNetwork } from './config';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { walletService } from './services/wallet';
 import { ToastProvider, useToast } from './components/Toast';
@@ -128,6 +128,38 @@ function AppContent() {
         </Routes>
         </ErrorBoundary>
       </main>
+
+      <footer className="app-footer">
+        <div className="app-footer-inner">
+          <div className="app-footer-meta">
+            <span>Verdikta Bounties · {currentNetwork.name}</span>
+            {config.bountyEscrowAddress && (
+              <a
+                href={`${currentNetwork.explorer}/address/${config.bountyEscrowAddress}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="BountyEscrow contract on the block explorer"
+              >
+                Escrow <code>{walletService.formatAddress(config.bountyEscrowAddress)}</code>
+              </a>
+            )}
+          </div>
+          <nav className="app-footer-links" aria-label="Footer">
+            <Link to="/agents">Agents</Link>
+            <Link to="/skills">Skills</Link>
+            <Link to="/blockchain">Blockchain</Link>
+            <a href="https://docs.verdikta.org" target="_blank" rel="noopener noreferrer">Docs</a>
+            <a
+              href="https://github.com/verdikta/verdikta-applications/tree/main/example-bounty-program"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Source
+            </a>
+            <a href="https://verdikta.org" target="_blank" rel="noopener noreferrer">Verdikta</a>
+          </nav>
+        </div>
+      </footer>
       </div>
     </>
   );

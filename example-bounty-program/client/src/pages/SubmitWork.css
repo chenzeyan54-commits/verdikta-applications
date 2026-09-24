@@ -347,7 +347,7 @@
 
 /* Blockchain info section in success dialog */
 .blockchain-info {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
   color: white;
   border-radius: 8px;
   padding: 1rem;
@@ -405,14 +405,14 @@
   font-weight: 600;
   margin-bottom: 0.25rem;
   font-size: 0.9rem;
-  color: #555;
+  color: var(--gray-600);
 }
 
 /* Loading message helper text */
 .loading-status small {
   margin-top: 0.5rem;
   display: block;
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -421,18 +421,18 @@
   text-align: center;
   margin-top: 1.5rem;
   padding-top: 1rem;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border);
 }
 
 .dialog-footer small {
-  color: #666;
+  color: var(--text-secondary);
   font-size: 0.9rem;
 }
 
 /* Submitted file info styling */
 .submitted-file-info {
   padding: 0.5rem;
-  background: #f8f9fa;
+  background: var(--bg-secondary);
   border-radius: 4px;
   margin-bottom: 0.5rem;
 }
@@ -440,13 +440,13 @@
 .file-desc-small {
   margin: 0.25rem 0 0 0;
   font-size: 0.85rem;
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .total-size {
   margin-top: 0.75rem;
   padding-top: 0.75rem;
-  border-top: 1px solid #dee2e6;
+  border-top: 1px solid var(--border);
   font-size: 0.9rem;
 }
 

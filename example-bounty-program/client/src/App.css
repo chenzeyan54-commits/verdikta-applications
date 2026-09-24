@@ -88,6 +88,85 @@
   --tracking-normal: 0;
   --tracking-wide: 0.01em;
   --tracking-wider: 0.05em;
+
+  /* Tinted borders for semantic call-outs (pale in light mode, translucent in dark) */
+  --success-border: #a7f3d0;
+  --danger-border: #fecaca;
+  --warning-border: #fde68a;
+  --info-border: #bfdbfe;
+
+  /* Aliases: names the page stylesheets already use (they were never defined,
+     so headings fell back to inherited size/weight and colours to `inherit`). */
+  --text-primary: var(--text);
+  --text-muted: var(--text-secondary);
+  --primary-color: var(--primary);
+  --primary-light: var(--primary-100);
+  --surface: var(--bg);
+  --background: var(--bg-secondary);
+  --border-color: var(--border);
+  --error: var(--danger);
+  --color-danger: var(--danger);
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --font-size-xs: var(--text-xs);
+  --font-size-sm: var(--text-sm);
+  --font-size-base: var(--text-base);
+  --font-size-lg: var(--text-lg);
+  --font-size-xl: var(--text-xl);
+  --font-size-2xl: var(--text-2xl);
+  --font-weight-normal: var(--font-normal);
+  --font-weight-medium: var(--font-medium);
+  --font-weight-semibold: var(--font-semibold);
+  --font-weight-bold: var(--font-bold);
+
+  /* Let native controls, scrollbars and form widgets follow the theme */
+  color-scheme: light dark;
+}
+
+/* ---------------------------------------------------------------------------
+   Dark theme (follows the OS / browser preference). Only the tokens change;
+   every component reads its colours from them.
+   --------------------------------------------------------------------------- */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e293b;            /* cards, header, inputs */
+    --bg-secondary: #0f172a;  /* page background */
+    --text: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --border: #334155;
+
+    /* Neutral scale flipped: "light" greys become dark surfaces, "dark" greys become light text */
+    --gray-50: #1e293b;
+    --gray-100: #273449;
+    --gray-200: #334155;
+    --gray-300: #475569;
+    --gray-400: #64748b;
+    --gray-500: #94a3b8;
+    --gray-600: #cbd5e1;
+    --gray-700: #e2e8f0;
+    --gray-800: #f1f5f9;
+    --gray-900: #f8fafc;
+
+    /* Indigo tints used as soft backgrounds */
+    --primary-50: #1e1b4b;
+    --primary-100: #27245e;
+    --primary-200: #3730a3;
+
+    /* Semantic tints: translucent fills, lighter foregrounds, visible borders */
+    --success-light: rgba(16, 185, 129, 0.14);
+    --success-dark: #6ee7b7;
+    --success-border: rgba(16, 185, 129, 0.4);
+    --danger-light: rgba(239, 68, 68, 0.14);
+    --danger-dark: #fca5a5;
+    --danger-border: rgba(239, 68, 68, 0.4);
+    --warning-light: rgba(245, 158, 11, 0.14);
+    --warning-dark: #fcd34d;
+    --warning-border: rgba(245, 158, 11, 0.4);
+    --info-light: rgba(59, 130, 246, 0.14);
+    --info-dark: #93c5fd;
+    --info-border: rgba(59, 130, 246, 0.4);
+  }
 }
 
 body {
@@ -139,9 +218,59 @@ body {
 .app-footer {
   background-color: var(--bg);
   border-top: 1px solid var(--border);
-  padding: 2rem 1rem;
-  text-align: center;
+  padding: 1.25rem 1rem;
   color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.app-footer-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+}
+
+.app-footer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.app-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.25rem;
+}
+
+.app-footer a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color 0.2s;
+}
+
+.app-footer a:hover {
+  color: var(--primary);
+}
+
+.app-footer code {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  background-color: var(--gray-100);
+  padding: 0.125rem 0.4rem;
+  border-radius: 0.25rem;
+}
+
+@media (max-width: 768px) {
+  .app-footer-inner,
+  .app-footer-meta,
+  .app-footer-links {
+    justify-content: center;
+    text-align: center;
+  }
 }
 
 /* Common Components */
@@ -233,27 +362,27 @@ body {
 }
 
 .alert-error {
-  background-color: #fee2e2;
-  color: #991b1b;
-  border: 1px solid #fecaca;
+  background-color: var(--danger-light);
+  color: var(--danger-dark);
+  border: 1px solid var(--danger-border);
 }
 
 .alert-warning {
-  background-color: #fef3c7;
-  color: #92400e;
-  border: 1px solid #fde68a;
+  background-color: var(--warning-light);
+  color: var(--warning-dark);
+  border: 1px solid var(--warning-border);
 }
 
 .alert-success {
-  background-color: #d1fae5;
-  color: #065f46;
-  border: 1px solid #a7f3d0;
+  background-color: var(--success-light);
+  color: var(--success-dark);
+  border: 1px solid var(--success-border);
 }
 
 .alert-info {
-  background-color: #dbeafe;
-  color: #1e40af;
-  border: 1px solid #bfdbfe;
+  background-color: var(--info-light);
+  color: var(--info-dark);
+  border: 1px solid var(--info-border);
 }
 
 /* Status Badges */
@@ -266,23 +395,23 @@ body {
 }
 
 .status-open {
-  background-color: #d1fae5;
-  color: #065f46;
+  background-color: var(--success-light);
+  color: var(--success-dark);
 }
 
 .status-evaluating {
-  background-color: #fef3c7;
-  color: #92400e;
+  background-color: var(--warning-light);
+  color: var(--warning-dark);
 }
 
 .status-paid {
-  background-color: #dbeafe;
-  color: #1e40af;
+  background-color: var(--info-light);
+  color: var(--info-dark);
 }
 
 .status-cancelled {
-  background-color: #fee2e2;
-  color: #991b1b;
+  background-color: var(--danger-light);
+  color: var(--danger-dark);
 }
 
 /* =============================================================================

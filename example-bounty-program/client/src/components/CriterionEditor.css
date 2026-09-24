@@ -1,19 +1,19 @@
 /* Criterion Editor Component */
 
 .criterion-editor {
-  background: white;
-  border: 2px solid #e0e0e0;
+  background: var(--bg);
+  border: 2px solid var(--border);
   border-radius: 8px;
   margin-bottom: 0.75rem;
   transition: all 0.2s ease;
 }
 
 .criterion-editor.must-pass {
-  border-left: 4px solid #f44336;
+  border-left: 4px solid var(--danger);
 }
 
 .criterion-editor.scored {
-  border-left: 4px solid #2196f3;
+  border-left: 4px solid var(--info);
 }
 
 .criterion-editor.expanded {
@@ -47,11 +47,11 @@
 
 .criterion-label {
   font-weight: 600;
-  color: var(--text-primary, #1a1a1a);
+  color: var(--text-primary, var(--gray-900));
 }
 
 .criterion-weight-badge {
-  background: #2196f3;
+  background: var(--info);
   color: white;
   padding: 0.2rem 0.5rem;
   border-radius: 4px;
@@ -68,20 +68,20 @@
   background: none;
   border: none;
   font-size: 0.875rem;
-  color: var(--text-secondary, #666);
+  color: var(--text-secondary, var(--text-secondary));
   cursor: pointer;
   padding: 0.25rem 0.5rem;
   transition: color 0.2s;
 }
 
 .criterion-expand-btn:hover {
-  color: var(--primary-color, #007bff);
+  color: var(--primary-color, var(--info));
 }
 
 /* Body */
 .criterion-body {
   padding: 1rem;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border);
   background: rgba(0, 0, 0, 0.01);
 }
 
@@ -93,7 +93,7 @@
   display: block;
   margin-bottom: 0.5rem;
   font-weight: 500;
-  color: var(--text-primary, #1a1a1a);
+  color: var(--text-primary, var(--gray-900));
   font-size: 0.9rem;
 }
 
@@ -101,7 +101,7 @@
 .criterion-form-row textarea {
   width: 100%;
   padding: 0.75rem;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 0.9rem;
   font-family: inherit;
@@ -111,7 +111,7 @@
 .criterion-form-row input[type="text"]:focus,
 .criterion-form-row textarea:focus {
   outline: none;
-  border-color: var(--primary-color, #007bff);
+  border-color: var(--primary-color, var(--info));
 }
 
 .criterion-form-row textarea {
@@ -125,8 +125,8 @@
   gap: 2rem;
   align-items: flex-start;
   padding: 1rem;
-  background: white;
-  border: 1px solid #e0e0e0;
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 4px;
 }
 
@@ -151,7 +151,7 @@
 }
 
 .toggle-label small {
-  color: var(--text-secondary, #666);
+  color: var(--text-secondary, var(--text-secondary));
   font-size: 0.8rem;
 }
 
@@ -173,7 +173,7 @@
 .weight-input-group input[type="range"] {
   flex: 1;
   height: 6px;
-  background: #ddd;
+  background: var(--border);
   border-radius: 3px;
   outline: none;
   -webkit-appearance: none;
@@ -184,7 +184,7 @@
   appearance: none;
   width: 18px;
   height: 18px;
-  background: var(--primary-color, #007bff);
+  background: var(--primary-color, var(--info));
   border-radius: 50%;
   cursor: pointer;
 }
@@ -192,7 +192,7 @@
 .weight-input-group input[type="range"]::-moz-range-thumb {
   width: 18px;
   height: 18px;
-  background: var(--primary-color, #007bff);
+  background: var(--primary-color, var(--info));
   border-radius: 50%;
   cursor: pointer;
   border: none;
@@ -208,13 +208,13 @@
 .criterion-actions {
   margin-top: 1rem;
   padding-top: 1rem;
-  border-top: 1px solid #e0e0e0;
+  border-top: 1px solid var(--border);
 }
 
 .btn-remove-criterion {
-  background: white;
-  border: 1px solid var(--danger, #f44336);
-  color: var(--danger, #f44336);
+  background: var(--bg);
+  border: 1px solid var(--danger, var(--danger));
+  color: var(--danger, var(--danger));
   padding: 0.5rem 1rem;
   border-radius: 4px;
   cursor: pointer;
@@ -223,7 +223,7 @@
 }
 
 .btn-remove-criterion:hover:not(:disabled) {
-  background: var(--danger, #f44336);
+  background: var(--danger, var(--danger));
   color: white;
 }
 

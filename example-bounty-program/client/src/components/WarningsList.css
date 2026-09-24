@@ -5,8 +5,8 @@
 .warnings-list {
   margin: 1rem 0;
   border-radius: 6px;
-  background-color: #fff9e6;
-  border: 1px solid #ffd54f;
+  background-color: var(--warning-light);
+  border: 1px solid var(--warning-border);
   overflow: hidden;
 }
 
@@ -25,7 +25,7 @@
   gap: 0.625rem;
   font-size: 0.875rem;
   font-weight: 600;
-  color: #b57c00;
+  color: var(--warning-dark);
   transition: background-color 0.2s ease;
 }
 
@@ -59,18 +59,18 @@
 }
 
 .badge-error {
-  background-color: #ffcdd2;
-  color: #c62828;
+  background-color: var(--danger-light);
+  color: var(--danger-dark);
 }
 
 .badge-warning {
   background-color: #ffe0b2;
-  color: #e65100;
+  color: var(--warning-dark);
 }
 
 .badge-info {
-  background-color: #bbdefb;
-  color: #1565c0;
+  background-color: var(--info-border);
+  color: var(--info-dark);
 }
 
 /* ============================================================================
@@ -109,18 +109,18 @@
 }
 
 .severity-info {
-  background-color: #e3f2fd;
-  border: 1px solid #90caf9;
+  background-color: var(--info-light);
+  border: 1px solid var(--info-border);
 }
 
 .severity-warning {
-  background-color: #fff3e0;
-  border: 1px solid #ffb74d;
+  background-color: var(--warning-light);
+  border: 1px solid var(--warning);
 }
 
 .severity-error {
-  background-color: #ffebee;
-  border: 1px solid #ef5350;
+  background-color: var(--danger-light);
+  border: 1px solid var(--danger);
 }
 
 .group-header {
@@ -135,18 +135,18 @@
 }
 
 .severity-info .group-header {
-  background-color: #bbdefb;
-  color: #0d47a1;
+  background-color: var(--info-border);
+  color: var(--info-dark);
 }
 
 .severity-warning .group-header {
   background-color: #ffe0b2;
-  color: #e65100;
+  color: var(--warning-dark);
 }
 
 .severity-error .group-header {
-  background-color: #ffcdd2;
-  color: #b71c1c;
+  background-color: var(--danger-light);
+  color: var(--danger-dark);
 }
 
 .severity-icon {
@@ -184,13 +184,13 @@
 .warning-message {
   font-size: 0.875rem;
   line-height: 1.5;
-  color: #333;
+  color: var(--text);
   margin-bottom: 0.25rem;
 }
 
 .warning-model {
   font-size: 0.75rem;
-  color: #666;
+  color: var(--text-secondary);
   font-family: 'Courier New', monospace;
 }
 
@@ -205,7 +205,7 @@
 
 .warning-details summary {
   font-size: 0.75rem;
-  color: #1976d2;
+  color: var(--info);
   font-weight: 600;
   cursor: pointer;
   user-select: none;
@@ -213,15 +213,15 @@
 }
 
 .warning-details summary:hover {
-  color: #1565c0;
+  color: var(--info-dark);
   text-decoration: underline;
 }
 
 .warning-details pre {
   margin: 0.5rem 0 0 0;
   padding: 0.625rem;
-  background-color: #f5f5f5;
-  border: 1px solid #ddd;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 0.7rem;
   overflow-x: auto;

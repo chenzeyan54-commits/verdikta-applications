@@ -17,22 +17,22 @@
 }
 
 .status-badge.status-open {
-  background-color: #10b981;
+  background-color: var(--success);
   color: white;
 }
 
 .status-badge.status-expired {
-  background-color: #fbbf24;
-  color: #78350f;
+  background-color: var(--warning);
+  color: var(--warning-dark);
 }
 
 .status-badge.status-awarded {
-  background-color: #3b82f6;
+  background-color: var(--info);
   color: white;
 }
 
 .status-badge.status-closed {
-  background-color: #6b7280;
+  background-color: var(--text-secondary);
   color: white;
 }
 
@@ -62,12 +62,12 @@
   border-radius: 4px;
   font-size: 0.75rem;
   font-weight: 600;
-  background-color: #d97706;
+  background-color: var(--warning-dark);
   color: white;
 }
 
 .targeted-notice {
-  background-color: #f5f3ff;
+  background-color: var(--primary-50);
   border: 1px solid #7c3aed;
   border-radius: 8px;
   padding: 0.75rem 1rem;
@@ -80,43 +80,49 @@
   font-size: 0.9rem;
 }
 
+@media (prefers-color-scheme: dark) {
+  .targeted-notice p {
+    color: #c4b5fd;
+  }
+}
+
 .targeted-notice code {
   font-size: 0.85rem;
-  background-color: #ede9fe;
+  background-color: var(--primary-50);
   padding: 1px 4px;
   border-radius: 3px;
 }
 
 .status-badge.status-unknown {
-  background-color: #e5e7eb;
-  color: #374151;
+  background-color: var(--border);
+  color: var(--gray-600);
 }
 
 /* Submission-specific status badges */
 .status-badge.status-approved,
 .status-badge.status-accepted,
 .status-badge.status-passedpaid {
-  background-color: #10b981;
+  background-color: var(--success);
   color: white;
 }
 
 /* Passed the threshold but another submission won — deliberately NOT the green
    "approved" pill, which reads as "you won". Amber = passed, but no payout. */
 .status-badge.status-passed-unpaid {
-  background-color: #f59e0b;
-  color: #1f2937;
+  background-color: var(--warning);
+  color: var(--text);
 }
 
 .status-badge.status-rejected,
 .status-badge.status-failed {
-  background-color: #ef4444;
+  background-color: var(--danger);
   color: white;
 }
 
 .status-badge.status-pending,
 .status-badge.status-pending_evaluation,
 .status-badge.status-pendingverdikta {
-  background-color: #f59e0b;
+  background-color: var(--warning);
   color: white;
   animation: pulse 2s ease-in-out infinite;
 }
@@ -279,22 +285,22 @@
 }
 
 .forbidden-content {
-  background-color: #fee2e2;
+  background-color: var(--danger-light);
   padding: 1rem;
   border-radius: 0.375rem;
-  border: 1px solid #fecaca;
+  border: 1px solid var(--danger-border);
 }
 
 .forbidden-content h3 {
   font-size: 1rem;
   margin-bottom: 0.5rem;
-  color: #991b1b;
+  color: var(--danger-dark);
 }
 
 .forbidden-content ul {
   margin: 0;
   padding-left: 1.5rem;
-  color: #991b1b;
+  color: var(--danger-dark);
 }
 
 /* Jury Section - AI Models */
@@ -342,7 +348,7 @@
 }
 
 .jury-card {
-  background: linear-gradient(135deg, var(--primary-50, #eef2ff) 0%, var(--bg-secondary) 100%);
+  background: linear-gradient(135deg, var(--primary-50, var(--primary-50)) 0%, var(--bg-secondary) 100%);
   padding: 1rem;
   border-radius: 0.5rem;
   border: 1px solid var(--border);
@@ -424,27 +430,27 @@
 }
 
 .alert-info {
-  background-color: #dbeafe;
-  border: 1px solid #93c5fd;
-  color: #1e40af;
+  background-color: var(--info-light);
+  border: 1px solid var(--info-border);
+  color: var(--info-dark);
 }
 
 .alert-warning {
-  background-color: #fef3c7;
-  border: 1px solid #fcd34d;
-  color: #92400e;
+  background-color: var(--warning-light);
+  border: 1px solid var(--warning);
+  color: var(--warning-dark);
 }
 
 .alert-success {
-  background-color: #d1fae5;
-  border: 1px solid #6ee7b7;
-  color: #065f46;
+  background-color: var(--success-light);
+  border: 1px solid var(--success);
+  color: var(--success-dark);
 }
 
 .alert-error {
-  background-color: #fee2e2;
-  border: 1px solid #fecaca;
-  color: #991b1b;
+  background-color: var(--danger-light);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-dark);
 }
 
 /* Submissions Section */

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 import { Target, Wallet, LogOut, Check, Menu, X, AlertTriangle, Loader2 } from 'lucide-react';
 import { walletService } from '../services/wallet';
 import { currentNetwork } from '../config';
@@ -10,6 +10,9 @@ import './Header.css';
 // connected. Once a minute is plenty for an expiry-triggered nag — close
 // actions are rare and on-chain state changes slowly.
 const ACTION_REQUIRED_POLL_MS = 60_000;
+
+// NavLink passes { isActive }; mark the current page so the nav shows where you are.
+const navLinkClass = ({ isActive }) => `nav-link${isActive ? ' active' : ''}`;
 
 function Header({ walletState, onConnect, onDisconnect, onDismissError }) {
   const { isConnected, address, chainId, connecting, lastError } = walletState;
@@ -82,12 +85,12 @@ function Header({ walletState, onConnect, onDisconnect, onDismissError }) {
           className={`header-collapsible${menuOpen ? ' is-open' : ''}`}
         >
           <nav className="nav">
-            <Link to="/" className="nav-link">Browse</Link>
-            <Link to="/create" className="nav-link">Create Bounty</Link>
-            <Link to="/agents" className="nav-link">Agents</Link>
-            <Link to="/analytics" className="nav-link">Analytics</Link>
+            <NavLink to="/" end className={navLinkClass}>Browse</NavLink>
+            <NavLink to="/create" className={navLinkClass}>Create Bounty</NavLink>
+            <NavLink to="/agents" className={navLinkClass}>Agents</NavLink>
+            <NavLink to="/analytics" className={navLinkClass}>Analytics</NavLink>
             {isConnected && (
-              <Link to="/my-bounties" className="nav-link">
+              <NavLink to="/my-bounties" className={navLinkClass}>
                 My Bounties
                 {actionRequiredCount > 0 && (
                   <span
@@ -98,7 +101,7 @@ function Header({ walletState, onConnect, onDisconnect, onDismissError }) {
                     {actionRequiredCount}
                   </span>
                 )}
-              </Link>
+              </NavLink>
             )}
           </nav>
 

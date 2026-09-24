@@ -35,12 +35,12 @@
 
 /* Action-required banner: shown when creator has expired bounties needing attention */
 .action-required-banner {
-  background-color: #fff8e1;
-  border: 2px solid #ffc107;
+  background-color: var(--warning-light);
+  border: 2px solid var(--warning);
   border-radius: 8px;
   padding: 1rem 1.25rem;
   margin-bottom: 1.5rem;
-  color: #5a4500;
+  color: var(--warning-dark);
 }
 
 .action-required-header {
@@ -59,7 +59,7 @@
 .action-required-list summary {
   cursor: pointer;
   font-size: 0.9rem;
-  color: #5a4500;
+  color: var(--warning-dark);
   user-select: none;
 }
 
@@ -75,7 +75,7 @@
 }
 
 .action-required-list a {
-  color: #856404;
+  color: var(--warning-dark);
   text-decoration: underline;
   font-weight: 500;
 }
@@ -92,24 +92,24 @@
 }
 
 .reclaim-pill.ready {
-  background-color: #fff3cd;
-  color: #856404;
-  border: 1px solid #ffc107;
+  background-color: var(--warning-light);
+  color: var(--warning-dark);
+  border: 1px solid var(--warning);
 }
 
 .reclaim-pill.ready:hover {
-  background-color: #ffc107;
-  color: #5a4500;
+  background-color: var(--warning);
+  color: var(--warning-dark);
 }
 
 .reclaim-pill.blocked {
-  background-color: #f8d7da;
-  color: #721c24;
-  border: 1px solid #f5c6cb;
+  background-color: var(--danger-light);
+  color: var(--danger-dark);
+  border: 1px solid var(--danger-border);
 }
 
 .reclaim-pill.blocked:hover {
-  background-color: #f5c6cb;
+  background-color: var(--danger-border);
 }
 
 /* Controls Bar */
@@ -240,23 +240,23 @@
 }
 
 .status-open {
-  background: #d1fae5;
-  color: #065f46;
+  background: var(--success-light);
+  color: var(--success-dark);
 }
 
 .status-expired {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--warning-light);
+  color: var(--warning-dark);
 }
 
 .status-awarded {
-  background: #dbeafe;
-  color: #1e40af;
+  background: var(--info-light);
+  color: var(--info-dark);
 }
 
 .status-closed {
-  background: #f3f4f6;
-  color: #374151;
+  background: var(--gray-100);
+  color: var(--gray-600);
 }
 
 /* Submissions Section */
@@ -329,29 +329,29 @@
 }
 
 .sub-status.status-approved {
-  color: #059669;
+  color: var(--success);
 }
 
 /* Passed evaluation but another submission won — amber, not the green used for
    an actual paid win. */
 .sub-status.status-passed-unpaid {
-  color: #b45309;
+  color: var(--warning-dark);
 }
 
 .sub-status.status-rejected {
-  color: #dc2626;
+  color: var(--danger);
 }
 
 .sub-status.status-pending {
-  color: #d97706;
+  color: var(--warning-dark);
 }
 
 .sub-status.status-unknown {
-  color: #6b7280;
+  color: var(--text-secondary);
 }
 
 .sub-status.status-timeout {
-  color: #9ca3af;
+  color: var(--gray-400);
 }
 
 /* Inline icon utility */
@@ -397,33 +397,33 @@
 }
 
 .archive-verified {
-  background: #d1fae5;
-  color: #065f46;
+  background: var(--success-light);
+  color: var(--success-dark);
 }
 
 .archive-repinned {
-  background: #dbeafe;
-  color: #1e40af;
+  background: var(--info-light);
+  color: var(--info-dark);
 }
 
 .archive-retrieved {
-  background: #e0e7ff;
-  color: #3730a3;
+  background: var(--primary-100);
+  color: var(--primary-800);
 }
 
 .archive-pending {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--warning-light);
+  color: var(--warning-dark);
 }
 
 .archive-failed {
-  background: #fee2e2;
-  color: #991b1b;
+  background: var(--danger-light);
+  color: var(--danger-dark);
 }
 
 .archive-expired {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: var(--gray-100);
+  color: var(--text-secondary);
 }
 
 .days-left {
@@ -504,8 +504,8 @@
 }
 
 .download-warning {
-  background: #fef3c7;
-  border: 1px solid #fcd34d;
+  background: var(--warning-light);
+  border: 1px solid var(--warning);
   border-radius: 8px;
   padding: 1rem;
   margin: 1rem 0;
@@ -514,7 +514,7 @@
 .download-warning p {
   margin: 0.25rem 0;
   font-size: 0.9rem;
-  color: #92400e;
+  color: var(--warning-dark);
 }
 
 .download-info {

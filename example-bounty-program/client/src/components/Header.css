@@ -97,6 +97,27 @@
   color: var(--primary);
 }
 
+/* Current page: primary colour + a short underline bar on desktop */
+.nav-link {
+  position: relative;
+}
+
+.nav-link.active {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.nav-link.active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -0.4rem;
+  height: 2px;
+  border-radius: 2px;
+  background-color: var(--primary);
+}
+
 .nav-badge {
   display: inline-block;
   margin-left: 0.4rem;
@@ -107,7 +128,7 @@
   font-weight: 700;
   line-height: 1.25rem;
   color: #fff;
-  background-color: #d97706;
+  background-color: var(--warning-dark);
   border-radius: 999px;
   vertical-align: middle;
 }
@@ -251,6 +272,15 @@
     background: var(--border);
   }
 
+  /* In the dropdown the links are chips, so mark the current one by fill instead */
+  .nav-link.active {
+    background: var(--primary-50);
+  }
+
+  .nav-link.active::after {
+    display: none;
+  }
+
   .header-right {
     align-items: stretch;
   }
@@ -296,9 +326,9 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
-  background: var(--danger-light, #fef2f2);
-  border: 1px solid var(--danger, #dc2626);
-  color: var(--danger-dark, #991b1b);
+  background: var(--danger-light, var(--danger-light));
+  border: 1px solid var(--danger, var(--danger));
+  color: var(--danger-dark, var(--danger-dark));
   border-radius: 0.5rem;
   font-size: 0.9rem;
 }

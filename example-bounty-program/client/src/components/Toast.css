@@ -103,12 +103,13 @@
 /* Dark mode support */
 @media (prefers-color-scheme: dark) {
   .toast {
-    background: var(--gray-800);
+    background: var(--bg);
+    border: 1px solid var(--border);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 0 1px rgba(0, 0, 0, 0.2);
   }
 
   .toast-message {
-    color: var(--gray-100);
+    color: var(--text);
   }
 
   .toast-dismiss {

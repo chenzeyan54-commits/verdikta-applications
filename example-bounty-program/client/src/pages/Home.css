@@ -40,7 +40,7 @@
 }
 
 .section-header h2 {
-  font-size: 2rem;
+  font-size: var(--text-2xl);
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -177,13 +177,13 @@
 
 /* Validation warning indicator (yellow border) */
 .bounty-card.has-warnings {
-  border-color: #f59e0b;
+  border-color: var(--warning);
   border-width: 2px;
 }
 
 /* Validation error indicator (red border - fatal issues) */
 .bounty-card.has-errors {
-  border-color: #dc2626;
+  border-color: var(--danger);
   border-width: 2px;
 }
 
@@ -191,15 +191,15 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #f59e0b;
-  background: #fef3c7;
+  color: var(--warning);
+  background: var(--warning-light);
   border-radius: 50%;
   padding: 0.25rem;
   cursor: help;
 }
 
 .validation-warning:hover {
-  background: #fde68a;
+  background: var(--warning-border);
 }
 
 /* Validation error indicator (fatal issues - red) */
@@ -207,15 +207,15 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #dc2626;
-  background: #fee2e2;
+  color: var(--danger);
+  background: var(--danger-light);
   border-radius: 50%;
   padding: 0.25rem;
   cursor: help;
 }
 
 .validation-error:hover {
-  background: #fecaca;
+  background: var(--danger-border);
 }
 
 /* Validation success indicator */
@@ -223,8 +223,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--success, #10b981);
-  background: #d1fae5;
+  color: var(--success, var(--success));
+  background: var(--success-light);
   border-radius: 50%;
   padding: 0.25rem;
 }
@@ -246,8 +246,8 @@
 }
 
 .btn-validate:hover:not(:disabled) {
-  background: var(--primary-50, #eef2ff);
-  border-color: var(--primary-300, #a5b4fc);
+  background: var(--primary-50, var(--primary-50));
+  border-color: var(--primary-300, var(--primary-300));
   color: var(--primary);
 }
 
@@ -257,26 +257,26 @@
 }
 
 .btn-validate.validating {
-  background: var(--primary-50, #eef2ff);
-  border-color: var(--primary-300, #a5b4fc);
+  background: var(--primary-50, var(--primary-50));
+  border-color: var(--primary-300, var(--primary-300));
 }
 
 .btn-validate.valid {
-  background: #d1fae5;
-  border-color: #6ee7b7;
-  color: var(--success, #10b981);
+  background: var(--success-light);
+  border-color: var(--success);
+  color: var(--success, var(--success));
 }
 
 .btn-validate.warning {
-  background: #fef3c7;
-  border-color: #fcd34d;
-  color: #92400e;
+  background: var(--warning-light);
+  border-color: var(--warning);
+  color: var(--warning-dark);
 }
 
 .btn-validate.invalid {
-  background: #fee2e2;
-  border-color: #fca5a5;
-  color: #dc2626;
+  background: var(--danger-light);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .btn-validate-text {
@@ -348,14 +348,14 @@
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 0.75rem;
   padding: 0.15rem 0.4rem;
-  background: var(--primary-50, #eef2ff);
+  background: var(--primary-50, var(--primary-50));
   border-radius: 0.25rem;
   transition: background 0.2s, color 0.2s;
 }
 
 .bounty-creator .creator-link:hover {
-  background: var(--primary-100, #e0e7ff);
-  color: var(--primary-dark, #4c51bf);
+  background: var(--primary-100, var(--primary-100));
+  color: var(--primary-dark, var(--primary-dark));
 }
 
 .bounty-creator .creator-link svg {
@@ -542,7 +542,7 @@
   border-radius: 4px;
   font-size: 0.75rem;
   font-weight: 600;
-  background-color: #d97706;
+  background-color: var(--warning-dark);
   color: white;
 }
 
@@ -600,7 +600,7 @@
 }
 
 .pending-indicator {
-  color: var(--text-secondary, #888);
+  color: var(--text-secondary, var(--gray-400));
   display: inline-flex;
   align-items: center;
   margin-left: 4px;
@@ -665,8 +665,8 @@
 }
 
 .btn-page:hover:not(:disabled) {
-  background: var(--primary-50, #eef2ff);
-  border-color: var(--primary-300, #a5b4fc);
+  background: var(--primary-50, var(--primary-50));
+  border-color: var(--primary-300, var(--primary-300));
 }
 
 .btn-page:disabled {
@@ -731,15 +731,15 @@
   border-radius: 6px;
   font-size: 0.78rem;
   line-height: 1.35;
-  background: #f1f8e9;
-  border: 1px solid #c5e1a5;
-  color: #33691e;
+  background: var(--success-light);
+  border: 1px solid var(--success-border);
+  color: var(--success-dark);
   cursor: default;
 }
 .oracle-check-block.has-warnings {
-  background: #fff8e1;
-  border-color: #ffe082;
-  color: #8a6d00;
+  background: var(--warning-light);
+  border-color: var(--warning-border);
+  color: var(--warning-dark);
 }
 .oracle-check-summary {
   display: flex;

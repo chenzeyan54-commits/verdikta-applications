@@ -95,7 +95,7 @@
 }
 
 .hero-actions .btn-primary {
-  background: white;
+  background: #fff; /* on the gradient in both themes */
   color: var(--primary);
 }
 
@@ -896,7 +896,7 @@
 }
 
 .footer-actions .btn-primary {
-  background: white;
+  background: #fff; /* on the gradient in both themes */
   color: var(--primary);
 }
 

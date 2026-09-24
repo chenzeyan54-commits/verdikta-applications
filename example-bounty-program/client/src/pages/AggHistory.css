@@ -128,19 +128,19 @@
 .outcome-banner.completed {
   background: rgba(34, 197, 94, 0.1);
   border: 1px solid rgba(34, 197, 94, 0.3);
-  color: #22c55e;
+  color: var(--success);
 }
 
 .outcome-banner.failed {
   background: rgba(239, 68, 68, 0.1);
   border: 1px solid rgba(239, 68, 68, 0.3);
-  color: #ef4444;
+  color: var(--danger);
 }
 
 .outcome-banner.running {
   background: rgba(245, 158, 11, 0.1);
   border: 1px solid rgba(245, 158, 11, 0.3);
-  color: #f59e0b;
+  color: var(--warning);
 }
 
 /* Oracle slots table */
@@ -194,11 +194,11 @@
 }
 
 .agg-history .slots-table .icon-ok {
-  color: #22c55e;
+  color: var(--success);
 }
 
 .agg-history .slots-table .icon-fail {
-  color: #ef4444;
+  color: var(--danger);
 }
 
 .agg-history .slots-table .icon-na {
@@ -253,15 +253,15 @@
 }
 
 .req-actual-value.val-ok {
-  color: #22c55e;
+  color: var(--success);
 }
 
 .req-actual-value.val-warn {
-  color: #f59e0b;
+  color: var(--warning);
 }
 
 .req-actual-value.val-fail {
-  color: #ef4444;
+  color: var(--danger);
 }
 
 .req-actual-oracles {
@@ -308,7 +308,7 @@
 }
 
 .failure-line .icon-fail {
-  color: #ef4444;
+  color: var(--danger);
   flex-shrink: 0;
 }
 
@@ -367,7 +367,7 @@
 }
 
 .agg-history .timing-table .timing-failed .timing-block {
-  color: #ef4444;
+  color: var(--danger);
 }
 
 /* Timing scatter plot */

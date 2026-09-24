@@ -170,14 +170,15 @@
 
 .bounty-stats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 1.25rem 1rem;
   padding-top: 1.5rem;
   border-top: 1px solid var(--border);
 }
 
 .stat {
   text-align: center;
+  min-width: 0;
 }
 
 .stat .label {
@@ -189,9 +190,10 @@
 
 .stat .value {
   display: block;
-  font-size: 1.5rem;
+  font-size: 1.375rem;
   font-weight: 700;
   color: var(--primary);
+  white-space: nowrap;
 }
 
 .stat .value small {
@@ -598,11 +600,12 @@
 
 @media (max-width: 480px) {
   .bounty-stats {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem 0.75rem;
   }
 
   .stat .value {
-    font-size: 1.25rem;
+    font-size: 1.125rem;
   }
 }
 

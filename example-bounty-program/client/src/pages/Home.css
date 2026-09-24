@@ -136,7 +136,7 @@
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
 }
 
-.bounty-header {
+.bounty-card .bounty-header {
   display: flex;
   justify-content: space-between;
   align-items: start;
@@ -144,7 +144,7 @@
   margin-bottom: 1rem;
 }
 
-.bounty-header h3 {
+.bounty-card .bounty-header h3 {
   font-size: 1.25rem;
   margin: 0;
   min-width: 0;
@@ -283,7 +283,7 @@
   display: none;
 }
 
-@media (min-width: 400px) {
+@media (min-width: 360px) {
   .btn-validate-text {
     display: inline;
   }
@@ -862,4 +862,121 @@
   .btn-clear-filters {
     flex: 1 1 100%;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Bounty card layout. Scoped under .bounty-card because `.bounty-header`,
+   `.bounty-meta` and `.work-type-badge` are also defined (with very different
+   intent) by the BountyDetails and MyBounties stylesheets, which are global in
+   the bundle and used to leak into these cards (the "box inside a box").
+   --------------------------------------------------------------------------- */
+.bounty-card .bounty-header {
+  background: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  margin-bottom: 0.875rem;
+}
+
+/* Title wraps to two lines instead of truncating after a few words */
+.bounty-card .bounty-header h3 {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.3;
+}
+
+.bounty-card .badge-stack {
+  gap: 0.4rem;
+}
+
+.bounty-card .btn-validate {
+  justify-content: center;
+  min-height: 1.75rem;
+  white-space: nowrap;
+}
+
+.bounty-card .work-type-badge {
+  margin: 0 0 0.75rem;
+}
+
+.bounty-card .bounty-description {
+  font-size: 0.9375rem;
+}
+
+/* Stats: label above value, values never wrap */
+.bounty-card .bounty-footer,
+.bounty-card .bounty-meta {
+  display: grid;
+  gap: 0.75rem 1rem;
+  font-size: 0.875rem;
+  color: var(--text);
+}
+
+.bounty-card .bounty-footer {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.bounty-card .bounty-meta {
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1.5fr);
+  margin-top: 0.75rem;
+  align-items: start;
+}
+
+.bounty-card .bounty-footer > div,
+.bounty-card .bounty-meta > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.bounty-card .bounty-footer .label,
+.bounty-card .bounty-meta .label {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.bounty-card .bounty-footer .amount,
+.bounty-card .bounty-footer .count,
+.bounty-card .bounty-meta .value {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bounty-card .bounty-footer .amount {
+  white-space: normal;
+}
+
+.bounty-card .bounty-footer .amount .usd-amount {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.bounty-card .submissions {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 0.4rem;
+}
+
+.bounty-card .submissions .label {
+  flex-basis: 100%;
+}
+
+.bounty-card .time-remaining {
+  font-weight: 600;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.bounty-card .time-remaining.closed {
+  font-style: normal;
 }

@@ -214,6 +214,18 @@ body {
   border-radius: 0.25rem;
 }
 
+.not-found a {
+  display: inline-block;
+  margin-top: 0.75rem;
+  color: var(--primary);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.not-found a:hover {
+  text-decoration: underline;
+}
+
 /* App Footer */
 .app-footer {
   background-color: var(--bg);
@@ -321,6 +333,18 @@ body {
 .btn-secondary:active:not(:disabled) {
   transform: scale(0.97);
   background-color: var(--gray-700);
+}
+
+.btn-outline {
+  background-color: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-outline:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+  background-color: var(--primary-50);
 }
 
 .btn-lg {

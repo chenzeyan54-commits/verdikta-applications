@@ -20,6 +20,7 @@ import {
   Clock,
   Loader2,
   Eye,
+  Wallet,
 } from 'lucide-react';
 import { renderMarkdownSafe } from '../utils/markdownPreview';
 import { useToast } from '../components/Toast';
@@ -111,7 +112,7 @@ function getEffectiveSubmissionStatus(submissionStatus, bountyStatus, onChainSta
   };
 }
 
-function MyBounties({ walletState }) {
+function MyBounties({ walletState, onConnect }) {
   const toast = useToast();
   const [bounties, setBounties] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -285,9 +286,15 @@ function MyBounties({ walletState }) {
           <h1><Package size={28} className="inline-icon" /> My Bounties</h1>
           <p>View and download submissions to bounties you've created</p>
         </div>
-        <div className="alert alert-warning">
+        <div className="alert alert-warning not-connected-state">
           <h3>Wallet Not Connected</h3>
           <p>Please connect your wallet to view your bounties and submissions.</p>
+          {onConnect && (
+            <button type="button" className="btn btn-primary btn-with-icon" onClick={onConnect}>
+              <Wallet size={18} />
+              Connect Wallet
+            </button>
+          )}
         </div>
       </div>
     );

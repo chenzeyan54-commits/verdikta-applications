@@ -2428,7 +2428,7 @@ function BountyDetails({ walletState }) {
             <div style={{ marginTop: '0.75rem' }}>
               <button
                 type="button"
-                className="btn btn-secondary btn-with-icon"
+                className="btn btn-outline btn-sm btn-with-icon"
                 onClick={loadTaskSpec}
                 disabled={taskSpecLoading}
               >

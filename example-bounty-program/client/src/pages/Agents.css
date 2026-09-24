@@ -134,9 +134,9 @@
 }
 
 /* Features Grid */
-.features-grid {
+.agents-section .features-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); /* 3 columns at full width: six cards, no orphans */
   gap: 1.5rem;
 }
 
@@ -214,11 +214,22 @@
   flex: 1;
 }
 
-.step-content h3 {
-  font-size: var(--font-size-base);
+.agents-section .step-content {
+  flex: 1;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.agents-section .step-content h3 {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-lg);
   font-weight: var(--font-weight-semibold);
   margin-bottom: 0.25rem;
   color: var(--text);
+}
+
+.agents-section .step-content p:last-child {
+  margin-bottom: 0;
 }
 
 .step-content p {

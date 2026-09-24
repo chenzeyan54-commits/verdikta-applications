@@ -116,7 +116,7 @@ function AppContent() {
           <Route path="/create" element={<CreateBounty walletState={walletState} />} />
           <Route path="/bounty/:bountyId" element={<BountyDetails walletState={walletState} />} />
           <Route path="/bounty/:bountyId/submit" element={<SubmitWork walletState={walletState} />} />
-          <Route path="/my-bounties" element={<MyBounties walletState={walletState} />} />
+          <Route path="/my-bounties" element={<MyBounties walletState={walletState} onConnect={handleConnect} />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/agents" element={<Agents walletState={walletState} />} />
           <Route path="/skills" element={<Skills />} />

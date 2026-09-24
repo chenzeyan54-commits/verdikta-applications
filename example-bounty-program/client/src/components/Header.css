@@ -255,6 +255,12 @@
     align-items: stretch;
   }
 
+  /* Full-width wallet button in the dropdown menu, matching the nav links */
+  .header-right > .btn {
+    width: 100%;
+    min-height: 44px;
+  }
+
   .wallet-info {
     flex-direction: column;
     align-items: stretch;

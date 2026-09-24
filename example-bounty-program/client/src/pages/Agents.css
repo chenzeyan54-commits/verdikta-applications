@@ -36,6 +36,17 @@
   font-weight: var(--font-weight-bold);
   margin-bottom: 1rem;
   line-height: 1.1;
+  color: #fff; /* global heading rule would otherwise paint it dark on the gradient */
+}
+
+/* Hero stat tiles: Analytics' global .stat-value colour leaks in; keep them white here. */
+.agents-hero .stat-value {
+  color: #fff;
+}
+
+.agents-hero .stat-label,
+.agents-hero .hero-subtitle {
+  color: rgba(255, 255, 255, 0.88);
 }
 
 .hero-subtitle {

@@ -11,6 +11,7 @@
 .hero h1 {
   font-size: 2.25rem;
   margin-bottom: 0.5rem;
+  color: #fff; /* global heading rule would otherwise paint it dark on the gradient */
 }
 
 .hero-subtitle {
@@ -752,4 +753,113 @@
 }
 .oracle-check-warnings li {
   margin: 0.15rem 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Browse filter bar (search / status / min ETH) — previously unstyled native
+   controls that also overflowed the viewport on phones.
+   --------------------------------------------------------------------------- */
+.filters {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.filter-search,
+.filter-status,
+.filter-payout,
+.btn-clear-filters {
+  height: 2.5rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9375rem;
+  line-height: 1;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.filter-search::placeholder,
+.filter-payout::placeholder {
+  color: var(--gray-400);
+}
+
+.filter-search {
+  min-width: 14rem;
+}
+
+.filter-payout {
+  width: 7rem;
+}
+
+.filter-status,
+.page-size-selector select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 2rem;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  cursor: pointer;
+}
+
+.page-size-selector select {
+  height: 2.25rem;
+  border-radius: 0.5rem;
+}
+
+.filter-search:focus,
+.filter-status:focus,
+.filter-payout:focus,
+.page-size-selector select:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-100);
+}
+
+.btn-clear-filters {
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn-clear-filters:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+@media (max-width: 768px) {
+  .section-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1rem;
+  }
+
+  .section-header h2 {
+    font-size: 1.5rem;
+    flex-wrap: wrap;
+  }
+
+  .filters {
+    width: 100%;
+  }
+
+  .filter-search {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .filter-status,
+  .filter-payout {
+    flex: 1 1 0;
+    min-width: 0;
+    width: auto;
+  }
+
+  .btn-clear-filters {
+    flex: 1 1 100%;
+  }
 }

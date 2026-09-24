@@ -10,7 +10,7 @@
   border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
-.grid-title {
+.model-status-grid .grid-title {
   margin: 0 0 0.875rem 0;
   font-size: 0.9rem;
   font-weight: 600;
@@ -18,7 +18,7 @@
   letter-spacing: 0.3px;
 }
 
-.model-grid {
+.model-status-grid .model-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 0.75rem;
@@ -28,7 +28,7 @@
    Model Card
    ============================================================================ */
 
-.model-card {
+.model-status-grid .model-card {
   padding: 0.875rem;
   background-color: var(--bg);
   border-radius: 6px;
@@ -37,33 +37,33 @@
   cursor: default;
 }
 
-.model-card:hover {
+.model-status-grid .model-card:hover {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   transform: translateY(-1px);
 }
 
 /* Status-specific styling */
-.model-card.status-success {
+.model-status-grid .model-card.status-success {
   border-color: var(--success);
   background-color: var(--success-light);
 }
 
-.model-card.status-failed {
+.model-status-grid .model-card.status-failed {
   border-color: var(--danger);
   background-color: var(--danger-light);
 }
 
-.model-card.status-timeout {
+.model-status-grid .model-card.status-timeout {
   border-color: var(--warning);
   background-color: var(--warning-light);
 }
 
-.model-card.status-parsing-error {
+.model-status-grid .model-card.status-parsing-error {
   border-color: var(--warning-border);
   background-color: var(--warning-light);
 }
 
-.model-card.status-unknown {
+.model-status-grid .model-card.status-unknown {
   border-color: var(--gray-300);
   background-color: var(--bg-secondary);
 }
@@ -72,19 +72,19 @@
    Model Card Content
    ============================================================================ */
 
-.model-header {
+.model-status-grid .model-header {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   margin-bottom: 0.375rem;
 }
 
-.status-icon {
+.model-status-grid .status-icon {
   font-size: 1.25rem;
   line-height: 1;
 }
 
-.model-name {
+.model-status-grid .model-name {
   font-weight: 600;
   font-size: 0.875rem;
   color: var(--text);
@@ -93,13 +93,13 @@
   word-break: break-all;
 }
 
-.model-provider {
+.model-status-grid .model-provider {
   font-size: 0.75rem;
   color: var(--text-secondary);
   margin-bottom: 0.25rem;
 }
 
-.model-duration {
+.model-status-grid .model-duration {
   font-size: 0.75rem;
   color: var(--gray-400);
   font-family: 'Courier New', monospace;
@@ -109,7 +109,7 @@
    Error Preview
    ============================================================================ */
 
-.model-error-preview {
+.model-status-grid .model-error-preview {
   margin-top: 0.5rem;
   padding: 0.5rem;
   background-color: rgba(0, 0, 0, 0.05);
@@ -118,7 +118,7 @@
   color: var(--text-secondary);
 }
 
-.error-type {
+.model-status-grid .error-type {
   display: inline-block;
   padding: 0.125rem 0.375rem;
   background-color: #ff5722;
@@ -130,7 +130,7 @@
   margin-bottom: 0.25rem;
 }
 
-.error-message {
+.model-status-grid .error-message {
   display: block;
   font-style: italic;
   word-break: break-word;
@@ -141,17 +141,17 @@
    ============================================================================ */
 
 @media (max-width: 768px) {
-  .model-grid {
+  .model-status-grid .model-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 480px) {
-  .model-card {
+  .model-status-grid .model-card {
     padding: 0.625rem;
   }
   
-  .model-name {
+  .model-status-grid .model-name {
     font-size: 0.8rem;
   }
 }

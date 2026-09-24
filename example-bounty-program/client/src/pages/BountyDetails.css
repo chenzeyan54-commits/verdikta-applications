@@ -6,7 +6,7 @@
 }
 
 /* Status Badges - Four Status System */
-.status-badge {
+.bounty-details .status-badge {
   padding: 0.375rem 0.75rem;
   border-radius: 0.375rem;
   font-size: 0.875rem;
@@ -16,27 +16,27 @@
   display: inline-block;
 }
 
-.status-badge.status-open {
+.bounty-details .status-badge.status-open {
   background-color: var(--success);
   color: white;
 }
 
-.status-badge.status-expired {
+.bounty-details .status-badge.status-expired {
   background-color: var(--warning);
   color: var(--warning-dark);
 }
 
-.status-badge.status-awarded {
+.bounty-details .status-badge.status-awarded {
   background-color: var(--info);
   color: white;
 }
 
-.status-badge.status-closed {
+.bounty-details .status-badge.status-closed {
   background-color: var(--text-secondary);
   color: white;
 }
 
-.badge-targeted {
+.bounty-details .badge-targeted {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
@@ -46,7 +46,7 @@
   color: white;
 }
 
-.badge-windowed {
+.bounty-details .badge-windowed {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
@@ -56,7 +56,7 @@
   color: white;
 }
 
-.badge-pending {
+.bounty-details .badge-pending {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
@@ -66,7 +66,7 @@
   color: white;
 }
 
-.targeted-notice {
+.bounty-details .targeted-notice {
   background-color: var(--primary-50);
   border: 1px solid #7c3aed;
   border-radius: 8px;
@@ -74,66 +74,66 @@
   margin-bottom: 1rem;
 }
 
-.targeted-notice p {
+.bounty-details .targeted-notice p {
   margin: 0;
   color: #4c1d95;
   font-size: 0.9rem;
 }
 
 @media (prefers-color-scheme: dark) {
-  .targeted-notice p {
+  .bounty-details .targeted-notice p {
     color: #c4b5fd;
   }
 }
 
-.targeted-notice code {
+.bounty-details .targeted-notice code {
   font-size: 0.85rem;
   background-color: var(--primary-50);
   padding: 1px 4px;
   border-radius: 3px;
 }
 
-.status-badge.status-unknown {
+.bounty-details .status-badge.status-unknown {
   background-color: var(--border);
   color: var(--gray-600);
 }
 
 /* Submission-specific status badges */
-.status-badge.status-approved,
-.status-badge.status-accepted,
-.status-badge.status-passedpaid {
+.bounty-details .status-badge.status-approved,
+.bounty-details .status-badge.status-accepted,
+.bounty-details .status-badge.status-passedpaid {
   background-color: var(--success);
   color: white;
 }
 
 /* Passed the threshold but another submission won — deliberately NOT the green
    "approved" pill, which reads as "you won". Amber = passed, but no payout. */
-.status-badge.status-passed-unpaid {
+.bounty-details .status-badge.status-passed-unpaid {
   background-color: var(--warning);
   color: var(--text);
 }
 
-.status-badge.status-rejected,
-.status-badge.status-failed {
+.bounty-details .status-badge.status-rejected,
+.bounty-details .status-badge.status-failed {
   background-color: var(--danger);
   color: white;
 }
 
-.status-badge.status-pending,
-.status-badge.status-pending_evaluation,
-.status-badge.status-pendingverdikta {
+.bounty-details .status-badge.status-pending,
+.bounty-details .status-badge.status-pending_evaluation,
+.bounty-details .status-badge.status-pendingverdikta {
   background-color: var(--warning);
   color: white;
   animation: pulse 2s ease-in-out infinite;
 }
 
-.status-badge.status-prepared {
+.bounty-details .status-badge.status-prepared {
   background-color: #8b5cf6;
   color: white;
 }
 
 /* Work Type Badge */
-.work-type-badge {
+.bounty-details .work-type-badge {
   background-color: var(--bg-secondary);
   color: var(--text-secondary);
   padding: 0.375rem 0.75rem;
@@ -145,7 +145,7 @@
 }
 
 /* Bounty Header */
-.bounty-header {
+.bounty-details .bounty-header {
   background-color: var(--bg);
   padding: 2rem;
   border-radius: 0.5rem;
@@ -153,7 +153,7 @@
   margin-bottom: 2rem;
 }
 
-.header-content {
+.bounty-details .header-content {
   display: flex;
   justify-content: space-between;
   align-items: start;
@@ -162,13 +162,13 @@
   gap: 0.5rem;
 }
 
-.header-content h1 {
+.bounty-details .header-content h1 {
   font-size: 2rem;
   margin: 0;
   flex: 1;
 }
 
-.bounty-stats {
+.bounty-details .bounty-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 1.25rem 1rem;
@@ -176,19 +176,19 @@
   border-top: 1px solid var(--border);
 }
 
-.stat {
+.bounty-details .stat {
   text-align: center;
   min-width: 0;
 }
 
-.stat .label {
+.bounty-details .stat .label {
   display: block;
   font-size: 0.875rem;
   color: var(--text-secondary);
   margin-bottom: 0.25rem;
 }
 
-.stat .value {
+.bounty-details .stat .value {
   display: block;
   font-size: 1.375rem;
   font-weight: 700;
@@ -196,14 +196,14 @@
   white-space: nowrap;
 }
 
-.stat .value small {
+.bounty-details .stat .value small {
   font-size: 0.875rem;
   font-weight: 400;
   color: var(--text-secondary);
 }
 
 /* Description Section */
-.description-section {
+.bounty-details .description-section {
   background-color: var(--bg);
   padding: 2rem;
   border-radius: 0.5rem;
@@ -212,12 +212,12 @@
   margin-bottom: 2rem;
 }
 
-.description-section h2 {
+.bounty-details .description-section h2 {
   margin-bottom: 1rem;
 }
 
 /* Rubric Section */
-.rubric-section {
+.bounty-details .rubric-section {
   background-color: var(--bg);
   padding: 2rem;
   border-radius: 0.5rem;
@@ -226,43 +226,43 @@
   margin-bottom: 2rem;
 }
 
-.rubric-section h2 {
+.bounty-details .rubric-section h2 {
   margin-bottom: 1rem;
 }
 
-.rubric-description {
+.bounty-details .rubric-description {
   color: var(--text-secondary);
   margin-bottom: 2rem;
 }
 
-.criteria-grid {
+.bounty-details .criteria-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 1rem;
   margin-bottom: 2rem;
 }
 
-.criterion-card {
+.bounty-details .criterion-card {
   background-color: var(--bg-secondary);
   padding: 1rem;
   border-radius: 0.375rem;
   border: 1px solid var(--border);
 }
 
-.criterion-header {
+.bounty-details .criterion-header {
   display: flex;
   justify-content: space-between;
   align-items: start;
   margin-bottom: 0.5rem;
 }
 
-.criterion-header h3 {
+.bounty-details .criterion-header h3 {
   font-size: 1rem;
   margin: 0;
   text-transform: capitalize;
 }
 
-.badge-must {
+.bounty-details .badge-must {
   background-color: var(--danger);
   color: white;
   padding: 0.25rem 0.5rem;
@@ -271,7 +271,7 @@
   font-weight: 500;
 }
 
-.weight-badge {
+.bounty-details .weight-badge {
   background-color: var(--primary);
   color: white;
   padding: 0.25rem 0.5rem;
@@ -280,33 +280,33 @@
   font-weight: 500;
 }
 
-.criterion-card p {
+.bounty-details .criterion-card p {
   font-size: 0.875rem;
   color: var(--text-secondary);
   margin: 0;
 }
 
-.forbidden-content {
+.bounty-details .forbidden-content {
   background-color: var(--danger-light);
   padding: 1rem;
   border-radius: 0.375rem;
   border: 1px solid var(--danger-border);
 }
 
-.forbidden-content h3 {
+.bounty-details .forbidden-content h3 {
   font-size: 1rem;
   margin-bottom: 0.5rem;
   color: var(--danger-dark);
 }
 
-.forbidden-content ul {
+.bounty-details .forbidden-content ul {
   margin: 0;
   padding-left: 1.5rem;
   color: var(--danger-dark);
 }
 
 /* Jury Section - AI Models */
-.jury-section {
+.bounty-details .jury-section {
   background-color: var(--bg);
   padding: 2rem;
   border-radius: 0.5rem;
@@ -315,16 +315,16 @@
   margin-bottom: 2rem;
 }
 
-.jury-section h2 {
+.bounty-details .jury-section h2 {
   margin-bottom: 1rem;
 }
 
-.jury-description {
+.bounty-details .jury-description {
   color: var(--text-secondary);
   margin-bottom: 1.5rem;
 }
 
-.eval-details-link {
+.bounty-details .eval-details-link {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
@@ -338,18 +338,18 @@
   transition: all 0.2s;
 }
 
-.eval-details-link:hover {
+.bounty-details .eval-details-link:hover {
   background: var(--bg-secondary);
   border-color: var(--primary);
 }
 
-.jury-grid {
+.bounty-details .jury-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 1rem;
 }
 
-.jury-card {
+.bounty-details .jury-card {
   background: linear-gradient(135deg, var(--primary-50, var(--primary-50)) 0%, var(--bg-secondary) 100%);
   padding: 1rem;
   border-radius: 0.5rem;
@@ -357,7 +357,7 @@
   text-align: center;
 }
 
-.jury-provider {
+.bounty-details .jury-provider {
   font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -366,7 +366,7 @@
   margin-bottom: 0.25rem;
 }
 
-.jury-model {
+.bounty-details .jury-model {
   font-size: 0.9rem;
   font-weight: 500;
   color: var(--text);
@@ -374,7 +374,7 @@
   word-break: break-word;
 }
 
-.jury-details {
+.bounty-details .jury-details {
   display: flex;
   justify-content: center;
   gap: 0.75rem;
@@ -382,7 +382,7 @@
   color: var(--text-secondary);
 }
 
-.jury-weight {
+.bounty-details .jury-weight {
   background: var(--primary);
   color: white;
   padding: 0.2rem 0.5rem;
@@ -390,7 +390,7 @@
   font-weight: 500;
 }
 
-.jury-runs {
+.bounty-details .jury-runs {
   background: var(--gray-200);
   color: var(--gray-700);
   padding: 0.2rem 0.5rem;
@@ -398,8 +398,8 @@
 }
 
 /* Actions Section */
-.actions-section,
-.submissions-section {
+.bounty-details .actions-section,
+.bounty-details .submissions-section {
   background-color: var(--bg);
   padding: 2rem;
   border-radius: 0.5rem;
@@ -408,108 +408,108 @@
   margin-bottom: 2rem;
 }
 
-.actions-section h2,
-.submissions-section h2 {
+.bounty-details .actions-section h2,
+.bounty-details .submissions-section h2 {
   margin-bottom: 1rem;
 }
 
-.action-buttons {
+.bounty-details .action-buttons {
   display: flex;
   flex-direction: column;
   gap: 1rem;
 }
 
 /* Expired Bounty Section */
-.expired-bounty-section {
+.bounty-details .expired-bounty-section {
   margin-top: 1rem;
 }
 
 /* Alert Styles */
-.alert {
+.bounty-details .alert {
   padding: 1rem;
   border-radius: 0.375rem;
   margin-bottom: 1rem;
 }
 
-.alert-info {
+.bounty-details .alert-info {
   background-color: var(--info-light);
   border: 1px solid var(--info-border);
   color: var(--info-dark);
 }
 
-.alert-warning {
+.bounty-details .alert-warning {
   background-color: var(--warning-light);
   border: 1px solid var(--warning);
   color: var(--warning-dark);
 }
 
-.alert-success {
+.bounty-details .alert-success {
   background-color: var(--success-light);
   border: 1px solid var(--success);
   color: var(--success-dark);
 }
 
-.alert-error {
+.bounty-details .alert-error {
   background-color: var(--danger-light);
   border: 1px solid var(--danger-border);
   color: var(--danger-dark);
 }
 
 /* Submissions Section */
-.submissions-list {
+.bounty-details .submissions-list {
   display: grid;
   gap: 1rem;
 }
 
-.submission-card {
+.bounty-details .submission-card {
   background-color: var(--bg-secondary);
   padding: 1rem;
   border-radius: 0.375rem;
   border: 1px solid var(--border);
 }
 
-.submission-header {
+.bounty-details .submission-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 0.5rem;
 }
 
-.submission-header .hunter {
+.bounty-details .submission-header .hunter {
   font-family: monospace;
   font-size: 0.875rem;
   color: var(--text-secondary);
 }
 
-.submission-card .score {
+.bounty-details .submission-card .score {
   font-weight: 600;
   color: var(--primary);
   margin: 0.5rem 0;
 }
 
-.submission-meta {
+.bounty-details .submission-meta {
   font-size: 0.875rem;
   color: var(--text-secondary);
   margin-top: 0.5rem;
 }
 
 /* Empty State */
-.empty-state {
+.bounty-details .empty-state {
   text-align: center;
   padding: 3rem 1rem;
   color: var(--text-secondary);
 }
 
-.empty-state h3 {
+.bounty-details .empty-state h3 {
   margin-bottom: 0.5rem;
 }
 
-.empty-state p {
+.bounty-details .empty-state p {
   margin-bottom: 1.5rem;
 }
 
 /* Loading & Error States */
-.loading {
+.bounty-details .loading {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -518,7 +518,7 @@
   color: var(--text-secondary);
 }
 
-.spinner {
+.bounty-details .spinner {
   width: 40px;
   height: 40px;
   border: 4px solid var(--border);
@@ -535,16 +535,16 @@
 }
 
 /* Icon utilities */
-.spin {
+.bounty-details .spin {
   animation: spin 1s linear infinite;
 }
 
-.inline-icon {
+.bounty-details .inline-icon {
   vertical-align: middle;
   margin-right: 0.25rem;
 }
 
-.btn-with-icon {
+.bounty-details .btn-with-icon {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
@@ -562,50 +562,54 @@
 
 /* Responsive Design */
 @media (max-width: 768px) {
-  .header-content {
+  .bounty-details .header-content {
     flex-direction: column;
     gap: 1rem;
   }
 
-  .bounty-stats {
+  .bounty-details .bounty-stats {
     grid-template-columns: repeat(2, 1fr);
     gap: 1rem;
   }
 
-  .criteria-grid,
-  .jury-grid {
+  .bounty-details .criteria-grid,
+  .bounty-details .jury-grid {
     grid-template-columns: 1fr;
   }
 
-  .action-buttons {
+  .bounty-details .action-buttons {
     flex-direction: column;
   }
 
   /* Action buttons - 44px touch targets */
-  .action-buttons .btn {
+  .bounty-details .action-buttons .btn {
     min-height: 44px;
     width: 100%;
   }
 
   /* Sections padding */
-  .bounty-header,
-  .description-section,
-  .rubric-section,
-  .jury-section,
-  .actions-section,
-  .submissions-section {
+  .bounty-details .bounty-header,
+  .bounty-details .description-section,
+  .bounty-details .rubric-section,
+  .bounty-details .jury-section,
+  .bounty-details .actions-section,
+  .bounty-details .submissions-section {
     padding: 1.25rem;
   }
 }
 
 @media (max-width: 480px) {
-  .bounty-stats {
+  .bounty-details .bounty-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 1rem 0.75rem;
   }
 
-  .stat .value {
+  .bounty-details .stat .value {
     font-size: 1.125rem;
   }
 }
 
+/* Previously borrowed from Analytics.css */
+.bounty-details .spinning {
+  animation: spin 1s linear infinite;
+}

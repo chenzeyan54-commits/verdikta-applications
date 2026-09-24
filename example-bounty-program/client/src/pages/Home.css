@@ -1,4 +1,4 @@
-.hero {
+.home .hero {
   text-align: center;
   padding: 2.5rem 1rem;
   background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
@@ -8,45 +8,45 @@
   animation: fade-in 0.4s ease-out;
 }
 
-.hero h1 {
+.home .hero h1 {
   font-size: 2.25rem;
   margin-bottom: 0.5rem;
   color: #fff; /* global heading rule would otherwise paint it dark on the gradient */
 }
 
-.hero-subtitle {
+.home .hero-subtitle {
   font-size: 1.125rem;
   margin-bottom: 1.25rem;
   opacity: 0.9;
 }
 
-.hero-actions {
+.home .hero-actions {
   display: flex;
   gap: 1rem;
   justify-content: center;
   flex-wrap: wrap;
 }
 
-.bounties-section {
+.home .bounties-section {
   margin-bottom: 4rem;
   animation: fade-in-up 0.5s ease-out;
 }
 
-.section-header {
+.home .section-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 2rem;
 }
 
-.section-header h2 {
+.home .section-header h2 {
   font-size: var(--text-2xl);
   display: flex;
   align-items: center;
   gap: 0.75rem;
 }
 
-.bounty-count {
+.home .bounty-count {
   font-size: 1rem;
   font-weight: var(--font-medium, 500);
   line-height: 1;
@@ -56,7 +56,7 @@
   color: var(--text-secondary);
 }
 
-.eth-rate-note {
+.home .eth-rate-note {
   font-size: 0.8125rem;
   font-weight: var(--font-medium, 500);
   line-height: 1;
@@ -67,7 +67,7 @@
   white-space: nowrap;
 }
 
-.empty-state {
+.home .empty-state {
   text-align: center;
   padding: 4rem 2rem;
   background-color: var(--bg);
@@ -75,45 +75,45 @@
   border: 2px dashed var(--border);
 }
 
-.empty-state h3 {
+.home .empty-state h3 {
   margin-bottom: 1rem;
   color: var(--text-secondary);
 }
 
-.error-message {
+.home .error-message {
   background-color: var(--warning-light);
   padding: 2rem;
   border-radius: 0.5rem;
   border: 1px solid var(--warning);
 }
 
-.error-hint {
+.home .error-hint {
   font-size: 0.875rem;
   color: var(--text-secondary);
   margin-top: 0.5rem;
 }
 
-.bounty-grid {
+.home .bounty-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 1.5rem;
 }
 
 /* Staggered fade-in for bounty cards */
-.bounty-grid > * {
+.home .bounty-grid > * {
   opacity: 0;
   animation: fade-in 0.3s ease-out forwards;
 }
 
-.bounty-grid > *:nth-child(1) { animation-delay: 0.05s; }
-.bounty-grid > *:nth-child(2) { animation-delay: 0.1s; }
-.bounty-grid > *:nth-child(3) { animation-delay: 0.15s; }
-.bounty-grid > *:nth-child(4) { animation-delay: 0.2s; }
-.bounty-grid > *:nth-child(5) { animation-delay: 0.25s; }
-.bounty-grid > *:nth-child(6) { animation-delay: 0.3s; }
-.bounty-grid > *:nth-child(n+7) { animation-delay: 0.35s; }
+.home .bounty-grid > *:nth-child(1) { animation-delay: 0.05s; }
+.home .bounty-grid > *:nth-child(2) { animation-delay: 0.1s; }
+.home .bounty-grid > *:nth-child(3) { animation-delay: 0.15s; }
+.home .bounty-grid > *:nth-child(4) { animation-delay: 0.2s; }
+.home .bounty-grid > *:nth-child(5) { animation-delay: 0.25s; }
+.home .bounty-grid > *:nth-child(6) { animation-delay: 0.3s; }
+.home .bounty-grid > *:nth-child(n+7) { animation-delay: 0.35s; }
 
-.bounty-card {
+.home .bounty-card {
   background-color: var(--bg);
   padding: 1.5rem;
   border-radius: 0.5rem;
@@ -125,18 +125,18 @@
   display: block;
 }
 
-.bounty-card:hover {
+.home .bounty-card:hover {
   box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1), 0 4px 8px rgba(0, 0, 0, 0.06);
   transform: translateY(-2px);
   border-color: var(--primary-300);
 }
 
-.bounty-card:active {
+.home .bounty-card:active {
   transform: translateY(0);
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
 }
 
-.bounty-card .bounty-header {
+.home .bounty-card .bounty-header {
   display: flex;
   justify-content: space-between;
   align-items: start;
@@ -144,7 +144,7 @@
   margin-bottom: 1rem;
 }
 
-.bounty-card .bounty-header h3 {
+.home .bounty-card .bounty-header h3 {
   font-size: 1.25rem;
   margin: 0;
   min-width: 0;
@@ -153,7 +153,7 @@
   white-space: nowrap;
 }
 
-.bounty-badges {
+.home .bounty-badges {
   display: flex;
   align-items: flex-start;
   gap: 0.5rem;
@@ -161,7 +161,7 @@
 }
 
 /* Stack status badge and validate button vertically */
-.badge-stack {
+.home .badge-stack {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -169,25 +169,25 @@
 }
 
 /* Validate button row with indicator */
-.validate-row {
+.home .validate-row {
   display: flex;
   align-items: center;
   gap: 0.35rem;
 }
 
 /* Validation warning indicator (yellow border) */
-.bounty-card.has-warnings {
+.home .bounty-card.has-warnings {
   border-color: var(--warning);
   border-width: 2px;
 }
 
 /* Validation error indicator (red border - fatal issues) */
-.bounty-card.has-errors {
+.home .bounty-card.has-errors {
   border-color: var(--danger);
   border-width: 2px;
 }
 
-.validation-warning {
+.home .validation-warning {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -198,12 +198,12 @@
   cursor: help;
 }
 
-.validation-warning:hover {
+.home .validation-warning:hover {
   background: var(--warning-border);
 }
 
 /* Validation error indicator (fatal issues - red) */
-.validation-error {
+.home .validation-error {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -214,12 +214,12 @@
   cursor: help;
 }
 
-.validation-error:hover {
+.home .validation-error:hover {
   background: var(--danger-border);
 }
 
 /* Validation success indicator */
-.validation-success {
+.home .validation-success {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -230,7 +230,7 @@
 }
 
 /* Validate button */
-.btn-validate {
+.home .btn-validate {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -245,57 +245,57 @@
   transition: all 0.2s ease;
 }
 
-.btn-validate:hover:not(:disabled) {
+.home .btn-validate:hover:not(:disabled) {
   background: var(--primary-50, var(--primary-50));
   border-color: var(--primary-300, var(--primary-300));
   color: var(--primary);
 }
 
-.btn-validate:disabled {
+.home .btn-validate:disabled {
   cursor: not-allowed;
   opacity: 0.7;
 }
 
-.btn-validate.validating {
+.home .btn-validate.validating {
   background: var(--primary-50, var(--primary-50));
   border-color: var(--primary-300, var(--primary-300));
 }
 
-.btn-validate.valid {
+.home .btn-validate.valid {
   background: var(--success-light);
   border-color: var(--success);
   color: var(--success, var(--success));
 }
 
-.btn-validate.warning {
+.home .btn-validate.warning {
   background: var(--warning-light);
   border-color: var(--warning);
   color: var(--warning-dark);
 }
 
-.btn-validate.invalid {
+.home .btn-validate.invalid {
   background: var(--danger-light);
   border-color: var(--danger);
   color: var(--danger);
 }
 
-.btn-validate-text {
+.home .btn-validate-text {
   display: none;
 }
 
 @media (min-width: 360px) {
-  .btn-validate-text {
+  .home .btn-validate-text {
     display: inline;
   }
 }
 
-.bounty-description {
+.home .bounty-description {
   color: var(--text-secondary);
   margin-bottom: 1rem;
   line-height: 1.5;
 }
 
-.bounty-footer {
+.home .bounty-footer {
   display: flex;
   justify-content: space-between;
   padding-top: 1rem;
@@ -303,18 +303,18 @@
   font-size: 0.875rem;
 }
 
-.bounty-footer .label {
+.home .bounty-footer .label {
   color: var(--text-secondary);
   margin-right: 0.5rem;
 }
 
-.bounty-footer .amount {
+.home .bounty-footer .amount {
   font-weight: 600;
   color: var(--primary);
 }
 
 /* Created date display */
-.bounty-created {
+.home .bounty-created {
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -326,7 +326,7 @@
 }
 
 /* Creator display */
-.bounty-creator {
+.home .bounty-creator {
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -335,11 +335,11 @@
   color: var(--text-secondary);
 }
 
-.bounty-creator .label {
+.home .bounty-creator .label {
   color: var(--text-secondary);
 }
 
-.bounty-creator .creator-link {
+.home .bounty-creator .creator-link {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -353,38 +353,38 @@
   transition: background 0.2s, color 0.2s;
 }
 
-.bounty-creator .creator-link:hover {
+.home .bounty-creator .creator-link:hover {
   background: var(--primary-100, var(--primary-100));
   color: var(--primary-dark, var(--primary-dark));
 }
 
-.bounty-creator .creator-link svg {
+.home .bounty-creator .creator-link svg {
   opacity: 0.7;
 }
 
 /* How It Works Section */
-.how-it-works {
+.home .how-it-works {
   margin-bottom: 4rem;
   padding: 3rem 0;
 }
 
-.how-it-works h2 {
+.home .how-it-works h2 {
   text-align: center;
   font-size: 2rem;
   margin-bottom: 3rem;
 }
 
-.steps {
+.home .steps {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 2rem;
 }
 
-.step {
+.home .step {
   text-align: center;
 }
 
-.step-number {
+.home .step-number {
   width: 60px;
   height: 60px;
   border-radius: 50%;
@@ -398,82 +398,82 @@
   margin: 0 auto 1rem;
 }
 
-.step h3 {
+.home .step h3 {
   margin-bottom: 0.5rem;
 }
 
-.step p {
+.home .step p {
   color: var(--text-secondary);
 }
 
 /* Features Section */
-.features {
+.home .features {
   background-color: var(--bg);
   padding: 3rem 2rem;
   border-radius: 1rem;
   animation: fade-in-up 0.5s ease-out;
 }
 
-.features h2 {
+.home .features h2 {
   text-align: center;
   font-size: 2rem;
   margin-bottom: 3rem;
 }
 
-.feature-grid {
+.home .feature-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
   gap: 2rem;
 }
 
-.feature {
+.home .feature {
   text-align: center;
 }
 
-.feature h3 {
+.home .feature h3 {
   font-size: 1.5rem;
   margin-bottom: 0.5rem;
 }
 
-.feature p {
+.home .feature p {
   color: var(--text-secondary);
 }
 
 @media (max-width: 768px) {
-  .hero {
+  .home .hero {
     padding: 2rem 1rem;
   }
 
-  .hero h1 {
+  .home .hero h1 {
     font-size: 1.75rem;
   }
 
-  .hero-subtitle {
+  .home .hero-subtitle {
     font-size: 1rem;
   }
 
   /* Hero buttons - 44px touch targets */
-  .hero-actions .btn {
+  .home .hero-actions .btn {
     min-height: 44px;
     width: 100%;
   }
 
-  .hero-actions {
+  .home .hero-actions {
     flex-direction: column;
     gap: 0.75rem;
   }
 
-  .bounty-grid {
+  .home .bounty-grid {
     grid-template-columns: 1fr;
   }
 
   /* Bounty cards - adequate touch area */
-  .bounty-card {
+  .home .bounty-card {
     padding: 1.25rem;
   }
 
   /* Section header buttons */
-  .section-header .btn {
+  .home .section-header .btn {
     min-height: 44px;
   }
 }
@@ -481,7 +481,7 @@
 /* Add these status badge styles to your Home.css */
 
 /* Status Badges - Four Status System */
-.status-badge {
+.home .status-badge {
   padding: 0.25rem 0.5rem;
   border-radius: 0.25rem;
   font-size: 0.75rem;
@@ -491,32 +491,32 @@
   display: inline-block;
 }
 
-.status-badge.status-open {
+.home .status-badge.status-open {
   background-color: var(--success);
   color: white;
 }
 
-.status-badge.status-expired {
+.home .status-badge.status-expired {
   background-color: var(--warning);
   color: var(--gray-800);
 }
 
-.status-badge.status-awarded {
+.home .status-badge.status-awarded {
   background-color: var(--primary);
   color: white;
 }
 
-.status-badge.status-closed {
+.home .status-badge.status-closed {
   background-color: var(--gray-500);
   color: white;
 }
 
-.status-badge.status-unknown {
+.home .status-badge.status-unknown {
   background-color: var(--gray-200);
   color: var(--gray-700);
 }
 
-.badge-targeted {
+.home .badge-targeted {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
@@ -526,7 +526,7 @@
   color: white;
 }
 
-.badge-windowed {
+.home .badge-windowed {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
@@ -536,7 +536,7 @@
   color: white;
 }
 
-.badge-pending {
+.home .badge-pending {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
@@ -548,7 +548,7 @@
 
 /* Terminal bounties (EXPIRED / AWARDED / CLOSED): neutral "Completed" badge
    shown in place of the Validate button — the bounty is concluded, not broken. */
-.badge-completed {
+.home .badge-completed {
   display: inline-block;
   padding: 2px 8px;
   border-radius: 4px;
@@ -559,29 +559,29 @@
 }
 
 /* Time Remaining States */
-.time-remaining.warning {
+.home .time-remaining.warning {
   color: var(--warning);
   font-weight: 600;
 }
 
-.time-remaining.closed {
+.home .time-remaining.closed {
   color: var(--gray-500);
   font-style: italic;
 }
 
 /* Icon utilities */
-.btn-with-icon {
+.home .btn-with-icon {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
 }
 
-.inline-icon {
+.home .inline-icon {
   vertical-align: middle;
   margin-right: 0.25rem;
 }
 
-.feature-icon {
+.home .feature-icon {
   width: 64px;
   height: 64px;
   border-radius: 50%;
@@ -593,28 +593,28 @@
   margin: 0 auto 1rem;
 }
 
-.empty-icon {
+.home .empty-icon {
   color: var(--text-secondary);
   opacity: 0.5;
   margin-bottom: 1rem;
 }
 
-.pending-indicator {
+.home .pending-indicator {
   color: var(--text-secondary, var(--gray-400));
   display: inline-flex;
   align-items: center;
   margin-left: 4px;
 }
 
-.pending-indicator.accepted {
+.home .pending-indicator.accepted {
   color: var(--primary);
 }
 
-.pending-indicator.expired {
+.home .pending-indicator.expired {
   color: var(--warning);
 }
 
-.spin {
+.home .spin {
   animation: spin 1s linear infinite;
 }
 
@@ -628,7 +628,7 @@
 }
 
 /* Pagination */
-.pagination {
+.home .pagination {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -638,18 +638,18 @@
   gap: 1rem;
 }
 
-.pagination-info {
+.home .pagination-info {
   font-size: 0.875rem;
   color: var(--text-secondary);
 }
 
-.pagination-controls {
+.home .pagination-controls {
   display: flex;
   align-items: center;
   gap: 0.75rem;
 }
 
-.btn-page {
+.home .btn-page {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
@@ -664,24 +664,24 @@
   transition: all 0.2s ease;
 }
 
-.btn-page:hover:not(:disabled) {
+.home .btn-page:hover:not(:disabled) {
   background: var(--primary-50, var(--primary-50));
   border-color: var(--primary-300, var(--primary-300));
 }
 
-.btn-page:disabled {
+.home .btn-page:disabled {
   color: var(--text-secondary);
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.page-indicator {
+.home .page-indicator {
   font-size: 0.875rem;
   color: var(--text-secondary);
   white-space: nowrap;
 }
 
-.page-size-selector {
+.home .page-size-selector {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -689,7 +689,7 @@
   color: var(--text-secondary);
 }
 
-.page-size-selector select {
+.home .page-size-selector select {
   padding: 0.35rem 0.5rem;
   border: 1px solid var(--border);
   border-radius: 0.375rem;
@@ -700,22 +700,22 @@
 }
 
 @media (max-width: 768px) {
-  .pagination {
+  .home .pagination {
     flex-direction: column;
     align-items: stretch;
     text-align: center;
   }
 
-  .pagination-controls {
+  .home .pagination-controls {
     justify-content: center;
   }
 
-  .pagination-info,
-  .page-size-selector {
+  .home .pagination-info,
+  .home .page-size-selector {
     justify-content: center;
   }
 
-  .btn-page {
+  .home .btn-page {
     min-height: 44px;
   }
 }
@@ -725,7 +725,7 @@
 
 
 /* Oracle-pool check (shown next to the validate result on a bounty card) */
-.oracle-check-block {
+.home .oracle-check-block {
   margin-top: 0.5rem;
   padding: 0.5rem 0.65rem;
   border-radius: 6px;
@@ -736,22 +736,22 @@
   color: var(--success-dark);
   cursor: default;
 }
-.oracle-check-block.has-warnings {
+.home .oracle-check-block.has-warnings {
   background: var(--warning-light);
   border-color: var(--warning-border);
   color: var(--warning-dark);
 }
-.oracle-check-summary {
+.home .oracle-check-summary {
   display: flex;
   align-items: center;
   gap: 0.35rem;
   font-weight: 600;
 }
-.oracle-check-warnings {
+.home .oracle-check-warnings {
   margin: 0.35rem 0 0 0;
   padding-left: 1.1rem;
 }
-.oracle-check-warnings li {
+.home .oracle-check-warnings li {
   margin: 0.15rem 0;
 }
 
@@ -759,17 +759,17 @@
    Browse filter bar (search / status / min ETH) — previously unstyled native
    controls that also overflowed the viewport on phones.
    --------------------------------------------------------------------------- */
-.filters {
+.home .filters {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
 }
 
-.filter-search,
-.filter-status,
-.filter-payout,
-.btn-clear-filters {
+.home .filter-search,
+.home .filter-status,
+.home .filter-payout,
+.home .btn-clear-filters {
   height: 2.5rem;
   padding: 0 0.75rem;
   border: 1px solid var(--border);
@@ -782,21 +782,21 @@
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.filter-search::placeholder,
-.filter-payout::placeholder {
+.home .filter-search::placeholder,
+.home .filter-payout::placeholder {
   color: var(--gray-400);
 }
 
-.filter-search {
+.home .filter-search {
   min-width: 14rem;
 }
 
-.filter-payout {
+.home .filter-payout {
   width: 7rem;
 }
 
-.filter-status,
-.page-size-selector select {
+.home .filter-status,
+.home .page-size-selector select {
   appearance: none;
   -webkit-appearance: none;
   padding-right: 2rem;
@@ -806,60 +806,60 @@
   cursor: pointer;
 }
 
-.page-size-selector select {
+.home .page-size-selector select {
   height: 2.25rem;
   border-radius: 0.5rem;
 }
 
-.filter-search:focus,
-.filter-status:focus,
-.filter-payout:focus,
-.page-size-selector select:focus {
+.home .filter-search:focus,
+.home .filter-status:focus,
+.home .filter-payout:focus,
+.home .page-size-selector select:focus {
   outline: none;
   border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--primary-100);
 }
 
-.btn-clear-filters {
+.home .btn-clear-filters {
   color: var(--text-secondary);
   cursor: pointer;
   white-space: nowrap;
 }
 
-.btn-clear-filters:hover {
+.home .btn-clear-filters:hover {
   border-color: var(--primary);
   color: var(--primary);
 }
 
 @media (max-width: 768px) {
-  .section-header {
+  .home .section-header {
     flex-direction: column;
     align-items: stretch;
     gap: 1rem;
   }
 
-  .section-header h2 {
+  .home .section-header h2 {
     font-size: 1.5rem;
     flex-wrap: wrap;
   }
 
-  .filters {
+  .home .filters {
     width: 100%;
   }
 
-  .filter-search {
+  .home .filter-search {
     flex: 1 1 100%;
     min-width: 0;
   }
 
-  .filter-status,
-  .filter-payout {
+  .home .filter-status,
+  .home .filter-payout {
     flex: 1 1 0;
     min-width: 0;
     width: auto;
   }
 
-  .btn-clear-filters {
+  .home .btn-clear-filters {
     flex: 1 1 100%;
   }
 }
@@ -870,7 +870,7 @@
    intent) by the BountyDetails and MyBounties stylesheets, which are global in
    the bundle and used to leak into these cards (the "box inside a box").
    --------------------------------------------------------------------------- */
-.bounty-card .bounty-header {
+.home .bounty-card .bounty-header {
   background: none;
   padding: 0;
   border: 0;
@@ -879,7 +879,7 @@
 }
 
 /* Title wraps to two lines instead of truncating after a few words */
-.bounty-card .bounty-header h3 {
+.home .bounty-card .bounty-header h3 {
   white-space: normal;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -887,55 +887,55 @@
   line-height: 1.3;
 }
 
-.bounty-card .badge-stack {
+.home .bounty-card .badge-stack {
   gap: 0.4rem;
 }
 
-.bounty-card .btn-validate {
+.home .bounty-card .btn-validate {
   justify-content: center;
   min-height: 1.75rem;
   white-space: nowrap;
 }
 
-.bounty-card .work-type-badge {
+.home .bounty-card .work-type-badge {
   margin: 0 0 0.75rem;
 }
 
-.bounty-card .bounty-description {
+.home .bounty-card .bounty-description {
   font-size: 0.9375rem;
 }
 
 /* Stats: label above value, values never wrap */
-.bounty-card .bounty-footer,
-.bounty-card .bounty-meta {
+.home .bounty-card .bounty-footer,
+.home .bounty-card .bounty-meta {
   display: grid;
   gap: 0.75rem 1rem;
   font-size: 0.875rem;
   color: var(--text);
 }
 
-.bounty-card .bounty-footer {
+.home .bounty-card .bounty-footer {
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
   padding-top: 1rem;
   border-top: 1px solid var(--border);
 }
 
-.bounty-card .bounty-meta {
+.home .bounty-card .bounty-meta {
   grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 1.5fr);
   margin-top: 0.75rem;
   align-items: start;
 }
 
-.bounty-card .bounty-footer > div,
-.bounty-card .bounty-meta > div {
+.home .bounty-card .bounty-footer > div,
+.home .bounty-card .bounty-meta > div {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
   min-width: 0;
 }
 
-.bounty-card .bounty-footer .label,
-.bounty-card .bounty-meta .label {
+.home .bounty-card .bounty-footer .label,
+.home .bounty-card .bounty-meta .label {
   margin: 0;
   font-size: 0.6875rem;
   font-weight: 600;
@@ -944,39 +944,73 @@
   color: var(--text-secondary);
 }
 
-.bounty-card .bounty-footer .amount,
-.bounty-card .bounty-footer .count,
-.bounty-card .bounty-meta .value {
+.home .bounty-card .bounty-footer .amount,
+.home .bounty-card .bounty-footer .count,
+.home .bounty-card .bounty-meta .value {
   font-weight: 600;
   white-space: nowrap;
 }
 
-.bounty-card .bounty-footer .amount {
+.home .bounty-card .bounty-footer .amount {
   white-space: normal;
 }
 
-.bounty-card .bounty-footer .amount .usd-amount {
+.home .bounty-card .bounty-footer .amount .usd-amount {
   font-weight: 500;
   color: var(--text-secondary);
 }
 
-.bounty-card .submissions {
+.home .bounty-card .submissions {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: baseline;
   column-gap: 0.4rem;
 }
 
-.bounty-card .submissions .label {
+.home .bounty-card .submissions .label {
   flex-basis: 100%;
 }
 
-.bounty-card .time-remaining {
+.home .bounty-card .time-remaining {
   font-weight: 600;
   white-space: normal;
   overflow-wrap: anywhere;
 }
 
-.bounty-card .time-remaining.closed {
+.home .bounty-card .time-remaining.closed {
   font-style: normal;
+}
+
+/* ---------------------------------------------------------------------------
+   Styles this page used to borrow from other pages' stylesheets before those
+   were scoped (hero CTA buttons from Agents.css, work-type chip from
+   BountyDetails.css). Now owned here.
+   --------------------------------------------------------------------------- */
+.home .hero-actions .btn-primary {
+  background: #fff; /* on the gradient in both themes */
+  color: var(--primary);
+}
+
+.home .hero-actions .btn-primary:hover:not(:disabled) {
+  background: var(--gray-100);
+}
+
+.home .hero-actions .btn-secondary {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.home .hero-actions .btn-secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.home .work-type-badge {
+  display: inline-block;
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  background-color: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 500;
 }

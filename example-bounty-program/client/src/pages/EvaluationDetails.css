@@ -23,11 +23,11 @@
 }
 
 /* Header */
-.eval-header {
+.evaluation-details .eval-header {
   margin-bottom: 2rem;
 }
 
-.eval-header h1 {
+.evaluation-details .eval-header h1 {
   font-size: 2rem;
   display: flex;
   align-items: center;
@@ -35,13 +35,13 @@
   margin-bottom: 0.5rem;
 }
 
-.eval-subtitle {
+.evaluation-details .eval-subtitle {
   color: var(--text-secondary);
   font-size: 1.1rem;
   margin: 0 0 0.75rem 0;
 }
 
-.eval-description {
+.evaluation-details .eval-description {
   color: var(--text-secondary);
   font-size: 0.9rem;
   margin: 0;
@@ -49,7 +49,7 @@
 }
 
 /* Cards */
-.eval-card {
+.evaluation-details .eval-card {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -57,7 +57,7 @@
   margin-bottom: 1.5rem;
 }
 
-.eval-card h2 {
+.evaluation-details .eval-card h2 {
   font-size: 1.25rem;
   display: flex;
   align-items: center;
@@ -65,7 +65,7 @@
   margin: 0 0 0.75rem 0;
 }
 
-.section-note {
+.evaluation-details .section-note {
   color: var(--text-secondary);
   font-size: 0.875rem;
   margin: 0 0 1rem 0;
@@ -73,31 +73,31 @@
 }
 
 /* Protocol Overview */
-.protocol-overview {
+.evaluation-details .protocol-overview {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
 }
 
-.protocol-item {
+.evaluation-details .protocol-item {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
 }
 
-.protocol-item strong {
+.evaluation-details .protocol-item strong {
   min-width: 180px;
   color: var(--text-secondary);
   font-size: 0.875rem;
 }
 
-.outcome-badges {
+.evaluation-details .outcome-badges {
   display: flex;
   gap: 0.5rem;
 }
 
-.outcome-badge {
+.evaluation-details .outcome-badge {
   padding: 0.2rem 0.6rem;
   border-radius: 4px;
   font-size: 0.8rem;
@@ -105,19 +105,19 @@
   font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
 }
 
-.outcome-fund {
+.evaluation-details .outcome-fund {
   background: #10b98120;
   color: var(--success);
   border: 1px solid #10b98140;
 }
 
-.outcome-dont-fund {
+.evaluation-details .outcome-dont-fund {
   background: #ef444420;
   color: var(--danger);
   border: 1px solid #ef444440;
 }
 
-.mono-value {
+.evaluation-details .mono-value {
   font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
   background: var(--bg-secondary);
   padding: 0.15rem 0.5rem;
@@ -126,31 +126,31 @@
 }
 
 /* Phase Cards */
-.protocol-phases {
+.evaluation-details .protocol-phases {
   display: flex;
   align-items: center;
   gap: 1rem;
   margin-top: 1rem;
 }
 
-.phase-card {
+.evaluation-details .phase-card {
   flex: 1;
   padding: 1rem;
   border-radius: 8px;
   border-left: 4px solid;
 }
 
-.phase-mandatory {
+.evaluation-details .phase-mandatory {
   background: #ef444408;
   border-left-color: var(--danger);
 }
 
-.phase-weighted {
+.evaluation-details .phase-weighted {
   background: #3b82f608;
   border-left-color: var(--info);
 }
 
-.phase-label {
+.evaluation-details .phase-label {
   font-size: 0.75rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -159,26 +159,26 @@
   margin-bottom: 0.25rem;
 }
 
-.phase-title {
+.evaluation-details .phase-title {
   font-weight: 600;
   font-size: 1rem;
   margin-bottom: 0.5rem;
 }
 
-.phase-desc {
+.evaluation-details .phase-desc {
   font-size: 0.825rem;
   color: var(--text-secondary);
   line-height: 1.5;
 }
 
-.phase-arrow {
+.evaluation-details .phase-arrow {
   color: var(--text-secondary);
   font-size: 0.8rem;
   font-style: italic;
   flex-shrink: 0;
 }
 
-.protocol-note {
+.evaluation-details .protocol-note {
   margin-top: 0.75rem;
   padding: 0.75rem 1rem;
   background: var(--bg-secondary);
@@ -188,20 +188,20 @@
 }
 
 /* Criteria */
-.criteria-list {
+.evaluation-details .criteria-list {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
 }
 
-.criterion-item {
+.evaluation-details .criterion-item {
   padding: 1rem;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg-secondary);
 }
 
-.criterion-header {
+.evaluation-details .criterion-header {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -209,7 +209,7 @@
   flex-wrap: wrap;
 }
 
-.criterion-badge {
+.evaluation-details .criterion-badge {
   padding: 0.15rem 0.5rem;
   border-radius: 4px;
   font-size: 0.75rem;
@@ -219,22 +219,22 @@
   flex-shrink: 0;
 }
 
-.badge-must-pass {
+.evaluation-details .badge-must-pass {
   background: #ef444420;
   color: var(--danger);
 }
 
-.badge-weighted {
+.evaluation-details .badge-weighted {
   background: #3b82f620;
   color: var(--info);
 }
 
-.criterion-label {
+.evaluation-details .criterion-label {
   font-weight: 600;
   font-size: 0.95rem;
 }
 
-.criterion-desc {
+.evaluation-details .criterion-desc {
   margin: 0;
   font-size: 0.875rem;
   color: var(--text-secondary);
@@ -242,13 +242,13 @@
 }
 
 /* Forbidden Content */
-.forbidden-section {
+.evaluation-details .forbidden-section {
   margin-top: 1.25rem;
   padding-top: 1rem;
   border-top: 1px solid var(--border);
 }
 
-.forbidden-section h3 {
+.evaluation-details .forbidden-section h3 {
   display: flex;
   align-items: center;
   gap: 0.4rem;
@@ -257,19 +257,19 @@
   color: var(--danger);
 }
 
-.forbidden-list {
+.evaluation-details .forbidden-list {
   margin: 0.5rem 0 0 1.25rem;
   padding: 0;
   font-size: 0.875rem;
   color: var(--text-secondary);
 }
 
-.forbidden-list li {
+.evaluation-details .forbidden-list li {
   margin-bottom: 0.35rem;
 }
 
 /* Scoring Formula */
-.scoring-formula {
+.evaluation-details .scoring-formula {
   margin-top: 1rem;
   padding: 0.75rem 1rem;
   background: var(--bg-secondary);
@@ -280,20 +280,20 @@
 }
 
 /* Jury Configuration */
-.jury-details-grid {
+.evaluation-details .jury-details-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 1rem;
 }
 
-.jury-detail-card {
+.evaluation-details .jury-detail-card {
   padding: 1rem;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-secondary);
 }
 
-.jury-detail-provider {
+.evaluation-details .jury-detail-provider {
   font-size: 0.8rem;
   color: var(--text-secondary);
   text-transform: uppercase;
@@ -302,7 +302,7 @@
   margin-bottom: 0.25rem;
 }
 
-.jury-detail-model {
+.evaluation-details .jury-detail-model {
   font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
   font-size: 0.85rem;
   font-weight: 600;
@@ -310,14 +310,14 @@
   word-break: break-all;
 }
 
-.jury-detail-stats {
+.evaluation-details .jury-detail-stats {
   display: flex;
   gap: 1rem;
   font-size: 0.825rem;
   color: var(--text-secondary);
 }
 
-.jury-meta {
+.evaluation-details .jury-meta {
   display: flex;
   gap: 2rem;
   margin-top: 1rem;
@@ -328,7 +328,7 @@
 }
 
 /* Expand/Collapse Toggle */
-.expand-toggle {
+.evaluation-details .expand-toggle {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
@@ -342,13 +342,13 @@
   transition: all 0.2s;
 }
 
-.expand-toggle:hover {
+.evaluation-details .expand-toggle:hover {
   color: var(--text-primary);
   border-color: var(--primary);
 }
 
 /* Query Text */
-.query-text {
+.evaluation-details .query-text {
   margin-top: 1rem;
   padding: 1.25rem;
   background: var(--bg-secondary);
@@ -364,11 +364,11 @@
 }
 
 /* Raw Files Section */
-.raw-file-section {
+.evaluation-details .raw-file-section {
   margin-bottom: 1rem;
 }
 
-.json-viewer {
+.evaluation-details .json-viewer {
   margin-top: 0.75rem;
   padding: 1rem;
   background: var(--bg-secondary);
@@ -386,14 +386,14 @@
 }
 
 /* IPFS Links */
-.ipfs-links {
+.evaluation-details .ipfs-links {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
   margin: 1rem 0;
 }
 
-.ipfs-link {
+.evaluation-details .ipfs-link {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
@@ -406,13 +406,13 @@
   transition: all 0.2s;
 }
 
-.ipfs-link:hover {
+.evaluation-details .ipfs-link:hover {
   background: var(--bg-secondary);
   border-color: var(--primary);
 }
 
 /* CID Display */
-.cid-display {
+.evaluation-details .cid-display {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -420,14 +420,14 @@
   flex-wrap: wrap;
 }
 
-.cid-label {
+.evaluation-details .cid-label {
   font-size: 0.8rem;
   color: var(--text-secondary);
   font-weight: 600;
   min-width: 120px;
 }
 
-.cid-value {
+.evaluation-details .cid-value {
   font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Mono', monospace;
   font-size: 0.75rem;
   background: var(--bg-secondary);
@@ -461,21 +461,26 @@
 
 /* Responsive */
 @media (max-width: 768px) {
-  .protocol-phases {
+  .evaluation-details .protocol-phases {
     flex-direction: column;
   }
 
-  .phase-arrow {
+  .evaluation-details .phase-arrow {
     transform: rotate(90deg);
   }
 
-  .protocol-item strong {
+  .evaluation-details .protocol-item strong {
     min-width: auto;
     width: 100%;
   }
 
-  .jury-meta {
+  .evaluation-details .jury-meta {
     flex-direction: column;
     gap: 0.5rem;
   }
+}
+
+/* Previously borrowed from Analytics.css */
+.evaluation-details .spinning {
+  animation: spin 1s linear infinite;
 }

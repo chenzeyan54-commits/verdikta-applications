@@ -15,12 +15,12 @@
   margin-bottom: 1rem;
 }
 
-.jury-description {
+.jury-section .jury-description {
   color: var(--text-secondary);
   margin-bottom: 1.5rem;
 }
 
-.jury-status {
+.jury-section .jury-status {
   display: flex;
   align-items: center;
   gap: 0.4rem;
@@ -28,17 +28,17 @@
   font-size: 0.9rem;
 }
 
-.jury-status-error {
+.jury-section .jury-status-error {
   color: var(--color-danger, var(--danger-dark));
 }
 
-.jury-grid {
+.jury-section .jury-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 1rem;
 }
 
-.jury-card {
+.jury-section .jury-card {
   background: linear-gradient(135deg, var(--primary-50, var(--primary-50)) 0%, var(--bg-secondary) 100%);
   padding: 1rem;
   border-radius: 0.5rem;
@@ -46,7 +46,7 @@
   text-align: center;
 }
 
-.jury-provider {
+.jury-section .jury-provider {
   font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -55,7 +55,7 @@
   margin-bottom: 0.25rem;
 }
 
-.jury-model {
+.jury-section .jury-model {
   font-size: 0.9rem;
   font-weight: 500;
   color: var(--text);
@@ -63,7 +63,7 @@
   word-break: break-word;
 }
 
-.jury-details {
+.jury-section .jury-details {
   display: flex;
   justify-content: center;
   gap: 0.75rem;
@@ -71,7 +71,7 @@
   color: var(--text-secondary);
 }
 
-.jury-weight {
+.jury-section .jury-weight {
   background: var(--primary);
   color: white;
   padding: 0.2rem 0.5rem;
@@ -79,14 +79,14 @@
   font-weight: 500;
 }
 
-.jury-runs {
+.jury-section .jury-runs {
   background: var(--gray-200);
   color: var(--gray-700);
   padding: 0.2rem 0.5rem;
   border-radius: 0.25rem;
 }
 
-.eval-details-link {
+.jury-section .eval-details-link {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
@@ -100,7 +100,7 @@
   transition: all 0.2s;
 }
 
-.eval-details-link:hover {
+.jury-section .eval-details-link:hover {
   background: var(--bg-secondary);
   border-color: var(--primary);
 }
@@ -121,7 +121,7 @@
     padding: 1.25rem;
   }
 
-  .jury-grid {
+  .jury-section .jury-grid {
     grid-template-columns: 1fr;
   }
 }

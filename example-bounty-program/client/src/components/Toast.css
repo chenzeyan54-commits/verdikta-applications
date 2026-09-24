@@ -12,7 +12,7 @@
   pointer-events: none;
 }
 
-.toast {
+.toast-container .toast {
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -35,18 +35,18 @@
   }
 }
 
-.toast-icon {
+.toast-container .toast-icon {
   flex-shrink: 0;
 }
 
-.toast-message {
+.toast-container .toast-message {
   flex: 1;
   font-size: 0.9rem;
   line-height: 1.4;
   color: var(--text);
 }
 
-.toast-dismiss {
+.toast-container .toast-dismiss {
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -62,61 +62,61 @@
   transition: background-color 0.15s, color 0.15s;
 }
 
-.toast-dismiss:hover {
+.toast-container .toast-dismiss:hover {
   background-color: rgba(0, 0, 0, 0.05);
   color: var(--gray-500);
 }
 
 /* Toast Types */
-.toast-success {
+.toast-container .toast-success {
   border-left: 4px solid var(--success);
 }
 
-.toast-success .toast-icon {
+.toast-container .toast-success .toast-icon {
   color: var(--success);
 }
 
-.toast-error {
+.toast-container .toast-error {
   border-left: 4px solid var(--danger);
 }
 
-.toast-error .toast-icon {
+.toast-container .toast-error .toast-icon {
   color: var(--danger);
 }
 
-.toast-warning {
+.toast-container .toast-warning {
   border-left: 4px solid var(--warning);
 }
 
-.toast-warning .toast-icon {
+.toast-container .toast-warning .toast-icon {
   color: var(--warning);
 }
 
-.toast-info {
+.toast-container .toast-info {
   border-left: 4px solid var(--primary);
 }
 
-.toast-info .toast-icon {
+.toast-container .toast-info .toast-icon {
   color: var(--primary);
 }
 
 /* Dark mode support */
 @media (prefers-color-scheme: dark) {
-  .toast {
+  .toast-container .toast {
     background: var(--bg);
     border: 1px solid var(--border);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 0 1px rgba(0, 0, 0, 0.2);
   }
 
-  .toast-message {
+  .toast-container .toast-message {
     color: var(--text);
   }
 
-  .toast-dismiss {
+  .toast-container .toast-dismiss {
     color: var(--gray-500);
   }
 
-  .toast-dismiss:hover {
+  .toast-container .toast-dismiss:hover {
     background-color: rgba(255, 255, 255, 0.1);
     color: var(--gray-400);
   }
@@ -131,7 +131,7 @@
     max-width: none;
   }
 
-  .toast {
+  .toast-container .toast {
     width: 100%;
   }
 }
